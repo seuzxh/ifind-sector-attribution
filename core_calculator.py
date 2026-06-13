@@ -229,6 +229,9 @@ def l1_stock_attribution(
 
     for concept_code, weight in concept_weights.items():
         concept_ret = concept_returns.get(concept_code, 0.0)
+        # 防御 nan（停牌等导致），nan 视为 0
+        if pd.isna(concept_ret):
+            concept_ret = 0.0
         contrib = weight * concept_ret
         total_contrib += contrib
         attributions.append({
