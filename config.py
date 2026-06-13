@@ -164,3 +164,9 @@ PERIOD_WEIGHTS = {
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 BATCH_SIZE = 100
+
+# ========== init_concept_members 并发配置 ==========
+# 接口2 (data_pool p03473) 不支持批量传多个概念代码，需逐概念拉取。
+# 全量 1121 个概念用线程池并发，降低串行等待。
+CONCEPT_MEMBERS_CONCURRENCY = 8       # 并发线程数
+CONCEPT_MEMBERS_PROGRESS_EVERY = 100  # 每完成多少个概念打印一次进度

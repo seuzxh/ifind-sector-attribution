@@ -258,7 +258,7 @@ def calc_portfolio_attribution(
     exposure = {}
     for h in holdings:
         stock_code = h["stock_code"]
-        concepts = db.get_stock_concepts(stock_code, calc_date)
+        concepts = db.get_stock_concepts(stock_code)  # 取最新缓存
         for c in concepts:
             code = c["concept_code"]
             if code not in exposure:

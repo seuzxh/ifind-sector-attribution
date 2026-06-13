@@ -7,6 +7,8 @@
 
 import sys
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
@@ -48,36 +50,88 @@ class SyncPipeline:
         print(f"[INIT] 已保存 {len(mappings)} 只个股的概念映射")
         return mappings
 
+    def _fetch_one_concept_members(self, concept_code: str, member_date: str):
+        """
+        拉取单个概念的成分股（供线程池 worker 调用）
+        :return: (concept_code, members) 成功； (concept_code, None) 失败
+        """
+        try:
+            resp = self.client.get_concept_members(concept_code, member_date)
+            if "tables" in resp and len(resp["tables"]) > 0:
+                table = resp["tables"][0].get("table", {})
+                stock_codes = table.get("p03473_f002", [])
+                stock_names = table.get("p03473_f003", [])
+
+                members = []
+                for i in range(len(stock_codes)):
+                    members.append({
+                        "stock_code": stock_codes[i],
+                        "stock_name": stock_names[i] if i < len(stock_names) else ""
+                    })
+                return (concept_code, members)
+            # 无成分股数据（如部分指数类概念），视为空成功
+            return (concept_code, [])
+        except Exception as e:
+            print(f"[WARN] 获取 {concept_code} 成分股失败: {e}")
+            return (concept_code, None)
+
     def init_concept_members(self, member_date: str = None):
-        """步骤2: 初始化概念板块成分股（永久缓存）"""
+        """步骤2: 初始化概念板块成分股（永久缓存，并发拉取）"""
         member_date = member_date or datetime.now().strftime("%Y%m%d")
         print(f"[INIT] 开始初始化概念板块成分股，日期={member_date}...")
 
         concept_codes = self.db.get_all_concept_codes()
-        total = 0
-        for concept_code in concept_codes:
-            try:
-                resp = self.client.get_concept_members(concept_code, member_date)
-                if "tables" in resp and len(resp["tables"]) > 0:
-                    table = resp["tables"][0].get("table", {})
-                    dates = table.get("p03473_f001", [])
-                    stock_codes = table.get("p03473_f002", [])
-                    stock_names = table.get("p03473_f003", [])
+        total_concepts = len(concept_codes)
+        concurrency = getattr(config, "CONCEPT_MEMBERS_CONCURRENCY", 8)
+        progress_every = getattr(config, "CONCEPT_MEMBERS_PROGRESS_EVERY", 100)
+        print(f"[INIT] 共 {total_concepts} 个概念，并发度={concurrency}")
 
-                    members = []
-                    for i in range(len(stock_codes)):
-                        members.append({
-                            "stock_code": stock_codes[i],
-                            "stock_name": stock_names[i] if i < len(stock_names) else ""
-                        })
+        # 计数器与进度打印（多线程共享，需加锁）
+        done_count = 0
+        saved_records = 0
+        counter_lock = threading.Lock()
 
-                    self.db.save_concept_members(concept_code, members, member_date)
-                    total += len(members)
-            except Exception as e:
-                print(f"[WARN] 获取 {concept_code} 成分股失败: {e}")
+        failed_codes = []
+        success_count = 0
 
-        print(f"[INIT] 已保存共 {total} 条成分股记录")
-        return total
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            # 提交全部任务
+            future_to_code = {
+                executor.submit(self._fetch_one_concept_members, cc, member_date): cc
+                for cc in concept_codes
+            }
+
+            # 主线程串行入库（避免并发写 sqlite）
+            for future in as_completed(future_to_code):
+                code, members = future.result()
+                if members is None:
+                    failed_codes.append(code)
+                else:
+                    if members:
+                        self.db.save_concept_members(code, members, member_date)
+                    success_count += 1
+                    saved_records += len(members)
+
+                # 进度打印
+                with counter_lock:
+                    done_count += 1
+                    if done_count % progress_every == 0 or done_count == total_concepts:
+                        print(
+                            f"[INIT] 成分股进度 {done_count}/{total_concepts}"
+                            f"（成功 {success_count}，失败 {len(failed_codes)}，已入库 {saved_records} 条）"
+                        )
+
+        # 汇总
+        print(
+            f"[INIT] 已保存共 {saved_records} 条成分股记录"
+            f"（{total_concepts} 个概念中成功 {success_count} 个，失败 {len(failed_codes)} 个）"
+        )
+        if failed_codes:
+            preview = ", ".join(failed_codes[:20])
+            more = "" if len(failed_codes) <= 20 else f" ...（共 {len(failed_codes)} 个）"
+            print(f"[INIT] 失败概念码: {preview}{more}")
+
+        return saved_records
 
     # ========== 每日收盘后：行情同步 ==========
     def sync_daily_kline(
@@ -146,10 +200,10 @@ class SyncPipeline:
         # 获取概念代码列表
         concept_codes = self.db.get_all_concept_codes()
 
-        # 构建成分股映射
+        # 构建成分股映射（取最新缓存，永久缓存不依赖 calc_date）
         members_map = {}
         for cc in concept_codes:
-            members = self.db.get_concept_members(cc, calc_date)
+            members = self.db.get_concept_members(cc)
             if members:
                 members_map[cc] = [m["stock_code"] for m in members]
 
@@ -207,7 +261,7 @@ class SyncPipeline:
         records = []
         for stock_code in stock_codes:
             stock_return = returns_map.get(stock_code, 0)
-            concepts = self.db.get_stock_concepts(stock_code, calc_date)
+            concepts = self.db.get_stock_concepts(stock_code)  # 取最新缓存
 
             if not concepts:
                 continue

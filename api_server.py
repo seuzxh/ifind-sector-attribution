@@ -122,12 +122,9 @@ def get_concept_members(concept_code: str, date: str = None):
     """
     获取概念板块成分股
     :param concept_code: 概念代码，如 "886102.TI"
-    :param date: 日期，默认最新
+    :param date: 成分股快照日期；不传则取最新一份缓存
     """
-    if date is None:
-        date = datetime.now().strftime("%Y%m%d")
-
-    members = db.get_concept_members(concept_code, date)
+    members = db.get_concept_members(concept_code, date)  # date=None 时取最新缓存
     return {
         "concept_code": concept_code,
         "date": date,

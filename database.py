@@ -5,6 +5,7 @@ SQLite 数据库封装
 
 import sqlite3
 import json
+import os
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 from contextlib import contextmanager
@@ -17,6 +18,10 @@ class Database:
 
     def __init__(self, db_path: str = None):
         self.db_path = db_path or config.DB_PATH
+        # 确保数据库所在目录存在（DB_PATH 默认在 data/ 下，仓库不包含该目录）
+        db_dir = os.path.dirname(self.db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         self._init_db()
 
     @contextmanager
@@ -183,27 +188,51 @@ class Database:
                         VALUES (?, ?, ?, ?)
                     """, (stock_code, concept["concept_code"], map_date, weight))
 
-    def get_stock_concepts(self, stock_code: str, map_date: str) -> List[Dict]:
-        """获取某个股在指定日期的概念映射"""
+    def get_stock_concepts(self, stock_code: str, map_date: str = None) -> List[Dict]:
+        """
+        获取某个股的概念映射
+        :param map_date: 映射快照日期；不传则取最新一份（永久缓存语义）
+        """
         with self._connect() as conn:
-            cursor = conn.execute("""
-                SELECT scm.concept_code, tcd.concept_name, scm.weight
-                FROM stock_concept_map scm
-                JOIN ths_concept_dict tcd ON scm.concept_code = tcd.concept_code
-                WHERE scm.stock_code = ? AND scm.map_date = ?
-            """, (stock_code, map_date))
+            if map_date is None:
+                cursor = conn.execute("""
+                    SELECT scm.concept_code, tcd.concept_name, scm.weight
+                    FROM stock_concept_map scm
+                    JOIN ths_concept_dict tcd ON scm.concept_code = tcd.concept_code
+                    WHERE scm.stock_code = ? AND scm.map_date = (
+                        SELECT MAX(map_date) FROM stock_concept_map WHERE stock_code = ?
+                    )
+                """, (stock_code, stock_code))
+            else:
+                cursor = conn.execute("""
+                    SELECT scm.concept_code, tcd.concept_name, scm.weight
+                    FROM stock_concept_map scm
+                    JOIN ths_concept_dict tcd ON scm.concept_code = tcd.concept_code
+                    WHERE scm.stock_code = ? AND scm.map_date = ?
+                """, (stock_code, map_date))
             return [
                 {"concept_code": row["concept_code"], "concept_name": row["concept_name"], "weight": row["weight"]}
                 for row in cursor.fetchall()
             ]
 
-    def get_concept_stocks(self, concept_code: str, map_date: str) -> List[str]:
-        """获取某概念在指定日期包含的所有个股"""
+    def get_concept_stocks(self, concept_code: str, map_date: str = None) -> List[str]:
+        """
+        获取某概念包含的所有个股
+        :param map_date: 映射快照日期；不传则取最新一份（永久缓存语义）
+        """
         with self._connect() as conn:
-            cursor = conn.execute("""
-                SELECT stock_code FROM stock_concept_map
-                WHERE concept_code = ? AND map_date = ?
-            """, (concept_code, map_date))
+            if map_date is None:
+                cursor = conn.execute("""
+                    SELECT stock_code FROM stock_concept_map
+                    WHERE concept_code = ? AND map_date = (
+                        SELECT MAX(map_date) FROM stock_concept_map WHERE concept_code = ?
+                    )
+                """, (concept_code, concept_code))
+            else:
+                cursor = conn.execute("""
+                    SELECT stock_code FROM stock_concept_map
+                    WHERE concept_code = ? AND map_date = ?
+                """, (concept_code, map_date))
             return [row["stock_code"] for row in cursor.fetchall()]
 
     # ========== 概念成分股操作 ==========
@@ -217,13 +246,24 @@ class Database:
                     VALUES (?, ?, ?, ?)
                 """, (concept_code, m.get("stock_code"), m.get("stock_name", ""), member_date))
 
-    def get_concept_members(self, concept_code: str, member_date: str) -> List[Dict]:
-        """获取概念板块成分股列表"""
+    def get_concept_members(self, concept_code: str, member_date: str = None) -> List[Dict]:
+        """
+        获取概念板块成分股列表
+        :param member_date: 成分股快照日期；不传则取最新一份（永久缓存语义）
+        """
         with self._connect() as conn:
-            cursor = conn.execute("""
-                SELECT stock_code, stock_name FROM concept_members
-                WHERE concept_code = ? AND member_date = ?
-            """, (concept_code, member_date))
+            if member_date is None:
+                cursor = conn.execute("""
+                    SELECT stock_code, stock_name FROM concept_members
+                    WHERE concept_code = ? AND member_date = (
+                        SELECT MAX(member_date) FROM concept_members WHERE concept_code = ?
+                    )
+                """, (concept_code, concept_code))
+            else:
+                cursor = conn.execute("""
+                    SELECT stock_code, stock_name FROM concept_members
+                    WHERE concept_code = ? AND member_date = ?
+                """, (concept_code, member_date))
             return [
                 {"stock_code": row["stock_code"], "stock_name": row["stock_name"]}
                 for row in cursor.fetchall()
