@@ -303,11 +303,21 @@ class SyncPipeline:
         print("  初始化完成")
         print("=" * 60)
 
-    def run_daily(self, calc_date: str, all_codes: List[str]):
-        """每日收盘后：执行全部同步和计算步骤"""
+    def run_daily(self, calc_date: str, all_codes: List[str] = None):
+        """
+        每日收盘后：执行全部同步和计算步骤
+        :param all_codes: 需同步K线的代码列表；不传则自动从成分股表反查全市场股票池
+        """
         print("=" * 60)
         print(f"  每日同步：{calc_date}")
         print("=" * 60)
+
+        # 代码列表：未指定则反查全市场股票池
+        if not all_codes:
+            all_codes = self.db.get_all_member_stock_codes()
+            print(f"[DAILY] 未指定代码列表，从成分股表反查全市场股票池: {len(all_codes)} 只")
+        else:
+            print(f"[DAILY] 使用指定代码列表: {len(all_codes)} 只")
 
         # 同步日K线
         self.sync_daily_kline(all_codes, calc_date, calc_date)

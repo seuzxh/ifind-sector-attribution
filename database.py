@@ -160,6 +160,19 @@ class Database:
             cursor = conn.execute("SELECT concept_code FROM ths_concept_dict")
             return [row["concept_code"] for row in cursor.fetchall()]
 
+    def get_all_member_stock_codes(self) -> List[str]:
+        """
+        从成分股表反查全部独立股票代码（全市场股票池）。
+        成分股表覆盖主板/创业板/科创板/北交所，作为 daily 同步 K 线的默认代码来源。
+        取最新一份快照，避免历史重复。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("""
+                SELECT DISTINCT stock_code FROM concept_members
+                WHERE member_date = (SELECT MAX(member_date) FROM concept_members)
+            """)
+            return [row["stock_code"] for row in cursor.fetchall()]
+
     def get_concept_name(self, concept_code: str) -> str:
         """获取概念名称"""
         with self._connect() as conn:

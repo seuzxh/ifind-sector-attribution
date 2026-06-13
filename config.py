@@ -161,6 +161,10 @@ PERIOD_WEIGHTS = {
     "20d": 0.20
 }
 
+# 板块强度计算时，命中 K 线数据的成分股数下限。
+# 低于此值的概念不参与排名（样本过小导致 Z-score 失真）。
+MIN_MEMBER_COUNT = 6
+
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 BATCH_SIZE = 100

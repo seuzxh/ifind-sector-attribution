@@ -42,17 +42,11 @@ def cmd_daily(args):
     pipeline = SyncPipeline()
     date = args.date or datetime.now().strftime("%Y%m%d")
 
-    # 获取全部代码（个股 + 概念指数）
-    all_codes = []
+    # 代码列表：指定文件则读取，否则 run_daily 自动反查全市场股票池
+    all_codes = None
     if args.codes and os.path.exists(args.codes):
         with open(args.codes, "r") as f:
             all_codes = [line.strip() for line in f if line.strip()]
-    else:
-        # 默认测试代码
-        all_codes = [
-            "688001.SH", "600004.SH", "000001.SZ", "300001.SZ",
-            "300033.SZ", "600030.SH", "886102.TI"
-        ]
 
     pipeline.run_daily(date, all_codes)
 

@@ -26,7 +26,8 @@ def calc_sector_strength(
     daily_df: pd.DataFrame,
     concept_code: str,
     member_codes: List[str],
-    market_return: float
+    market_return: float,
+    min_member_count: int = None
 ) -> Optional[Dict]:
     """
     计算单个概念板块的强度评分（三维）
@@ -35,10 +36,14 @@ def calc_sector_strength(
     :param concept_code: 概念板块代码
     :param member_codes: 该概念的成分股代码列表
     :param market_return: 全市场平均涨幅（基准）
+    :param min_member_count: 命中K线的成分股数下限，不足则返回 None（默认取 config.MIN_MEMBER_COUNT）
     :return: 评分字典或 None
     """
+    if min_member_count is None:
+        min_member_count = getattr(config, "MIN_MEMBER_COUNT", 0)
+
     concept_df = daily_df[daily_df["code"].isin(member_codes)].copy()
-    if concept_df.empty:
+    if len(concept_df) < min_member_count:
         return None
 
     # S1: 涨幅强度（成分股平均涨幅）
@@ -90,7 +95,8 @@ def calc_coherency(daily_df: pd.DataFrame, member_codes: List[str]) -> float:
 def calc_all_sectors_strength(
     daily_df: pd.DataFrame,
     members_map: Dict[str, List[str]],
-    weights: Dict[str, float] = None
+    weights: Dict[str, float] = None,
+    min_member_count: int = None
 ) -> pd.DataFrame:
     """
     计算所有概念板块的强度评分并排名
@@ -98,16 +104,25 @@ def calc_all_sectors_strength(
     :param daily_df: 某交易日的全部日K数据
     :param members_map: {concept_code: [stock_code, ...]}
     :param weights: 三维权重，默认取 config.SCORE_WEIGHTS
+    :param min_member_count: 命中K线的成分股数下限，默认取 config.MIN_MEMBER_COUNT
     :return: 按 rank 排序的 DataFrame
     """
     weights = weights or config.SCORE_WEIGHTS
+    if min_member_count is None:
+        min_member_count = getattr(config, "MIN_MEMBER_COUNT", 0)
     market_return = daily_df["change_ratio"].mean()
 
     results = []
+    skipped = 0
     for concept_code, member_codes in members_map.items():
-        r = calc_sector_strength(daily_df, concept_code, member_codes, market_return)
+        r = calc_sector_strength(daily_df, concept_code, member_codes, market_return, min_member_count)
         if r:
             results.append(r)
+        else:
+            skipped += 1
+
+    if skipped:
+        print(f"[CALC] 成分股命中数 < {min_member_count} 的概念已过滤: {skipped} 个")
 
     df = pd.DataFrame(results)
     if df.empty:
