@@ -244,19 +244,25 @@ class SyncPipeline:
         daily_df = pd.DataFrame(daily_data)
         returns_map = dict(zip(daily_df["code"], daily_df["change_ratio"]))
 
-        # 获取概念收益映射
+        # 获取概念收益映射：用概念成分股当日涨幅均值（复用已入库的股票K线）
+        # 不再查概念指数本身的K线（daily 同步的 codes 是股票，不含概念指数）
         concept_codes = self.db.get_all_concept_codes()
         concept_returns = {}
         for cc in concept_codes:
-            kline = self.db.get_daily_kline(cc, calc_date, calc_date)
-            if kline:
-                concept_returns[cc] = kline[0].get("change_ratio", 0)
+            members = self.db.get_concept_members(cc)  # 取最新缓存
+            if not members:
+                continue
+            member_returns = [
+                returns_map[m["stock_code"]]
+                for m in members
+                if m["stock_code"] in returns_map
+            ]
+            if member_returns:
+                concept_returns[cc] = sum(member_returns) / len(member_returns)
 
-        # 计算归因
+        # 计算归因：默认只对有概念映射的个股计算（避免对全市场无映射股票空查）
         if stock_codes is None:
-            # 默认计算全部有映射的个股
-            # 这里简化处理，实际应该从 stock_concept_map 获取
-            stock_codes = list(returns_map.keys())
+            stock_codes = self.db.get_all_mapped_stock_codes()
 
         records = []
         for stock_code in stock_codes:

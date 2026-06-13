@@ -173,6 +173,18 @@ class Database:
             """)
             return [row["stock_code"] for row in cursor.fetchall()]
 
+    def get_all_mapped_stock_codes(self) -> List[str]:
+        """
+        获取 stock_concept_map 中有概念映射的独立股票代码（取最新快照）。
+        用于归因计算，避免对全市场无映射股票空查。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("""
+                SELECT DISTINCT stock_code FROM stock_concept_map
+                WHERE map_date = (SELECT MAX(map_date) FROM stock_concept_map)
+            """)
+            return [row["stock_code"] for row in cursor.fetchall()]
+
     def get_concept_name(self, concept_code: str) -> str:
         """获取概念名称"""
         with self._connect() as conn:
