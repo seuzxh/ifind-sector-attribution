@@ -6,6 +6,7 @@
   python main.py daily --date 20260613       # 每日同步
   python main.py server                      # 启动 API 服务
   python main.py test                        # 运行接口测试
+  python main.py purge --vacuum              # 删除海外数据，仅保留 A股
 """
 
 import sys
@@ -13,9 +14,11 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import argparse
+import sqlite3
 from datetime import datetime
 
 from sync_pipeline import SyncPipeline
+from database import Database
 
 
 def cmd_init(args):
@@ -63,6 +66,24 @@ def cmd_test(args):
     run_all_tests()
 
 
+def cmd_purge(args):
+    """删除所有海外数据（非 A股），仅保留沪深北"""
+    db = Database()
+    print("[PURGE] 开始删除海外数据...")
+    deleted = db.purge_overseas_data()
+    total = 0
+    for table, n in deleted.items():
+        print(f"  {table:<22} 删除 {n} 行")
+        total += n
+    print(f"[PURGE] 完成，共删除 {total} 行")
+    if args.vacuum:
+        print("[PURGE] 执行 VACUUM 回收空间...")
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("VACUUM")
+        print("[PURGE] VACUUM 完成")
+    print("[PURGE] 提示：建议提前备份数据库，此操作不可逆")
+
+
 def main():
     parser = argparse.ArgumentParser(description="行业归因与板块强度检测系统")
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
@@ -88,6 +109,11 @@ def main():
     # test
     test_parser = subparsers.add_parser("test", help="运行接口测试")
     test_parser.set_defaults(func=cmd_test)
+
+    # purge
+    purge_parser = subparsers.add_parser("purge", help="删除海外数据（仅保留 A股）")
+    purge_parser.add_argument("--vacuum", action="store_true", help="删除后执行 VACUUM 回收空间")
+    purge_parser.set_defaults(func=cmd_purge)
 
     args = parser.parse_args()
     if args.command:

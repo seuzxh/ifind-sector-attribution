@@ -446,3 +446,40 @@ class Database:
                 result["attributions"] = json.loads(result.get("attribution_json", "[]"))
                 return result
             return None
+
+    # ========== 维护：海外数据清理 ==========
+    def purge_overseas_data(self) -> Dict[str, int]:
+        """
+        删除所有海外数据（非 A股），返回各表删除行数。
+        - 概念维度：删除前缀不在 A_SHARE_CONCEPT_PREFIXES 的概念
+        - 个股维度：删除代码后缀非 .SH/.SZ/.BJ 的个股
+        在单个事务中执行，失败回滚。
+        """
+        a_prefs = ",".join(f"'{p}'" for p in config.A_SHARE_CONCEPT_PREFIXES)
+        code_filter = "code NOT LIKE '%.SH' AND code NOT LIKE '%.SZ' AND code NOT LIKE '%.BJ'"
+        stock_filter = "stock_code NOT LIKE '%.SH' AND stock_code NOT LIKE '%.SZ' AND stock_code NOT LIKE '%.BJ'"
+
+        with self._connect() as conn:
+            try:
+                conn.execute("BEGIN")
+                deleted = {}
+                # 概念维度（按前缀）
+                for t in ["ths_concept_dict", "concept_members", "concept_strength"]:
+                    deleted[t] = conn.execute(
+                        f"DELETE FROM {t} WHERE substr(concept_code,1,3) NOT IN ({a_prefs})"
+                    ).rowcount
+                # 个股维度（按后缀）
+                deleted["stock_concept_map"] = conn.execute(
+                    f"DELETE FROM stock_concept_map WHERE {stock_filter}"
+                ).rowcount
+                deleted["daily_kline"] = conn.execute(
+                    f"DELETE FROM daily_kline WHERE {code_filter}"
+                ).rowcount
+                deleted["stock_attribution"] = conn.execute(
+                    f"DELETE FROM stock_attribution WHERE {stock_filter}"
+                ).rowcount
+                conn.commit()
+                return deleted
+            except Exception:
+                conn.rollback()
+                raise
