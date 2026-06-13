@@ -13,6 +13,9 @@ dist/
 
 # 数据库
 data/*.db
+data/*.db.bak.*
+data/*.db-journal
+data/*.db-wal
 *.db
 
 # Token 和敏感配置
