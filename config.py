@@ -148,6 +148,30 @@ ALL_CONCEPT_CODES = [
     "884307.TI","884308.TI","884309.TI","884310.TI","884311.TI","884312.TI","884313.TI","884314.TI","884315.TI"
 ]
 
+# ========== A股市场过滤 ==========
+# 同花顺概念体系同时覆盖 A股 / 美股 / 港股 / 欧股等行业指数。
+# 本系统只处理 A股（沪深北），以下工具用于在 init/daily 各环节过滤。
+
+# A股个股代码后缀（沪深北交易所）
+A_SHARE_SUFFIXES = (".SH", ".SZ", ".BJ")
+
+# 有效 A股概念前缀白名单（成分股均为A股的概念编码段）
+# 700/881/883/884/885/886 = A股行业与概念；其余 861/864/865/871/875 为海外
+A_SHARE_CONCEPT_PREFIXES = ("700", "881", "883", "884", "885", "886")
+
+
+def is_a_share_code(code: str) -> bool:
+    """判断个股代码是否为 A股（沪深北交易所）"""
+    return code is not None and code.endswith(A_SHARE_SUFFIXES)
+
+
+def is_a_share_concept(concept_code: str) -> bool:
+    """
+    判断概念代码是否为 A股相关概念（按编码前缀白名单）。
+    海外行业指数（861xxx[US]/871xxx[HK] 等）返回 False。
+    """
+    return concept_code is not None and concept_code[:3] in A_SHARE_CONCEPT_PREFIXES
+
 # ========== 计算配置 ==========
 SCORE_WEIGHTS = {
     "s1": 0.40,   # 涨幅强度

@@ -30,10 +30,15 @@ class SyncPipeline:
 
     # ========== 首次部署：初始化 ==========
     def init_concept_dict(self):
-        """步骤0: 初始化概念板块字典（永久缓存）"""
+        """步骤0: 初始化概念板块字典（永久缓存，仅 A股相关概念）"""
         print("[INIT] 开始初始化概念板块字典...")
+        # 过滤掉海外行业指数（861xxx[US]/871xxx[HK] 等），只保留 A股概念
+        a_share_codes = [c for c in config.ALL_CONCEPT_CODES if config.is_a_share_concept(c)]
+        skipped = len(config.ALL_CONCEPT_CODES) - len(a_share_codes)
+        if skipped:
+            print(f"[INIT] 过滤 {skipped} 个海外行业指数概念，仅保留 A股概念 {len(a_share_codes)} 个")
         concepts = self.client.batch_get_concept_basic_info(
-            config.ALL_CONCEPT_CODES,
+            a_share_codes,
             batch_size=100
         )
         self.db.save_concept_dict(concepts)
@@ -79,7 +84,7 @@ class SyncPipeline:
         """步骤2: 初始化概念板块成分股（永久缓存，并发拉取）"""
         member_date = member_date or datetime.now().strftime("%Y%m%d")
         print(f"[INIT] 开始初始化概念板块成分股，日期={member_date}...")
-        concept_codes = self.db.get_all_concept_codes()
+        concept_codes = self.db.get_a_share_concept_codes()
         print(f"[INIT] 共 {len(concept_codes)} 个概念")
         return self._fetch_concept_members_batch(concept_codes, member_date)
 
@@ -109,24 +114,33 @@ class SyncPipeline:
         for i in range(0, len(all_stocks), batch_size):
             batch = all_stocks[i:i + batch_size]
             mappings = self.client.batch_get_stock_concepts(batch, map_date)
-            all_mappings.update(mappings)
+            # 过滤掉海外概念，只保留 A股概念映射
             for stock_code, concepts in mappings.items():
-                for c in concepts:
-                    cc = c.get("concept_code")
-                    if cc and cc not in collected:
-                        collected[cc] = c.get("concept_name", "")
+                a_concepts = [c for c in concepts if config.is_a_share_concept(c.get("concept_code", ""))]
+                if a_concepts:
+                    all_mappings[stock_code] = a_concepts
+                    for c in a_concepts:
+                        cc = c.get("concept_code")
+                        if cc and cc not in collected:
+                            collected[cc] = c.get("concept_name", "")
             if (i // batch_size) % 5 == 0:
-                print(f"[UNIVERSE] 扫描进度 {min(i + batch_size, len(all_stocks))}/{len(all_stocks)}，已收集概念码 {len(collected)}，映射 {len(all_mappings)} 只")
-        print(f"[UNIVERSE] 扫描完成，共收集概念码 {len(collected)} 个，全市场映射 {len(all_mappings)} 只股票")
+                print(f"[UNIVERSE] 扫描进度 {min(i + batch_size, len(all_stocks))}/{len(all_stocks)}，已收集 A股概念码 {len(collected)}，映射 {len(all_mappings)} 只")
+        print(f"[UNIVERSE] 扫描完成，共收集 A股概念码 {len(collected)} 个，映射 {len(all_mappings)} 只股票")
 
         # 2.5) 把全市场映射存入 stock_concept_map（归因依赖此表）
         self.db.save_stock_concept_map(all_mappings, map_date)
         print(f"[UNIVERSE] 已更新 stock_concept_map：{len(all_mappings)} 只股票")
 
-        # 3) 筛选字典里还没有的概念码
-        existing = set(self.db.get_all_concept_codes())
-        new_codes = [cc for cc in collected if cc not in existing]
-        print(f"[UNIVERSE] 其中字典里已有的: {len(collected) - len(new_codes)}，需新增: {len(new_codes)}")
+        # 3) 筛选字典里还没有的 A股概念码（过滤海外概念 861/871 等）
+        existing = set(self.db.get_a_share_concept_codes())
+        new_codes = [
+            cc for cc in collected
+            if cc not in existing and config.is_a_share_concept(cc)
+        ]
+        skipped_overseas = len(collected) - len([c for c in collected if config.is_a_share_concept(c)])
+        if skipped_overseas:
+            print(f"[UNIVERSE] 过滤 {skipped_overseas} 个海外概念，仅补充 A股概念")
+        print(f"[UNIVERSE] 其中字典里已有的: {len(collected) - len(new_codes) - skipped_overseas}，需新增: {len(new_codes)}")
 
         if not new_codes:
             print("[UNIVERSE] 无需补充，概念字典已覆盖")
@@ -259,7 +273,7 @@ class SyncPipeline:
             return pd.DataFrame()
 
         # 获取概念代码列表
-        concept_codes = self.db.get_all_concept_codes()
+        concept_codes = self.db.get_a_share_concept_codes()
 
         # 构建成分股映射（取最新缓存，永久缓存不依赖 calc_date）
         members_map = {}
@@ -310,7 +324,7 @@ class SyncPipeline:
         # 获取概念收益映射：用概念成分股当日涨幅均值（复用已入库的股票K线）
         # 不再查概念指数本身的K线（daily 同步的 codes 是股票，不含概念指数）
         # 用 nanmean 忽略停牌等导致的 nan，避免单个 nan 传染整个均值
-        concept_codes = self.db.get_all_concept_codes()
+        concept_codes = self.db.get_a_share_concept_codes()
         concept_returns = {}
         for cc in concept_codes:
             members = self.db.get_concept_members(cc)  # 取最新缓存

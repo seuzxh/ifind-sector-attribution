@@ -160,28 +160,42 @@ class Database:
             cursor = conn.execute("SELECT concept_code FROM ths_concept_dict")
             return [row["concept_code"] for row in cursor.fetchall()]
 
+    def get_a_share_concept_codes(self) -> List[str]:
+        """
+        获取所有 A股相关概念代码（按前缀白名单过滤）。
+        排除海外行业指数（861xxx[US]/871xxx[HK] 等），用于板块强度与归因计算。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT concept_code FROM ths_concept_dict")
+            return [
+                row["concept_code"] for row in cursor.fetchall()
+                if config.is_a_share_concept(row["concept_code"])
+            ]
+
     def get_all_member_stock_codes(self) -> List[str]:
         """
-        从成分股表反查全部独立股票代码（全市场股票池）。
+        从成分股表反查全部 A 股股票代码（全市场股票池）。
         成分股表覆盖主板/创业板/科创板/北交所，作为 daily 同步 K 线的默认代码来源。
-        取最新一份快照，避免历史重复。
+        取最新一份快照，避免历史重复。只返回 A 股（沪深北），过滤海外代码。
         """
         with self._connect() as conn:
             cursor = conn.execute("""
                 SELECT DISTINCT stock_code FROM concept_members
                 WHERE member_date = (SELECT MAX(member_date) FROM concept_members)
+                  AND (stock_code LIKE '%.SH' OR stock_code LIKE '%.SZ' OR stock_code LIKE '%.BJ')
             """)
             return [row["stock_code"] for row in cursor.fetchall()]
 
     def get_all_mapped_stock_codes(self) -> List[str]:
         """
-        获取 stock_concept_map 中有概念映射的独立股票代码（取最新快照）。
-        用于归因计算，避免对全市场无映射股票空查。
+        获取 stock_concept_map 中有概念映射的 A 股独立股票代码（取最新快照）。
+        用于归因计算，避免对全市场无映射股票空查。只返回 A 股（沪深北）。
         """
         with self._connect() as conn:
             cursor = conn.execute("""
                 SELECT DISTINCT stock_code FROM stock_concept_map
                 WHERE map_date = (SELECT MAX(map_date) FROM stock_concept_map)
+                  AND (stock_code LIKE '%.SH' OR stock_code LIKE '%.SZ' OR stock_code LIKE '%.BJ')
             """)
             return [row["stock_code"] for row in cursor.fetchall()]
 
