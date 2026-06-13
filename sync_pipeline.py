@@ -17,7 +17,7 @@ from typing import List, Dict
 
 from ifind_client import IFindClient
 from database import Database
-from core_calculator import calc_all_sectors_strength, l1_stock_attribution
+from core_calculator import calc_all_sectors_strength, calc_multi_period_score, l1_stock_attribution
 import config
 
 
@@ -249,16 +249,14 @@ class SyncPipeline:
 
     # ========== 每日收盘后：计算 ==========
     def calc_daily_strength(self, calc_date: str):
-        """步骤4: 计算板块强度评分"""
+        """步骤4: 计算板块强度评分（多周期融合）"""
         print(f"[CALC] 开始计算板块强度评分，日期={calc_date}...")
 
-        # 获取当日全部日K数据
+        # 获取当日全部日K数据（融合函数内部还会按需取多日数据）
         daily_data = self.db.get_daily_kline_by_date(calc_date)
         if not daily_data:
             print("[WARN] 当日无日K数据")
             return pd.DataFrame()
-
-        daily_df = pd.DataFrame(daily_data)
 
         # 获取概念代码列表
         concept_codes = self.db.get_all_concept_codes()
@@ -270,8 +268,8 @@ class SyncPipeline:
             if members:
                 members_map[cc] = [m["stock_code"] for m in members]
 
-        # 计算强度评分
-        result_df = calc_all_sectors_strength(daily_df, members_map)
+        # 多周期融合评分（1d/5d/20d）；5d/20d 依赖历史K线，缺失则退化为 1d
+        result_df = calc_multi_period_score(self.db, calc_date, members_map)
         if result_df.empty:
             print("[WARN] 板块强度计算结果为空")
             return result_df
@@ -285,13 +283,15 @@ class SyncPipeline:
                 "s1_return": row.get("s1_return"),
                 "s2_breadth": row.get("s2_breadth"),
                 "s4_relative": row.get("s4_relative"),
-                "score_1d": row.get("score"),
-                "score_final": row.get("score"),
+                "score_1d": row.get("score_1d"),
+                "score_5d": row.get("score_5d", 0.0),
+                "score_20d": row.get("score_20d", 0.0),
+                "score_final": row.get("score_final"),
                 "rank_1d": row.get("rank_1d")
             })
 
         self.db.save_concept_strength(records)
-        print(f"[CALC] 已保存 {len(records)} 个板块的强度评分")
+        print(f"[CALC] 已保存 {len(records)} 个板块的多周期融合评分")
         return result_df
 
     def calc_daily_attribution(self, calc_date: str, stock_codes: List[str] = None):

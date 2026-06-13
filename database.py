@@ -328,6 +328,19 @@ class Database:
             """, (trade_date,))
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_daily_kline_by_date_range(self, start_date: str, end_date: str) -> List[Dict]:
+        """
+        获取某日期区间内全部代码的日K线（用于多周期累计涨幅计算）。
+        日期格式不限（YYYYMMDD 或 YYYY-MM-DD 均可，按字符串比较）。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("""
+                SELECT * FROM daily_kline
+                WHERE trade_date >= ? AND trade_date <= ?
+                ORDER BY code, trade_date
+            """, (start_date, end_date))
+            return [dict(row) for row in cursor.fetchall()]
+
     # ========== 1min K线操作 ==========
     def save_min1_kline(self, records: List[Dict]):
         """保存1min K线数据"""

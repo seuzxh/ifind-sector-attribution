@@ -154,56 +154,88 @@ def calc_multi_period_score(
 ) -> pd.DataFrame:
     """
     多周期评分融合（1日 + 5日 + 20日）
-    
+
+    1d 用当日涨幅；5d/20d 用该周期内的累计涨幅（期末 close / 期初 preClose - 1）。
+    各周期分别算 Z-score 加权板块强度，再按 period_weights 融合。
+
     :param db: Database 实例
-    :param calc_date: 计算日期
+    :param calc_date: 计算日期，格式 YYYYMMDD 或 YYYY-MM-DD
     :param members_map: 成分股映射
     :param period_weights: 周期权重，默认 config.PERIOD_WEIGHTS
-    :return: 融合评分后的 DataFrame
+    :return: 融合评分后的 DataFrame（含 score_1d/score_5d/score_20d/score_final）
     """
     period_weights = period_weights or config.PERIOD_WEIGHTS
-    date_obj = datetime.strptime(calc_date, "%Y-%m-%d")
+    # 兼容两种日期格式
+    date_str = calc_date.replace("-", "")
+    date_obj = datetime.strptime(date_str, "%Y%m%d")
 
-    # 获取各周期的日K数据
+    def _period_return_df(days: int) -> pd.DataFrame:
+        """
+        构造一个"伪单日"DataFrame，change_ratio 为最近 N 个交易日的累计涨幅。
+        累计涨幅 = (期末 close - 期初 preClose) / 期初 preClose * 100
+        期初取窗口起点（往前 days*2 自然日以覆盖 days 个交易日）的首个 preClose。
+        """
+        start = (date_obj - timedelta(days=days * 2)).strftime("%Y%m%d")
+        # 取窗口内全部 K 线
+        rows = db.get_daily_kline_by_date_range(start, date_str)
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        if df.empty:
+            return df
+        # 每只股票：期初 preClose（窗口内最早一条）、期末 close（calc_date 当天）
+        df = df.sort_values(["code", "trade_date"])
+        first = df.groupby("code").first().reset_index()[["code", "pre_close"]]
+        last = df[df["trade_date"] == date_str][["code", "close"]]
+        if last.empty:
+            return pd.DataFrame()
+        merged = first.merge(last, on="code", how="inner")
+        # 累计涨幅 %，防除零
+        merged["change_ratio"] = merged.apply(
+            lambda r: (r["close"] / r["pre_close"] - 1) * 100
+            if r["pre_close"] and r["pre_close"] != 0 else 0.0,
+            axis=1
+        )
+        merged["trade_date"] = date_str
+        return merged[["code", "trade_date", "change_ratio", "close"]]
+
+    # 各周期数据：1d 直接用当日，5d/20d 用累计涨幅
     period_data = {}
-    for period_name, days in [("1d", 1), ("5d", 5), ("20d", 20)]:
-        start = (date_obj - timedelta(days=days * 2)).strftime("%Y-%m-%d")
-        # 从数据库获取数据
-        df = pd.DataFrame(db.get_daily_kline_by_date(calc_date))
-        if not df.empty:
-            period_data[period_name] = df
+    period_data["1d"] = pd.DataFrame(db.get_daily_kline_by_date(date_str))
+    period_data["5d"] = _period_return_df(5)
+    period_data["20d"] = _period_return_df(20)
 
-    # 计算各周期评分
+    # 计算各周期板块强度
     scores = {}
     for period_name, df in period_data.items():
-        scores[period_name] = calc_all_sectors_strength(df, members_map)
+        if not df.empty:
+            scores[period_name] = calc_all_sectors_strength(df, members_map)
 
     # 以 1d 为基准合并
     base = scores.get("1d", pd.DataFrame()).copy()
     if base.empty:
         return base
+    base = base.rename(columns={"score": "score_1d"})
 
     for period_name in ["5d", "20d"]:
+        col = f"score_{period_name}"
         if period_name in scores and not scores[period_name].empty:
             merged = scores[period_name][["concept_code", "score"]].rename(
-                columns={"score": f"score_{period_name}"}
+                columns={"score": col}
             )
             base = base.merge(merged, on="concept_code", how="left")
-
-    # 填充缺失值
-    for col in ["score_5d", "score_20d"]:
-        if col not in base.columns:
+        else:
             base[col] = 0.0
         base[col] = base[col].fillna(0.0)
 
     # 融合评分
     base["score_final"] = (
-        period_weights["1d"] * base["score"] +
+        period_weights["1d"] * base["score_1d"] +
         period_weights["5d"] * base["score_5d"] +
         period_weights["20d"] * base["score_20d"]
     )
 
-    # 重新排名
+    # 重新排名（基于融合分）
     base["rank_1d"] = base["score_final"].rank(ascending=False, method="min").astype(int)
 
     return base.sort_values("rank_1d")
