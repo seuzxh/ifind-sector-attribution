@@ -32,3 +32,7 @@ config_local.py
 # OS
 .DS_Store
 Thumbs.db
+
+# data 目录运行时产物（数据库结构快照等，需时重新生成）
+data/*.json
+data/*.txt
