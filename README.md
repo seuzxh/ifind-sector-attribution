@@ -38,6 +38,8 @@ ifind_sector_attribution/
 ├── requirements.txt       # 依赖
 ├── templates/
 │   └── index.html         # 可视化看板单页（plotly.js CDN）
+├── ifind-monitor.service  # systemd 服务配置（开机自启+自动重启）
+├── install_service.sh     # 一键安装 systemd 服务脚本
 ├── data/                  # 数据库文件（已 gitignore）
 └── tests/
     └── test_api.py        # 接口测试脚本
@@ -98,6 +100,18 @@ python main.py daily --date 20260612 --codes my.txt  # 指定股票列表
 > **日期须为交易日**：传入非交易日（如周末）会因当日无数据而返回空结果。
 
 ### 6. 启动服务（API + 可视化看板）
+
+**方式A：systemd 服务（推荐，生产用）**
+
+支持开机自启、崩溃自动重启、外网访问：
+
+```bash
+sudo bash install_service.sh    # 一键安装并启动
+```
+
+启动后访问 `http://<服务器公网IP>:8000`。详见 [部署手册](docs/DEPLOYMENT.md)。
+
+**方式B：手动前台启动（调试用）**
 
 ```bash
 python main.py server --host 0.0.0.0 --port 8000
@@ -209,5 +223,6 @@ SQLite 数据库（`data/sector_attribution.db`）包含 7 张表：
 
 ## 更多文档
 
-- [架构设计](docs/ARCHITECTURE.md) — 双概念编码体系、永久缓存语义、多周期融合算法、A股过滤策略
+- [架构设计](docs/ARCHITECTURE.md) — 双概念编码体系、永久缓存语义、多周期融合算法、A股过滤策略、实时监控、盘前筛选
+- [部署手册](docs/DEPLOYMENT.md) — systemd 服务、外网访问、运维命令、故障排查
 - [更新日志](docs/CHANGELOG.md) — 版本改动记录

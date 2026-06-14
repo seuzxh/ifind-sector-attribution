@@ -12,6 +12,10 @@
   - `realtime_engine.py` watchlist 模式：实时拉取范围从全市场 5530 只缩减到 ~290 只，响应 2 分钟 → 30 秒
   - 三入口：`main.py prescreen` 命令、页面"盘前筛选"按钮、`POST /api/prescreen`
   - 前端新增"盘前筛选"模式（展示 watchlist）+ 实时模式 watchlist 聚焦开关
+- **systemd 部署支持**：开机自启 + 崩溃自动重启 + 外网访问
+  - `ifind-monitor.service`：绑 0.0.0.0:8000，Restart=always，KillSignal=SIGINT
+  - `install_service.sh`：一键安装脚本（检查环境→安装→启动→验证）
+  - `docs/DEPLOYMENT.md`：部署运维手册（外网访问、安全组、crontab、故障排查、升级回滚）
 - **盘中实时监控可视化网站**：FastAPI + 单页 HTML + plotly.js，支持实时/历史/watchlist 三模式
   - `stock_scorer.py`：成分股四维综合评分（涨幅 0.4 / 涨速 0.2 / 实体涨幅 0.2 / 涨停 0.2），涨停判定按板块（主板 9.8% / 创业科创 19.5% / 北交 29%）
   - `realtime_engine.py`：实时引擎，接口4 拉全市场 1min K → 构造 realtime_df → 算板块强度 + 成分股排名，带 10 秒内存缓存
