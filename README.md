@@ -103,13 +103,13 @@ python main.py daily --date 20260612 --codes my.txt  # 指定股票列表
 
 **方式A：systemd 服务（推荐，生产用）**
 
-支持开机自启、崩溃自动重启、外网访问：
+支持开机自启、崩溃自动重启，通过 SSH 隧道访问（服务绑 127.0.0.1，安全）：
 
 ```bash
 sudo bash install_service.sh    # 一键安装并启动
 ```
 
-启动后访问 `http://<服务器公网IP>:8000`。详见 [部署手册](docs/DEPLOYMENT.md)。
+启动后通过 SSH 隧道访问：本地执行 `ssh -L 8000:127.0.0.1:8000 <用户>@<服务器>`，浏览器开 `http://127.0.0.1:8000`。详见 [部署手册](docs/DEPLOYMENT.md)。
 
 **方式B：手动前台启动（调试用）**
 

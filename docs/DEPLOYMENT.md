@@ -1,12 +1,12 @@
 # 部署运维手册
 
-本文件记录 iFinD 板块强度监控系统的部署、外网访问、日常运维与故障排查。
+本文件记录 iFinD 板块强度监控系统的部署、访问方式、日常运维与故障排查。
 
 ## 目录
 
 - [1. 环境要求](#1-环境要求)
 - [2. systemd 服务部署](#2-systemd-服务部署)
-- [3. 外网访问配置](#3-外网访问配置)
+- [3. 访问方式：SSH 隧道](#3-访问方式ssh-隧道)
 - [4. 日常运维](#4-日常运维)
 - [5. 故障排查](#5-故障排查)
 - [6. 升级与回滚](#6-升级与回滚)
@@ -24,6 +24,8 @@
 | 数据库 | `data/sector_attribution.db`（SQLite，首次 init 自动创建） |
 | 操作系统 | Linux（systemd） |
 | 权限 | root（因 conda 环境在 /root 下） |
+
+服务器在内网，服务绑 `127.0.0.1`，**通过 SSH 隧道访问**（不直接暴露公网）。
 
 ---
 
@@ -46,7 +48,7 @@ sudo bash install_service.sh
 | `User` | root | 运行用户（conda 在 /root 下） |
 | `WorkingDirectory` | 项目目录 | 让 `config_local.py` / `data/` 相对路径生效 |
 | `Environment=PYTHONPATH` | 项目目录 | 确保 import 正确 |
-| `ExecStart` | python main.py server --host 0.0.0.0 --port 8000 | 绑全部网卡，外网可达 |
+| `ExecStart` | python main.py server **--host 127.0.0.1** --port 8000 | 仅绑本地，通过 SSH 隧道访问 |
 | `Restart` | always | 崩溃自动重启 |
 | `RestartSec` | 5 | 崩溃后 5 秒重启 |
 | `KillSignal` | SIGINT | 优雅停止（uvicorn 收到 SIGINT 完成清理） |
@@ -72,76 +74,89 @@ sudo systemctl start ifind-monitor
 
 ---
 
-## 3. 外网访问配置
+## 3. 访问方式：SSH 隧道
 
-### 网络架构
+服务绑 `127.0.0.1:8000`，外部无法直接访问。通过 SSH 端口转发把服务映射到你本地机器。
 
-本服务器是云主机，公网 IP 通过 NAT 映射到内网：
+### 基本用法
 
-```
-外网用户 → 公网IP:8000 → [云安全组] → NAT → 内网 172.31.15.54:8000 → 服务进程
-```
-
-### 访问地址
-
-| 访问方式 | 地址 |
-|---|---|
-| 本地 | `http://127.0.0.1:8000` |
-| 外网 | `http://<服务器公网IP>:8000` |
-
-查询公网 IP：
+在你的**本地电脑**（笔记本/工作站）执行：
 
 ```bash
-curl ifconfig.me
+ssh -L 8000:127.0.0.1:8000 <用户名>@<服务器入口地址>
 ```
 
-### ⚠ 安全组放行（最常见的外网访问问题）
+- `<用户名>`：服务器登录用户（如 root）
+- `<服务器入口地址>`：你平时 SSH 连服务器用的地址（IP 或域名，可能是跳板机）
 
-服务绑 `0.0.0.0` + 本机防火墙（ufw）已关闭，但**云服务商的安全组**是独立的一层防火墙。若外网无法访问，**99% 是安全组未放行**。
+然后本地浏览器打开：**`http://127.0.0.1:8000`**（这是你本地机器的地址，SSH 会自动转发到服务器）
 
-在云控制台（阿里云/腾讯云/AWS/华为云等）的**安全组规则**里添加：
+### 后台隧道（不占用终端）
 
-| 方向 | 协议 | 端口 | 来源 |
-|---|---|---|---|
-| 入站 | TCP | 8000 | 0.0.0.0/0（或限制特定IP） |
-
-修改后立即生效，无需重启服务。
-
-### 更换端口
-
-若 8000 被占用或想换端口：
-
-1. 编辑 `/etc/systemd/system/ifind-monitor.service`，把 `--port 8000` 改为目标端口
-2. `sudo systemctl daemon-reload && sudo systemctl restart ifind-monitor`
-3. 云安全组同步放行新端口
-
-### HTTPS（可选，生产建议）
-
-当前是 HTTP。若需 HTTPS，建议加 nginx 反向代理 + Let's Encrypt 证书：
+加 `-N -f` 让隧道后台运行：
 
 ```bash
-sudo apt install nginx certbot python3-certbot-nginx
-# 配置 nginx 反代到 127.0.0.1:8000，然后 certbot 自动签发证书
+ssh -N -f -L 8000:127.0.0.1:8000 <用户名>@<服务器入口地址>
 ```
 
-nginx 配置示例（`/etc/nginx/sites-available/ifind`）：
+- `-N`：不执行远程命令，仅做端口转发
+- `-f`：认证后转入后台
 
-```nginx
-server {
-    server_name your-domain.com;
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
+关闭后台隧道：
+
+```bash
+# Linux/Mac：查找并杀掉隧道进程
+ps aux | grep "ssh -N -f -L 8000" | grep -v grep
+kill <PID>
+
+# 或用 pkill
+pkill -f "ssh -N -f -L 8000"
+```
+
+### 通过跳板机访问（两层转发）
+
+如果服务器在跳板机后面：
+
+```bash
+# 本地 → 跳板机 → 目标服务器
+ssh -L 8000:127.0.0.1:8000 -J <跳板机用户>@<跳板机地址> <目标用户>@<目标服务器内网IP>
+```
+
+### SSH config 配置（推荐，简化日常使用）
+
+在本地 `~/.ssh/config` 添加：
+
+```
+Host ifind-monitor
+    HostName <服务器入口地址>
+    User <用户名>
+    LocalForward 8000 127.0.0.1:8000
+    # 若经过跳板机，加：ProxyJump <跳板机>
+```
+
+之后只需 `ssh ifind-monitor`，隧道自动建立，浏览器开 `http://127.0.0.1:8000`。
+
+### Windows 用户
+
+- **PowerShell/cmd**：同样用 `ssh -L 8000:127.0.0.1:8000 ...`（Win10+ 自带 OpenSSH）
+- **PuTTY**：Connection → SSH → Tunnels，Source port 填 `8000`，Destination 填 `127.0.0.1:8000`，点 Add 然后 Open
+- **MobaXterm**：Session → SSH → Tunneling，新建端口转发
+
+### 多人同时访问
+
+SSH 隧道是每人在自己电脑上各建一条。若需多人共享一条隧道，可在本地把 `-L` 改为绑全部网卡：
+
+```bash
+# 允许同内网其它人通过你的电脑访问
+ssh -L 0.0.0.0:8000:127.0.0.1:8000 <用户名>@<服务器>
+# 同事访问 http://<你的本地IP>:8000
 ```
 
 ---
 
 ## 4. 日常运维
 
-### 常用命令
+### 常用命令（在服务器上执行）
 
 ```bash
 # 状态
@@ -152,7 +167,7 @@ sudo systemctl start ifind-monitor
 sudo systemctl stop ifind-monitor
 sudo systemctl restart ifind-monitor
 
-# 开机自启 管理
+# 开机自启管理
 sudo systemctl enable ifind-monitor     # 启用
 sudo systemctl disable ifind-monitor    # 取消
 
@@ -214,26 +229,35 @@ journalctl -u ifind-monitor -e | tail -30
 # 2. 常见原因
 #    - conda 环境路径变了 → 检查 ExecStart 的 python 路径
 #    - config_local.py 缺失 → 服务无法访问 iFinD（但能启动）
-#    - 端口被占用 → ss -tlnp | grep 8000，换端口
+#    - 端口被占用 → ss -tlnp | grep 8000
 #    - data/ 目录权限 → chmod 或 chown
 ```
 
-### 外网无法访问
+### SSH 隧道连不上
 
 ```bash
-# 1. 确认服务在跑
-curl http://127.0.0.1:8000/    # 本地能通 = 服务正常
+# 1. 确认服务在跑且监听 127.0.0.1
+sudo ss -tlnp | grep 8000
+# 应显示 127.0.0.1:8000
 
-# 2. 确认端口监听 0.0.0.0（不是 127.0.0.1）
-ss -tlnp | grep 8000
-# 应显示 0.0.0.0:8000，若显示 127.0.0.1:8000 则外网不通
+# 2. 在服务器本地测试
+curl http://127.0.0.1:8000/    # 应返回 200
 
-# 3. 检查本机防火墙
-sudo ufw status
-sudo iptables -L INPUT -n | grep 8000
+# 3. SSH 隧道错误排查
+#    "bind: Address already in use" → 本地 8000 被占用，换端口
+#    ssh -L 8888:127.0.0.1:8000 ...  # 本地用 8888 访问
+#    "channel_setup_fwd_listener: cannot listen to port" → 同上
+```
 
-# 4. 检查云安全组（最常见原因）
-#    → 云控制台确认 TCP 8000 入站已放行
+### 隧道连上但页面打不开
+
+```bash
+# 1. 确认本地转发生效（本地电脑执行）
+curl http://127.0.0.1:8000/api/dates
+# 应返回 JSON 日期列表
+
+# 2. 浏览器缓存 → 强制刷新 Ctrl+Shift+R
+# 3. plotly.js CDN 被墙 → 换 CDN 或本地 vendored（见下）
 ```
 
 ### iFinD API 调用失败（401/403）
