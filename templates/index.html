@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>板块强度监控</title>
-<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -59,6 +58,39 @@
   .badge-red { background: #fee2e2; color: #dc2626; }
   .badge-green { background: #d1fae5; color: #059669; }
   .panel h2 .hint { font-size: 11px; color: #9ca3af; font-weight: normal; margin-left: auto; }
+
+  /* ===== 板块排行表 ===== */
+  .rank-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .rank-table th, .rank-table td {
+    padding: 8px 10px; text-align: right; border-bottom: 1px solid #f3f4f6; white-space: nowrap;
+  }
+  .rank-table th {
+    background: #f9fafb; color: #6b7280; font-weight: 500; cursor: pointer; user-select: none;
+    font-size: 12px; position: sticky; top: 0;
+  }
+  .rank-table th:hover { background: #f3f4f6; }
+  .rank-table th.sorted::after { content: attr(data-order); color: #3b82f6; margin-left: 3px; }
+  .rank-table th.left, .rank-table td.left { text-align: left; }
+  .rank-table th.center, .rank-table td.center { text-align: center; }
+  .rank-table tbody tr { cursor: pointer; transition: background .12s; }
+  .rank-table tbody tr:hover { background: #f9fafb; }
+  .rank-table tbody tr.active { background: #eff6ff; }
+  .rank-table tbody tr.active td { color: #1e40af; }
+  .rank-table .rank-num {
+    display: inline-block; width: 22px; height: 22px; line-height: 22px;
+    text-align: center; border-radius: 50%; font-size: 11px; font-weight: 600;
+  }
+  .rank-table .rank-num.r1 { background: #dc2626; color: #fff; }
+  .rank-table .rank-num.r2 { background: #ea580c; color: #fff; }
+  .rank-table .rank-num.r3 { background: #d97706; color: #fff; }
+  .rank-table .rank-num.rN { background: #f3f4f6; color: #6b7280; }
+  .rank-table .concept-name { font-weight: 500; color: #111827; }
+  .rank-table .up { color: #ef4444; }
+  .rank-table .down { color: #10b981; }
+  .rank-table .score-bar {
+    display: inline-block; min-width: 30px; padding: 2px 8px; border-radius: 10px;
+    font-size: 12px; font-weight: 600; color: #fff;
+  }
 
   /* ===== 成分股区 ===== */
   .members-section {
@@ -181,15 +213,15 @@
 <!-- 统计栏 -->
 <div class="stats-bar" id="statsBar"></div>
 
-<!-- 图表面板 -->
+<!-- 板块排行表格 -->
 <div class="panels" id="panels">
   <div class="panel">
-    <h2><span class="badge badge-red">强势</span> Top 10 板块 <span class="hint">悬停看详情 · 点击高亮成分股</span></h2>
-    <div id="topChart" style="height:380px;"></div>
+    <h2><span class="badge badge-red">强势</span> Top 10 板块 <span class="hint">点击行高亮下方成分股 · 表头可排序</span></h2>
+    <div id="topTable"></div>
   </div>
   <div class="panel">
-    <h2><span class="badge badge-green">弱势</span> Bottom 10 板块 <span class="hint">悬停看详情</span></h2>
-    <div id="bottomChart" style="height:380px;"></div>
+    <h2><span class="badge badge-green">弱势</span> Bottom 10 板块 <span class="hint">点击行高亮下方成分股 · 表头可排序</span></h2>
+    <div id="bottomTable"></div>
   </div>
 </div>
 
@@ -306,13 +338,14 @@ async function refresh() {
   if (payload.error) {
     setStatus('⚠ ' + payload.error, 'warn');
     document.getElementById('statsBar').innerHTML = '';
-    Plotly.purge('topChart'); Plotly.purge('bottomChart');
+    document.getElementById('topTable').innerHTML = '';
+    document.getElementById('bottomTable').innerHTML = '';
     document.getElementById('membersGrid').innerHTML = '<div class="empty-msg">' + payload.error + '</div>';
     return;
   }
   lastPayload = payload;
   renderStats(payload);
-  renderCharts(payload);
+  renderRankTables(payload);
   renderMembers();
   const ts = payload.snapshot_time || payload.date || '';
   const wlTag = payload.watchlist_mode ? ' · watchlist' : '';
@@ -338,39 +371,101 @@ function renderStats(payload) {
   `;
 }
 
-// ========== 渲染：图表（中文标签 + tooltip + 真实比例）==========
-function renderCharts(payload) {
-  const top = payload.top_sectors || [];
-  const bottom = payload.bottom_sectors || [];
-  const layoutBase = {
-    margin: {l: 120, r: 20, t: 10, b: 30},
-    yaxis: {autorange: 'reversed', tickfont: {size: 11}},
-    xaxis: {tickfont: {size: 10}, title: '强度评分（Z-score，正值=强于市场均值）'},
-    height: 380, hovermode: 'closest',
-  };
-  // tooltip 说明各指标含义
-  function makeTrace(sectors, name) {
-    return {
-      y: sectors.map(s => s.concept_name),
-      x: sectors.map(s => s.score),
-      type: 'bar', orientation: 'h',
-      marker: {color: sectors.map(s => s.score >= 0 ? '#ef4444' : '#10b981')},
-      customdata: sectors.map(s => s.concept_code),
-      hovertemplate: sectors.map(s =>
-        `<b>${s.concept_name}</b><br>` +
-        `强度评分: ${fmt(s.score)}<br>` +
-        `涨幅强度(S1): ${fmtPct(s.s1_return)}（成分股平均涨幅）<br>` +
-        `上涨广度(S2): ${(s.s2_breadth*100).toFixed(0)}%（成分股上涨比例）<extra></extra>`
-      ).join('|').split('|'),
-      hoverlabel: {align: 'left'},
-    };
+// ========== 渲染：板块排行表格 ==========
+function renderRankTables(payload) {
+  renderRankTable('topTable', payload.top_sectors || [], 'top');
+  renderRankTable('bottomTable', payload.bottom_sectors || [], 'bottom');
+}
+
+function renderRankTable(containerId, sectors, tab) {
+  const el = document.getElementById(containerId);
+  if (sectors.length === 0) { el.innerHTML = '<div class="empty-msg">无数据</div>'; return; }
+
+  // 评分色阶：根据 score 正负 + 绝对值给颜色深度
+  function scoreClass(s) {
+    if (tab === 'top') return s >= 2 ? '#dc2626' : (s >= 1 ? '#ef4444' : '#f87171');
+    return s <= -2 ? '#059669' : (s <= -1 ? '#10b981' : '#34d399');
   }
-  Plotly.newPlot('topChart', [makeTrace(top)], layoutBase, {displayModeBar: false, responsive: true});
-  document.getElementById('topChart').on('plotly_click', function(d) {
-    const code = d.points[0].customdata;
-    highlightSector(code);
+  function rankBadge(i) {
+    const cls = i === 0 ? 'r1' : (i === 1 ? 'r2' : (i === 2 ? 'r3' : 'rN'));
+    return `<span class="rank-num ${cls}">${i+1}</span>`;
+  }
+
+  const rows = sectors.map((s, i) => {
+    const s1Cls = s.s1_return > 0 ? 'up' : (s.s1_return < 0 ? 'down' : '');
+    return `<tr data-code="${s.concept_code}" onclick="onSectorRowClick('${s.concept_code}', this)">
+      <td class="center">${rankBadge(i)}</td>
+      <td class="left concept-name">${s.concept_name}</td>
+      <td class="${s1Cls}" data-v="${s.s1_return}">${fmt(s.s1_return)}%</td>
+      <td data-v="${s.s2_breadth}">${(s.s2_breadth*100).toFixed(0)}%</td>
+      <td data-v="${s.member_count||0}">${s.member_count||'-'}</td>
+      <td><span class="score-bar" style="background:${scoreClass(s.score)};">${fmt(s.score)}</span></td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<table class="rank-table">
+    <thead><tr>
+      <th class="center">#</th>
+      <th class="left">板块名称</th>
+      <th class="sorted" data-order="↓" data-k="s1" onclick="sortRankTable(this)">涨幅↑<br><span style="font-weight:normal;color:#9ca3af;">S1成分均值</span></th>
+      <th data-k="s2" onclick="sortRankTable(this)">广度<br><span style="font-weight:normal;color:#9ca3af;">S2上涨比</span></th>
+      <th data-k="cnt" onclick="sortRankTable(this)">成分<br><span style="font-weight:normal;color:#9ca3af;">股数</span></th>
+      <th class="sorted" data-order="↓" data-k="score" onclick="sortRankTable(this)">评分<br><span style="font-weight:normal;color:#9ca3af;">综合分</span></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// 表头排序（排行表）
+function sortRankTable(th) {
+  const table = th.closest('table');
+  const tbody = table.querySelector('tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  if (rows.length === 0) return;
+  const key = th.dataset.k;
+  const newOrder = th.dataset.order === '↓' ? '↑' : '↓';
+  th.dataset.order = newOrder;
+  table.querySelectorAll('th').forEach(t => { if (t !== th) { t.classList.remove('sorted'); t.dataset.order=''; }});
+  th.classList.add('sorted');
+  const desc = newOrder === '↓';
+  rows.sort((a, b) => {
+    let av, bv;
+    if (key === 's1') { av = parseFloat(a.children[2].dataset.v); bv = parseFloat(b.children[2].dataset.v); }
+    else if (key === 's2') { av = parseFloat(a.children[3].dataset.v); bv = parseFloat(b.children[3].dataset.v); }
+    else if (key === 'cnt') { av = parseInt(a.children[4].dataset.v); bv = parseInt(b.children[4].dataset.v); }
+    else { // score
+      av = parseFloat(a.querySelector('.score-bar').textContent);
+      bv = parseFloat(b.querySelector('.score-bar').textContent);
+    }
+    if (isNaN(av)) av = 0;
+    if (isNaN(bv)) bv = 0;
+    return desc ? bv - av : av - bv;
   });
-  Plotly.newPlot('bottomChart', [makeTrace(bottom)], layoutBase, {displayModeBar: false, responsive: true});
+  // 重新编号
+  rows.forEach((r, i) => {
+    const badge = r.querySelector('.rank-num');
+    if (badge) {
+      badge.textContent = i + 1;
+      badge.className = 'rank-num ' + (i === 0 ? 'r1' : (i === 1 ? 'r2' : (i === 2 ? 'r3' : 'rN')));
+    }
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+// 点击行高亮成分股
+function onSectorRowClick(code, tr) {
+  // 切换成分股 tab 到对应面板，并滚动高亮
+  const tab = tr.closest('.panel').querySelector('h2 .badge').classList.contains('badge-red') ? 'top' : 'bottom';
+  if (membersTab !== tab) {
+    membersTab = tab;
+    document.querySelectorAll('.members-tabs button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.members-tabs button')[tab === 'top' ? 0 : 1].classList.add('active');
+    renderMembers();
+  }
+  // 高亮该行
+  document.querySelectorAll('.rank-table tbody tr').forEach(r => r.classList.remove('active'));
+  tr.classList.add('active');
+  highlightSector(code);
 }
 
 // ========== 渲染：成分股（带表头排序）==========
