@@ -158,30 +158,39 @@ def get_concept_members(concept_code: str, date: str = None):
 @app.get("/api/realtime/dashboard")
 def get_realtime_dashboard(
     trade_date: str = None,
-    start_time: str = "09:30",
-    end_time: str = None,
+    snapshot_time: str = None,
     top_n: int = 10,
-    watchlist_mode: bool = False,
+    watchlist_mode: bool = True,
     watchlist_date: str = None,
 ):
     """
-    实时看板：盘中实时拉取 1min K 线，算板块强度 + 成分股排名。
-    带内存缓存（TTL 10秒），避免高频请求打爆 iFinD。
+    实时看板（分时数据版）：拉取分时序列，按 snapshot_time 切片算板块强度 + 成分股排名。
 
-    :param trade_date: 交易日，默认今天
-    :param start_time: 起始时间 HH:MM，默认 09:30
-    :param end_time: 结束时间 HH:MM，默认当前时刻
-    :param top_n: 返回前 N 个板块
-    :param watchlist_mode: 是否聚焦 watchlist（盘前筛选出的板块+成分股）
-    :param watchlist_date: watchlist 日期
+    分时序列在引擎内按 (日期, 模式) 缓存，TTL 内不重拉网络（watchlist ~1.5s 拉取，TTL 5s）。
+    snapshot_time 切片纯内存（毫秒级），用于时间条拖动回看历史时刻。
+
+    :param trade_date: 交易日 YYYYMMDD，默认今天（当日实时）；传历史日期则拉该日全天分时
+    :param snapshot_time: 截止时刻 HH:MM（如 "09:50"），None 或 "latest" = 最新时刻
+    :param top_n: 返回前/后 N 个板块
+    :param watchlist_mode: 聚焦 watchlist（默认 True，约 279 只股票 1.5s 拉取）
+    :param watchlist_date: watchlist 日期，默认最近一次
     """
     from realtime_engine import get_realtime_dashboard as _fetch
     return _fetch(
-        trade_date, start_time, end_time,
-        use_cache=True,
+        trade_date=trade_date,
+        snapshot_time=snapshot_time,
+        top_n=top_n,
         watchlist_mode=watchlist_mode,
         watchlist_date=watchlist_date,
     )
+
+
+@app.post("/api/realtime/clear_cache")
+def clear_realtime_cache():
+    """清空分时序列缓存（切日/调试用）。"""
+    from realtime_engine import clear_cache
+    clear_cache()
+    return {"ok": True}
 
 
 @app.post("/api/prescreen")

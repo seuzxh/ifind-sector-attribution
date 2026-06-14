@@ -15,6 +15,10 @@ BASE_URL_FT = "https://ft.10jqka.com.cn/api/v1"
 ACCESS_TOKEN = os.environ.get("IFIND_ACCESS_TOKEN", "")
 REFRESH_TOKEN = os.environ.get("IFIND_REFRESH_TOKEN", "")
 
+# 中焯行情 API 地址（kline-fetcher 分时数据源）。
+# 默认从环境变量读，config_local.py（已 gitignore）的 * 导入会覆盖此默认值。
+KLINE_API_BASE_URL = os.environ.get("KLINE_API_BASE_URL", "")
+
 # 本地配置文件覆盖（config_local.py 已加入 .gitignore）
 try:
     from config_local import *
@@ -181,6 +185,14 @@ PRESCREEN_TOP_STOCK = 30       # 每个板块选出的成分股数
 PRESCREEN_MIN_MEMBER = 6       # 板块最少成分股数（过滤迷你概念）
 # 服务端定时自动筛选（留空则不启用，格式 "HH:MM" 如 "09:20"）
 PRESCREEN_AUTO_TIME = ""
+
+# ========== 分时数据配置（kline-fetcher / 中焯行情 API） ==========
+# KLINE_API_BASE_URL 在文件顶部定义（走环境变量 + config_local.py 覆盖，敏感不入库）。
+# 分时数据多线程拉取并发数（实测 32 并发即可打满服务端，64 无增益）
+INTRADAY_WORKERS = 32
+# 分时序列内存缓存 TTL（秒）。
+# watchlist 模式拉取约 1.5s，TTL 设短一些让 3s 轮询大部分走缓存。
+INTRADAY_CACHE_TTL = 5
 
 
 # ========== 计算配置 ==========

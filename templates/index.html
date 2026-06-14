@@ -19,7 +19,7 @@
   .header h1 { font-size: 18px; color: #111827; margin-right: 4px; white-space: nowrap; }
   .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .controls label { font-size: 12px; color: #6b7280; }
-  select, button, input[type=time] {
+  select, button, input[type=time], input[type=date] {
     padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px;
     font-size: 13px; background: #fff; cursor: pointer; transition: all .15s;
   }
@@ -31,6 +31,39 @@
   .status { margin-left: auto; font-size: 12px; color: #9ca3af; white-space: nowrap; }
   .status .live { color: #10b981; font-weight: 600; }
   .status .warn { color: #f59e0b; font-weight: 600; }
+
+  /* ===== 时间条 ===== */
+  .timebar {
+    background: #fff; padding: 12px 20px; border-radius: 10px; margin-bottom: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    display: none; align-items: center; gap: 14px;
+  }
+  .timebar.show { display: flex; }
+  .timebar .tb-label { font-size: 12px; color: #6b7280; white-space: nowrap; }
+  .timebar input[type=range] {
+    flex: 1; height: 6px; -webkit-appearance: none; appearance: none;
+    background: #e5e7eb; border-radius: 3px; cursor: pointer; padding: 0;
+  }
+  .timebar input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #3b82f6; cursor: grab; border: 2px solid #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  }
+  .timebar input[type=range]::-moz-range-thumb {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #3b82f6; cursor: grab; border: 2px solid #fff;
+  }
+  .timebar .tb-cur {
+    font-size: 15px; font-weight: 700; color: #1e40af; min-width: 52px; text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .timebar .tb-live {
+    font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600;
+    background: #fee2e2; color: #dc2626;
+  }
+  .timebar .tb-live.paused { background: #fef3c7; color: #d97706; }
+  .timebar .tb-mark { font-size: 11px; color: #9ca3af; white-space: nowrap; }
 
   /* ===== 统计栏 ===== */
   .stats-bar {
@@ -105,7 +138,7 @@
     font-size: 12px; cursor: pointer;
   }
   .members-tabs button.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
-  .members-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+  .members-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px; }
 
   /* ===== 板块卡片 ===== */
   .sector-card {
@@ -139,6 +172,7 @@
     background: #dc2626; color: #fff; margin-left: 3px;
   }
   .sector-card .stock-name { color: #374151; max-width: 70px; overflow: hidden; text-overflow: ellipsis; }
+  .accel-tag { font-size: 10px; font-weight: 600; }
 
   .empty-msg { color: #9ca3af; text-align: center; padding: 40px; font-size: 14px; }
 
@@ -193,22 +227,30 @@
     <label>模式</label>
     <select id="modeSel" onchange="onModeChange()">
       <option value="history">历史（收盘）</option>
-      <option value="realtime">实时（盘中）</option>
+      <option value="realtime" selected>实时（盘中）</option>
       <option value="watchlist">盘前筛选</option>
     </select>
     <label>日期</label>
     <input type="date" id="dateSel" min="2026-01-01" max="2026-12-31" onchange="onDateChange()">
     <span id="dateHint" style="font-size:11px;color:#9ca3af;"></span>
-    <label id="timeLabel" style="display:none">时段</label>
-    <input type="time" id="startTime" value="09:30" style="display:none">
-    <input type="time" id="endTime" style="display:none">
-    <label id="wlSwitchLabel" style="display:none">
-      <input type="checkbox" id="wlSwitch" checked onchange="refresh()"> watchlist聚焦
+    <label id="rtAutoLabel" style="display:none">
+      <input type="checkbox" id="rtAuto" checked onchange="onAutoToggle()"> 自动跟随最新
     </label>
     <button class="success" onclick="runPrescreen()">🔍 盘前筛选</button>
     <button class="primary" onclick="refresh()">🔄 刷新</button>
   </div>
   <div class="status" id="statusBar"></div>
+</div>
+
+<!-- 时间条（实时模式专用） -->
+<div class="timebar" id="timeBar">
+  <span class="tb-label">⏱ 时刻</span>
+  <input type="range" id="timeSlider" min="0" max="0" value="0" step="1"
+         oninput="onSliderInput()" onchange="onSliderChange()">
+  <span class="tb-cur" id="tbCur">--:--</span>
+  <span class="tb-live" id="tbLive">LIVE</span>
+  <button onclick="jumpToLatest()">⏭ 回到最新</button>
+  <span class="tb-mark" id="tbMark"></span>
 </div>
 
 <!-- 统计栏 -->
@@ -234,7 +276,7 @@
     <button onclick="switchMembersTab('bottom', this)">📉 弱势板块成分股</button>
   </div>
   <div class="members-grid" id="membersGrid">
-    <div class="empty-msg">请选择日期或开启实时模式</div>
+    <div class="empty-msg">加载中...</div>
   </div>
 </div>
 
@@ -263,7 +305,9 @@
 let pollTimer = null;
 let lastPayload = null;       // 最近一次 dashboard 数据
 let membersTab = 'top';       // 成分股当前 tab
-const POLL_INTERVAL = 15000;
+const POLL_INTERVAL = 3000;   // 3s 轮询
+let availableTimes = [];      // 当日可用时间点（分时分钟刻度）
+let autoFollow = true;        // 是否自动跟随最新（拖动滑块时暂停）
 
 // ========== 工具 ==========
 function setStatus(text, cls) {
@@ -280,29 +324,73 @@ function onModeChange() {
   const mode = document.getElementById('modeSel').value;
   const isRT = mode === 'realtime';
   const isWL = mode === 'watchlist';
-  document.getElementById('timeLabel').style.display = isRT ? '' : 'none';
-  document.getElementById('startTime').style.display = isRT ? '' : 'none';
-  document.getElementById('endTime').style.display = isRT ? '' : 'none';
-  document.getElementById('wlSwitchLabel').style.display = isRT ? '' : 'none';
+  document.getElementById('timeBar').classList.toggle('show', isRT);
+  document.getElementById('rtAutoLabel').style.display = isRT ? '' : 'none';
   document.getElementById('modeHint').textContent = isRT
-    ? '（实时：涨幅/涨速/实体/涨停 加权）' : '（历史：按当日涨幅，点击表头排序）';
+    ? '（实时分时：涨幅/涨速/开盘至今涨幅/涨停 加权 · 涨速加速仅展示）'
+    : '（历史：按当日涨幅，点击表头排序）';
 
   document.getElementById('watchlistSection').style.display = isWL ? '' : 'none';
   document.getElementById('panels').style.display = isWL ? 'none' : 'grid';
   document.getElementById('membersSection').style.display = isWL ? 'none' : '';
 
   stopPolling();
-  if (isRT) startPolling();
+  if (isRT) { startPolling(); autoFollow = true; updateAutoUI(); }
   if (isWL) loadWatchlist();
   refresh();
 }
-function onDateChange() { refresh(); }
+function onDateChange() {
+  // 实时模式切日期后，重置滑块、强制刷新
+  if (document.getElementById('modeSel').value === 'realtime') {
+    autoFollow = true; updateAutoUI();
+  }
+  refresh();
+}
 function startPolling() {
   if (pollTimer) return;
-  pollTimer = setInterval(refresh, POLL_INTERVAL);
+  pollTimer = setInterval(() => { if (autoFollow) refresh(); }, POLL_INTERVAL);
 }
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+function onAutoToggle() {
+  autoFollow = document.getElementById('rtAuto').checked;
+  updateAutoUI();
+  if (autoFollow) jumpToLatest();
+}
+function updateAutoUI() {
+  document.getElementById('rtAuto').checked = autoFollow;
+  const live = document.getElementById('tbLive');
+  live.textContent = autoFollow ? 'LIVE' : '已暂停';
+  live.classList.toggle('paused', !autoFollow);
+}
+
+// ========== 时间滑块 ==========
+function buildSlider(times) {
+  availableTimes = times || [];
+  const slider = document.getElementById('timeSlider');
+  slider.max = Math.max(0, availableTimes.length - 1);
+  slider.value = slider.max;  // 默认最新
+  document.getElementById('tbMark').textContent = availableTimes.length > 0
+    ? `${availableTimes[0]} ~ ${availableTimes[availableTimes.length-1]}`
+    : '';
+}
+function onSliderInput() {
+  // 拖动中：只更新时刻显示，不发请求（change 时才发）
+  const idx = +document.getElementById('timeSlider').value;
+  document.getElementById('tbCur').textContent = availableTimes[idx] || '--:--';
+}
+function onSliderChange() {
+  // 松手：视为手动选时刻，暂停自动跟随，触发一次切片请求
+  autoFollow = false;
+  updateAutoUI();
+  refresh();
+}
+function jumpToLatest() {
+  autoFollow = true;
+  updateAutoUI();
+  document.getElementById('timeSlider').value = document.getElementById('timeSlider').max;
+  refresh();
 }
 
 // ========== 数据加载 ==========
@@ -314,20 +402,18 @@ async function loadDates() {
     const input = document.getElementById('dateSel');
     const hint = document.getElementById('dateHint');
     if (dates.length > 0) {
-      // 默认选最新入库日期；input type=date 需要 YYYY-MM-DD 格式
-      const latest = dates[0]; // YYYYMMDD
+      const latest = dates[0];
       input.value = latest.slice(0,4) + '-' + latest.slice(4,6) + '-' + latest.slice(6,8);
       const oldest = dates[dates.length-1];
       hint.textContent = `已入库 ${oldest}~${latest}`;
     } else {
-      hint.textContent = '暂无入库数据，选择日期后将自动拉取';
+      hint.textContent = '暂无入库数据';
     }
   } catch(e) { console.error(e); }
 }
 
-// 把 input[type=date] 的值（YYYY-MM-DD）转为后端用的 YYYYMMDD
 function getDateVal() {
-  const v = document.getElementById('dateSel').value; // YYYY-MM-DD or ''
+  const v = document.getElementById('dateSel').value;
   return v ? v.replace(/-/g, '') : '';
 }
 
@@ -338,19 +424,19 @@ async function refresh() {
 
   let payload;
   if (mode === 'realtime') {
-    const st = document.getElementById('startTime').value;
-    const et = document.getElementById('endTime').value;
-    const wl = document.getElementById('wlSwitch').checked;
-    const params = new URLSearchParams({start_time: st});
-    if (et) params.set('end_time', et);
-    if (wl) { params.set('watchlist_mode', 'true'); setStatus('加载中（watchlist，约30秒）...', 'warn'); }
+    const date = getDateVal();
+    const params = new URLSearchParams({ watchlist_mode: 'true' });
+    if (date) params.set('trade_date', date);
+    // 非自动跟随时，传当前滑块时刻；自动跟随时不传（后端取最新）
+    if (!autoFollow) {
+      const idx = +document.getElementById('timeSlider').value;
+      if (availableTimes[idx]) params.set('snapshot_time', availableTimes[idx]);
+    }
     payload = await fetchJson('/api/realtime/dashboard?' + params.toString());
   } else {
     const date = getDateVal();
     if (!date) { setStatus('请选择日期', ''); return; }
-    // 先尝试读已有数据
     payload = await fetchJson('/api/history/dashboard?date=' + date + '&top_n=10');
-    // 无数据且可计算：提示用户是否拉取
     if (payload.error && payload.can_calc) {
       if (confirm(`日期 ${date} 无历史数据，是否拉取并计算？\n（约需2分钟，会同步K线+板块强度+归因）`)) {
         setStatus('正在拉取并计算（约2分钟）...', 'warn');
@@ -368,12 +454,37 @@ async function refresh() {
     return;
   }
   lastPayload = payload;
+
+  // 实时模式：更新滑块刻度（首次或时刻列表变化时）
+  if (mode === 'realtime') {
+    const prevMax = +document.getElementById('timeSlider').max;
+    const times = payload.available_times || [];
+    if (times.length && times.length !== availableTimes.length) {
+      buildSlider(times);
+    } else if (!availableTimes.length && times.length) {
+      buildSlider(times);
+    }
+    // 自动跟随时把滑块拨到最新
+    if (autoFollow) {
+      const slider = document.getElementById('timeSlider');
+      slider.value = slider.max;
+      document.getElementById('tbCur').textContent = payload.snapshot_time || payload.latest_time || '--:--';
+    } else {
+      const idx = +document.getElementById('timeSlider').value;
+      document.getElementById('tbCur').textContent = payload.snapshot_time || availableTimes[idx] || '--:--';
+    }
+  }
+
   renderStats(payload);
   renderRankTables(payload);
   renderMembers();
-  const ts = payload.snapshot_time || payload.date || '';
-  const wlTag = payload.watchlist_mode ? ' · watchlist' : '';
-  setStatus(mode === 'realtime' ? `实时${wlTag} · ${ts} · 自动15s` : `历史 · ${ts}`, 'live');
+  if (mode === 'realtime') {
+    const ts = payload.snapshot_time || payload.latest_time || '';
+    const live = payload.is_today ? '实时' : '历史回看';
+    setStatus(`${live} · ${ts} · watchlist · 自动${POLL_INTERVAL/1000}s`, 'live');
+  } else {
+    setStatus(`历史 · ${payload.date}`, 'live');
+  }
 }
 
 async function fetchJson(url) {
@@ -405,7 +516,6 @@ function renderRankTable(containerId, sectors, tab) {
   const el = document.getElementById(containerId);
   if (sectors.length === 0) { el.innerHTML = '<div class="empty-msg">无数据</div>'; return; }
 
-  // 评分色阶：根据 score 正负 + 绝对值给颜色深度
   function scoreClass(s) {
     if (tab === 'top') return s >= 2 ? '#dc2626' : (s >= 1 ? '#ef4444' : '#f87171');
     return s <= -2 ? '#059669' : (s <= -1 ? '#10b981' : '#34d399');
@@ -440,7 +550,6 @@ function renderRankTable(containerId, sectors, tab) {
   </table>`;
 }
 
-// 表头排序（排行表）
 function sortRankTable(th) {
   const table = th.closest('table');
   const tbody = table.querySelector('tbody');
@@ -457,28 +566,18 @@ function sortRankTable(th) {
     if (key === 's1') { av = parseFloat(a.children[2].dataset.v); bv = parseFloat(b.children[2].dataset.v); }
     else if (key === 's2') { av = parseFloat(a.children[3].dataset.v); bv = parseFloat(b.children[3].dataset.v); }
     else if (key === 'cnt') { av = parseInt(a.children[4].dataset.v); bv = parseInt(b.children[4].dataset.v); }
-    else { // score
-      av = parseFloat(a.querySelector('.score-bar').textContent);
-      bv = parseFloat(b.querySelector('.score-bar').textContent);
-    }
-    if (isNaN(av)) av = 0;
-    if (isNaN(bv)) bv = 0;
+    else { av = parseFloat(a.querySelector('.score-bar').textContent); bv = parseFloat(b.querySelector('.score-bar').textContent); }
+    if (isNaN(av)) av = 0; if (isNaN(bv)) bv = 0;
     return desc ? bv - av : av - bv;
   });
-  // 重新编号
   rows.forEach((r, i) => {
     const badge = r.querySelector('.rank-num');
-    if (badge) {
-      badge.textContent = i + 1;
-      badge.className = 'rank-num ' + (i === 0 ? 'r1' : (i === 1 ? 'r2' : (i === 2 ? 'r3' : 'rN')));
-    }
+    if (badge) { badge.textContent = i + 1; badge.className = 'rank-num ' + (i === 0 ? 'r1' : (i === 1 ? 'r2' : (i === 2 ? 'r3' : 'rN'))); }
   });
   rows.forEach(r => tbody.appendChild(r));
 }
 
-// 点击行高亮成分股
 function onSectorRowClick(code, tr) {
-  // 切换成分股 tab 到对应面板，并滚动高亮
   const tab = tr.closest('.panel').querySelector('h2 .badge').classList.contains('badge-red') ? 'top' : 'bottom';
   if (membersTab !== tab) {
     membersTab = tab;
@@ -486,13 +585,12 @@ function onSectorRowClick(code, tr) {
     document.querySelectorAll('.members-tabs button')[tab === 'top' ? 0 : 1].classList.add('active');
     renderMembers();
   }
-  // 高亮该行
   document.querySelectorAll('.rank-table tbody tr').forEach(r => r.classList.remove('active'));
   tr.classList.add('active');
   highlightSector(code);
 }
 
-// ========== 渲染：成分股（带表头排序）==========
+// ========== 渲染：成分股 ==========
 function switchMembersTab(tab, btn) {
   membersTab = tab;
   document.querySelectorAll('.members-tabs button').forEach(b => b.classList.remove('active'));
@@ -502,21 +600,24 @@ function switchMembersTab(tab, btn) {
 
 function renderMembers() {
   if (!lastPayload) return;
-  const sectors = membersTab === 'top'
-    ? (lastPayload.top_sectors || [])
-    : (lastPayload.bottom_sectors || []);
+  const sectors = membersTab === 'top' ? (lastPayload.top_sectors || []) : (lastPayload.bottom_sectors || []);
   const grid = document.getElementById('membersGrid');
   if (sectors.length === 0) { grid.innerHTML = '<div class="empty-msg">无数据</div>'; return; }
   grid.innerHTML = sectors.map((s, i) => { s._idx = i + 1; return sectorCardHtml(s, membersTab); }).join('');
 }
 
+// 涨速加速：>0 红色▲加速，<0 绿色▼减缓，≈0 灰色
+function accelHtml(a) {
+  if (a === null || a === undefined || isNaN(a)) return '<span class="accel-tag" style="color:#9ca3af;">-</span>';
+  if (a > 0.01) return `<span class="accel-tag up">▲${fmt(a)}</span>`;
+  if (a < -0.01) return `<span class="accel-tag down">▼${fmt(a)}</span>`;
+  return `<span class="accel-tag" style="color:#9ca3af;">${fmt(a)}</span>`;
+}
+
 function sectorCardHtml(s, tab) {
-  const color = tab === 'top'
-    ? (s.score >= 0 ? '#ef4444' : '#f59e0b')
-    : (s.score < 0 ? '#10b981' : '#6b7280');
+  const color = tab === 'top' ? (s.score >= 0 ? '#ef4444' : '#f59e0b') : (s.score < 0 ? '#10b981' : '#6b7280');
   const members = s.members_top10 || [];
-  const idx = s._idx || '';
-  const rows = members.map((m, i) => {
+  const rows = members.map(m => {
     const changeCls = m.change_ratio > 0 ? 'up' : (m.change_ratio < 0 ? 'down' : '');
     const limitTag = m.limit ? '<span class="limit-tag">涨停</span>' : '';
     return `<tr>
@@ -524,12 +625,11 @@ function sectorCardHtml(s, tab) {
       <td class="left"><div class="stock-name" title="${m.name||''}">${m.name||''}</div></td>
       <td class="r ${changeCls}" data-k="change_ratio">${fmt(m.change_ratio)}%${limitTag}</td>
       <td class="r" data-k="speed">${m.speed ? fmt(m.speed)+'%' : '-'}</td>
-      <td class="r" data-k="body">${m.body ? fmt(m.body)+'%' : '-'}</td>
+      <td class="r" data-k="acceleration">${accelHtml(m.acceleration)}</td>
+      <td class="r" data-k="body">${m.body !== undefined && m.body !== null ? fmt(m.body)+'%' : '-'}</td>
       <td class="r" data-k="score"><b>${fmt(m.score)}</b></td>
     </tr>`;
   }).join('');
-  const s1Tip = 'S1=成分股平均涨幅';
-  const s2Tip = 'S2=上涨成分股占比';
   return `<div class="sector-card" data-code="${s.concept_code}">
     <div class="card-head" style="background:${color};">
       <span><span class="num">${s._idx||''}</span>${s.concept_name}</span>
@@ -541,29 +641,35 @@ function sectorCardHtml(s, tab) {
         <th class="left">名称</th>
         <th class="r sorted" data-order="" onclick="sortCard(this,'change_ratio')">涨幅</th>
         <th class="r" onclick="sortCard(this,'speed')">涨速</th>
-        <th class="r" onclick="sortCard(this,'body')">实体</th>
+        <th class="r" title="涨速加速 = 当前涨速 - 上一周期涨速" onclick="sortCard(this,'acceleration')">加速</th>
+        <th class="r" title="开盘至今涨幅" onclick="sortCard(this,'body')">开盘至今</th>
         <th class="r" onclick="sortCard(this,'score')">综合分</th>
       </tr></thead>
-      <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:#9ca3af;">无数据</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="7" style="text-align:center;color:#9ca3af;">无数据</td></tr>'}</tbody>
     </table>
   </div>`;
 }
 
-// 表头排序（单卡片内）
 function sortCard(th, key) {
   const tbody = th.closest('table').querySelector('tbody');
   const rows = Array.from(tbody.querySelectorAll('tr'));
   if (rows.length === 0) return;
-  // 当前排序方向
   const cur = th.dataset.order === '↓' ? '↑' : '↓';
   th.dataset.order = cur;
-  // 清除同表其它 th 的排序标记
   th.closest('thead').querySelectorAll('th').forEach(t => { if (t !== th) { t.classList.remove('sorted'); t.dataset.order=''; }});
   th.classList.add('sorted');
   const desc = cur === '↓';
   rows.sort((a, b) => {
-    const av = parseFloat(a.querySelector(`[data-k="${key}"]`).textContent) || 0;
-    const bv = parseFloat(b.querySelector(`[data-k="${key}"]`).textContent) || 0;
+    let av, bv;
+    const ca = a.querySelector(`[data-k="${key}"]`), cb = b.querySelector(`[data-k="${key}"]`);
+    if (key === 'acceleration') {
+      // 加速列含 ▲/▼ 符号，需用原始数值（从 data-k 的子 span 提取，或用 acceleration 原始字段）
+      av = parseFloat((ca.textContent||'').replace(/[▲▼+\-%]/g,'')) || 0;
+      bv = parseFloat((cb.textContent||'').replace(/[▲▼+\-%]/g,'')) || 0;
+    } else {
+      av = parseFloat((ca.textContent||'').replace(/[+\-%]/g,'')) || 0;
+      bv = parseFloat((cb.textContent||'').replace(/[+\-%]/g,'')) || 0;
+    }
     return desc ? bv - av : av - bv;
   });
   rows.forEach(r => tbody.appendChild(r));
@@ -588,10 +694,7 @@ async function runPrescreen() {
       body: JSON.stringify({date: date || undefined})
     });
     const data = await r.json();
-    if (data.error) {
-      document.getElementById('modalBody').innerHTML = '<div class="empty-msg">⚠ ' + data.error + '</div>';
-      return;
-    }
+    if (data.error) { document.getElementById('modalBody').innerHTML = '<div class="empty-msg">⚠ ' + data.error + '</div>'; return; }
     renderPrescreenModal(data);
     if (document.getElementById('modeSel').value === 'watchlist') loadWatchlist();
   } catch(e) {
@@ -640,10 +743,7 @@ async function loadWatchlist() {
     return;
   }
   document.getElementById('wlHint').textContent = `（${data.date} · ${data.sector_count} 板块）`;
-  grid.innerHTML = (data.sectors||[]).map((s, i) => {
-    s._idx = i + 1;
-    return watchlistCardHtml(s);
-  }).join('');
+  grid.innerHTML = (data.sectors||[]).map((s, i) => { s._idx = i + 1; return watchlistCardHtml(s); }).join('');
   setStatus(`watchlist · ${data.date} · ${data.sector_count} 板块`, 'live');
 }
 

@@ -8,7 +8,7 @@
 - **个股多概念归因**：L1 权重归因法（`weight × concept_return`），分解个股涨幅对各概念的贡献
 - **组合归因分析**：按持仓组合的市值暴露，匹配当前强势板块并预警
 - **A股范围限定**：全链路过滤海外代码，只处理沪深北交易所股票
-- **盘中实时监控**：可视化网站，9:30~9:40 实时刷新板块强度 + 成分股四维评分排名
+- **盘中实时监控**：基于分时数据（kline-fetcher）的可视化网站，3s 轮询刷新板块强度 + 成分股四维评分排名 + 可拖动时间条回看任意时刻
 
 ## 5 个 iFinD 接口
 
@@ -24,20 +24,21 @@
 
 ```
 ifind_sector_attribution/
-├── config.py              # 配置（token、概念代码、计算权重、A股过滤规则）
-├── config_local.py        # 本地 token 配置（已 gitignore，不提交）
+├── config.py              # 配置（token、概念代码、计算权重、A股过滤规则、分时数据源）
+├── config_local.py        # 本地 token + KLINE_API_BASE_URL（已 gitignore，不提交）
 ├── ifind_client.py        # iFinD API 客户端封装（含指数退避重试、批量分片）
+├── intraday_fetcher.py    # 分时数据批量并发封装（kline-fetcher TrendFetcher，32线程）
 ├── database.py            # SQLite 数据库封装
 ├── sync_pipeline.py       # 数据同步与计算管线
 ├── core_calculator.py     # 核心计算引擎（板块强度、多周期融合、L1归因）
-├── stock_scorer.py        # 成分股四维综合评分（涨幅/涨速/实体/涨停）
-├── realtime_engine.py     # 盘中实时引擎（接口4拉取+实时板块强度）
+├── stock_scorer.py        # 成分股四维综合评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速
+├── realtime_engine.py     # 盘中实时引擎（分时序列缓存 + 时刻切片 + 板块强度）
 ├── prescreen.py           # 盘前筛选（5日涨幅选板块+成分股→watchlist）
 ├── api_server.py          # FastAPI 服务层（API + 可视化页面）
 ├── main.py                # 入口脚本
 ├── requirements.txt       # 依赖
 ├── templates/
-│   └── index.html         # 可视化看板单页（plotly.js CDN）
+│   └── index.html         # 可视化看板单页（时间滑块 + 3s 轮询 + 加速列）
 ├── ifind-monitor.service  # systemd 服务配置（开机自启+自动重启）
 ├── install_service.sh     # 一键安装 systemd 服务脚本
 ├── data/                  # 数据库文件（已 gitignore）
@@ -51,6 +52,10 @@ ifind_sector_attribution/
 
 ```bash
 pip install -r requirements.txt
+
+# 分时数据依赖（盘中实时监控用，需单独装）
+pip install -e /root/Projects/kline-fetcher
+# 或从 GitHub 安装：pip install git+https://github.com/seuzxh/kline-fetcher.git
 ```
 
 ### 2. 配置 token
@@ -58,8 +63,12 @@ pip install -r requirements.txt
 在项目根目录创建 `config_local.py`（已被 `.gitignore` 忽略，不会提交）：
 
 ```python
+# iFinD token（盘后 daily / 归因 / 盘前筛选用）
 ACCESS_TOKEN = "你的 access token"
 REFRESH_TOKEN = "你的 refresh token"
+
+# 中焯行情 API 地址（盘中实时监控用，敏感不入库）
+KLINE_API_BASE_URL = "http://your-kline-api-host:port"
 ```
 
 ### 3. 运行接口测试
@@ -129,13 +138,15 @@ python main.py server --host 0.0.0.0 --port 8000
 
 页面顶部可切换三种模式：
 
-- **实时模式**（9:30~9:40 盘中）：前端每 15 秒自动轮询，后端实时调接口4 拉全市场 1min K 线，算实时板块强度。Top10 板块的成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 实体涨幅 0.2 / 涨停 0.2），涨停判定按板块（主板 9.8% / 创业科创 19.5% / 北交 29%）。勾选"watchlist聚焦"后只监控盘前筛选出的标的（拉取量从 5500 降到 ~290，响应从 2 分钟 → 约 30 秒）。
-- **历史模式**：选日期读已入库的收盘数据，秒级响应。成分股按当日涨幅排序（无 1min 历史，标注"仅涨幅"）。
+- **实时模式**（默认，盘中 + 历史日期均可）：基于 **kline-fetcher 分时数据**（中焯行情 API），拉取每只股票完整分时序列（集合竞价 + 盘中逐分钟 241 点）。前端每 **3s** 自动轮询，后端分时序列缓存（TTL 5s）挡住网络。Top10 板块成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 开盘至今涨幅 0.2 / 涨停 0.2），另有**涨速加速**指标（▲加速 / ▼减缓）展示。默认 **watchlist 聚焦**（盘前筛出的 ~279 只，1.5s 拉取）。
+  - **可拖动时间条**：拖到任意时刻（如 9:50）即可回看该时刻的板块排名，观察板块轮动。拖动后自动暂停跟随，点"回到最新"恢复。
+  - 选历史日期时，拉该日全天分时后缓存，拖时间条纯内存切片（毫秒级）。
+- **历史模式**：选日期读已入库的收盘数据，秒级响应。成分股按当日涨幅排序（无分时历史，标注"仅涨幅"）。
 - **盘前筛选模式**：展示当日 watchlist（20 板块 + 各 30 成分股的 5d 涨幅），开盘前观察用。
 
-页面布局：顶部统计栏（股票数/涨跌/涨停）+ 左侧 Top10 强势板块柱状图 + 右侧 Bottom10 弱势板块 + 下方各板块成分股卡片。点击柱状图可高亮对应成分股卡片。顶部"盘前筛选"按钮可即时触发筛选。
+页面布局：顶部统计栏（股票数/涨跌/涨停）+ 时间条 + Top10 强势板块 + Bottom10 弱势板块 + 下方各板块成分股卡片。点击板块行可高亮对应成分股卡片。顶部"盘前筛选"按钮可即时触发筛选。
 
-> 实时模式仅在交易时段有数据，非交易时段会显示友好提示。
+> 实时模式仅在交易时段有数据，非交易时段会显示最近交易日的全天数据（可拖时间条体验回看）。
 
 ### 7. 盘前筛选（生成 watchlist）
 
@@ -184,7 +195,8 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 | `POST /api/attribution/stock` | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | 组合归因 + 强势板块定位 |
 | `GET /api/realtime/sector` | 最新板块强度排名 |
-| `GET /api/realtime/dashboard` | **实时看板**（top/bottom 板块 + 成分股排名，支持 watchlist_mode） |
+| `GET /api/realtime/dashboard` | **实时看板**（分时数据切片，支持 `trade_date`/`snapshot_time`/`watchlist_mode`） |
+| `POST /api/realtime/clear_cache` | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | **历史看板**（指定日期的板块 + 成分股） |
 | `POST /api/prescreen` | **盘前筛选**（5日涨幅选板块+成分股，存入 watchlist） |
 | `GET /api/watchlist` | 读取当日 watchlist |
@@ -197,6 +209,7 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 | 配置 | 默认值 | 说明 |
 |---|---|---|
 | `ACCESS_TOKEN` / `REFRESH_TOKEN` | （空） | iFinD 认证，用 `config_local.py` 覆盖 |
+| `KLINE_API_BASE_URL` | （空） | 中焯行情 API 地址（分时数据源），用 `config_local.py` 覆盖 |
 | `SCORE_WEIGHTS` | s1:0.4 / s2:0.3 / s4:0.3 | 板块强度三维权重 |
 | `PERIOD_WEIGHTS` | 1d:0.5 / 5d:0.3 / 20d:0.2 | 多周期融合权重 |
 | `MIN_MEMBER_COUNT` | 6 | 命中 K 线的成分股数下限，过滤迷你概念 |
@@ -207,6 +220,8 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 | `PRESCREEN_PERIOD_DAYS` | 5 | 盘前筛选用的累计涨幅天数 |
 | `PRESCREEN_TOP_SECTOR` | 20 | 盘前筛选选出的板块数 |
 | `PRESCREEN_TOP_STOCK` | 30 | 每个板块选出的成分股数 |
+| `INTRADAY_WORKERS` | 32 | 分时数据多线程拉取并发数 |
+| `INTRADAY_CACHE_TTL` | 5 | 分时序列缓存 TTL（秒） |
 
 ## 数据模型
 

@@ -4,3 +4,9 @@ numpy>=1.24.0
 fastapi>=0.104.0
 uvicorn>=0.24.0
 pydantic>=2.5.0
+
+# 分时数据依赖（盘中实时监控用）
+# kline-fetcher 是本地包，需单独安装（不在 PyPI）：
+#   pip install -e /root/Projects/kline-fetcher
+#   或 pip install git+https://github.com/seuzxh/kline-fetcher.git
+PyYAML>=6.0

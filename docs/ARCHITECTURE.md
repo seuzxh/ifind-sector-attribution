@@ -225,65 +225,106 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 ## 7. 盘中实时监控
 
 实时监控是一条**独立于 daily 的链路**，不写库、不走多周期融合，只在交易时段内存计算。
+**数据源：kline-fetcher 的分时数据**（`TrendFetcher`，中焯行情 API），非 iFinD 1min K 线。
+
+### 数据源：分时数据（intraday_fetcher.py）
+
+每只股票返回完整分时序列（全天）：
+
+| 阶段 | 字段 | 时间范围 | 粒度 | 点数 |
+|---|---|---|---|---|
+| `pre_market`（集合竞价） | `ref_price`（参考价）、`matched_vol` 等 | 09:15~09:25 | 每3秒 | ~201 |
+| `trading`（盘中） | `last_price`、`avg_price`、`volume`、`turnover` | 09:30~15:00 | 每分钟 | 241 |
+
+**关键：分时数据没有 OHLC、没有 changeRatio**，所有指标需用 `last_price` 自行推导：
+
+| 锚点 | 来源 | 示例（茅台 6-12） |
+|---|---|---|
+| 昨收 | `pre_market[0].ref_price`（09:15 起始价 = 上一交易日收盘） | 1279.0 |
+| 开盘价 | `pre_market[-1].ref_price`（09:25 集合竞价最终价） | 1271.18 |
 
 ### 实时链路（realtime_engine.py）
 
 ```
-前端 15s 轮询 GET /api/realtime/dashboard
+前端 3s 轮询 GET /api/realtime/dashboard?snapshot_time=09:50
                 ↓
-        后端内存缓存（TTL 10s）命中？─→ 直接返回
-                ↓ 未命中
-    接口4 拉全市场 A 股 09:30~当前 的 1min K（批量50，约110次请求）
-                ↓ 解析每只股票
-    realtime_df（列：code, change_ratio, speed, body, open, close）
-                ↓
-    calc_all_sectors_strength(realtime_df, members_map)  ← 复用收盘计算
-                ↓
+    检查分时序列缓存（按 trade_date+mode_key，TTL 5s）
+        ├─ 命中 ─────────────────────→ 不拉网络，进入切片
+        └─ 未命中（当日实时 TTL 过期 / 历史首次）
+            ↓
+        intraday_fetcher.fetch_batch()  ← 32 线程并发拉 watchlist 279 只（1.5s）
+            ↓
+        缓存完整分时序列 + 时间轴 available_times
+            ↓
+    snapshot_time 切片：trading[:snapshot_time]
+            ↓
+    按切片末点算每只股票指标（涨幅/body/涨速/加速）
+            ↓
+    calc_all_sectors_strength(rt_df, members_map)  ← 复用收盘计算
+            ↓
     对 Top10 板块各调 stock_scorer.score_members() → 成分股四维排名
-                ↓
-    组装返回 top/bottom 板块 + 成分股 + 市场统计
+            ↓
+    组装返回 top/bottom 板块 + 成分股 + 市场统计 + available_times
 ```
 
 ### 与 daily 的区别
 
 | 维度 | daily（盘后） | 实时（盘中） |
 |---|---|---|
-| 数据源 | 接口3 日K，入库 | 接口4 1min K，不入库 |
-| 板块强度 | 多周期融合（1d/5d/20d） | 仅 1d 实时强度 |
-| 成分股排名 | L1 归因（贡献占比） | 四维加权评分（涨幅/涨速/实体/涨停） |
-| 响应速度 | 入库后秒级 | 首次约 2 分钟，缓存命中秒级 |
+| 数据源 | 接口3 日K，入库 | **kline-fetcher 分时数据**（中焯 API），不入库 |
+| 板块强度 | 多周期融合（1d/5d/20d） | 仅 1d 实时强度（切片末点涨幅） |
+| 成分股排名 | L1 归因（贡献占比） | 四维加权评分（涨幅/涨速/body/涨停） |
+| 响应速度 | 入库后秒级 | watchlist 首次 ~1.5s，缓存命中 0.12s，切片毫秒级 |
 
 ### 成分股四维评分（stock_scorer.py）
 
 ```
-综合分 = 0.4×z(涨幅) + 0.2×z(涨速) + 0.2×z(实体涨幅) + 0.2×涨停分
+综合分 = 0.4×z(涨幅) + 0.2×z(涨速) + 0.2×z(body) + 0.2×涨停分
 ```
 
 | 维度 | 定义 | 数据来源 |
 |---|---|---|
-| 涨幅 | 相对昨收的累计涨跌幅 % | 最后一根 1min K 的 changeRatio |
-| 涨速 | (当前 close − 3分钟前 close) / 3分钟前 close × 100 | 最近 4 根 1min K 的 close |
-| 实体涨幅 | (close − open) / open × 100 | 最后一根 1min K 的 close/open |
+| 涨幅 | 相对昨收的涨跌幅 % | `(last_price - 昨收) / 昨收 × 100` |
+| 涨速 | 1min 滚动末点：`(last[-1] - last[-2]) / last[-2] × 100` | 切片末两个 trading 点的 last_price |
+| body | **开盘至今涨幅**：`(last - 开盘价) / 开盘价 × 100` | 切片末点 last_price vs 09:25 集合竞价价 |
 | 涨停分 | 涨停=1.0，未涨停=0.0（二值，不标准化） | 按板块判定阈值 |
+
+**附加展示指标（不进综合分）**：
+- **涨速加速** `acceleration = speed[-1] - speed[-2]`：>0 加速上涨 / <0 减缓掉头。前端用 ▲/▼ 标识。
 
 涨停判定阈值（用略低值规避四舍五入）：
 - 沪深主板：≥ 9.8%
 - 创业板（300xxx）/科创板（688xxx）：≥ 19.5%
 - 北交所（.BJ）：≥ 29%
 
-### 缓存策略
+### 缓存与切片策略
 
-后端全局缓存单例（`_last_dashboard`），TTL 10 秒：
-- 前端 15 秒轮询 → 后端多数请求命中缓存，避免打爆 iFinD
-- 缓存只缓存成功结果，失败不缓存
-- 引擎实例（含成分股映射）全局复用，避免每次重建
+**分时序列缓存**（`_series_cache`，按 `trade_date:mode_key` 键）：
+- 当日实时：TTL 5s（watchlist 1.5s 拉取，3s 轮询大部分命中缓存）
+- 历史日期：全天缓存（数据不变，首次拉取后永久有效，直至进程重启）
+- 引擎实例（含成分股映射）全局复用
+
+**snapshot_time 切片**（时间条回看）：
+- 截取 `trading` 中 `time <= snapshot_time` 的前缀，用末点重算所有指标
+- 纯内存操作（毫秒级），**不触发网络拉取**
+- 应用场景：拖时间条观察任意时刻的板块排名，可看到板块轮动（如 9:50 半导体领涨、15:00 铜板块第一）
+- `POST /api/realtime/clear_cache` 可手动清空（切日/调试用）
+
+### watchlist 聚焦
+
+实时模式默认 `watchlist_mode=True`（盘前筛出的 279 只股票）：
+- 拉取量从全市场 5530 只降到 279 只，响应 30s → 1.5s
+- 板块范围限定在 watchlist 的 20 个板块
+- watchlist 为空时返回提示"请先盘前筛选"
 
 ### 历史模式降级
 
 历史看板（`/api/history/dashboard`）读已入库的收盘数据：
 - 板块强度：读 `concept_strength` 表
-- 成分股排名：读 `daily_kline` 当日涨幅，**降级为纯涨幅排序**（无 1min 历史，无法算涨速/实体）
+- 成分股排名：读 `daily_kline` 当日涨幅，**降级为纯涨幅排序**（无分时历史，无法算涨速/body）
 - 页面标注"历史模式仅涨幅"
+
+> 注意：实时模式选历史日期（如 `trade_date=20260612`）走的是**分时数据链路**（拉该日全天分时），与历史看板（读 concept_strength 入库数据）是两条不同路径。
 
 ---
 

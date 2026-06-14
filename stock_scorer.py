@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-个股综合评分器（实时模式用）
+个股综合评分器（实时模式用，基于分时数据）
 
 四维加权评分：
-  - 涨幅（changeRatio，相对昨收）权重 0.4
-  - 涨速（近3分钟涨幅）权重 0.2
-  - 实体涨幅（最后一根K线 close-open/open）权重 0.2
+  - 涨幅（change_ratio，相对昨收）权重 0.4
+  - 涨速（1min 滚动：末点 last_price 相对前1分钟涨幅）权重 0.2
+  - body（开盘至今涨幅：末点 last_price 相对集合竞价开盘价）权重 0.2
   - 是否涨停（按板块判定）权重 0.2
+
+附加展示指标（不进综合分）：
+  - acceleration（涨速加速）：speed[t] - speed[t-1]，>0 加速 / <0 减速
 
 涨停规则：
   - 沪深主板（.SH/.SZ 非300/688开头）：≥9.8%
@@ -66,34 +69,63 @@ def compute_limit_score(code: str, change_ratio: float) -> float:
     return 1.0 if is_limit_up(code, change_ratio) else 0.0
 
 
-def compute_body_ratio(open_price: float, close_price: float) -> float:
+def compute_body_ratio(open_price: float, last_price: float) -> float:
     """
-    实体涨幅 = (close - open) / open × 100
-    反映最后一根K线的实体大小（剔除跳空）。
+    body（开盘至今涨幅）= (last - open) / open × 100
+    反映从集合竞价开盘价到当前价的累计涨幅。
+    :param open_price: 集合竞价开盘价（pre_market[-1].ref_price）
+    :param last_price: 当前 last_price
     """
-    if not open_price or open_price == 0 or pd.isna(open_price) or pd.isna(close_price):
+    if not open_price or open_price == 0 or pd.isna(open_price) or pd.isna(last_price):
         return 0.0
-    return (close_price - open_price) / open_price * 100
+    return (last_price - open_price) / open_price * 100
 
 
-def compute_speed(close_series: list) -> float:
+def compute_speed_series(last_prices: list) -> list:
     """
-    涨速 = (当前close − 3分钟前close) / 3分钟前close × 100
-    :param close_series: 按时间正序的 close 序列（至少1个元素）
+    涨速序列（1min 滚动）：speed[t] = (last[t] - last[t-1]) / last[t-1] × 100
+    :param last_prices: 按时间正序的 last_price 序列
+    :return: 与输入等长的列表，首点为 0.0（无前点）
     """
-    if not close_series or len(close_series) < 1:
-        return 0.0
-    # 取最后有效值
-    valid = [c for c in close_series if c is not None and not pd.isna(c) and c > 0]
+    n = len(last_prices)
+    if n == 0:
+        return []
+    speeds = [0.0]
+    for i in range(1, n):
+        prev = last_prices[i - 1]
+        cur = last_prices[i]
+        if prev and prev > 0 and cur is not None and not pd.isna(cur):
+            speeds.append((cur - prev) / prev * 100)
+        else:
+            speeds.append(0.0)
+    return speeds
+
+
+def compute_speed(last_prices: list) -> float:
+    """
+    涨速（末点）：speed[-1] = (last[-1] - last[-2]) / last[-2] × 100
+    :param last_prices: 按时间正序的 last_price 序列（至少2个元素）
+    :return: 末点涨速 %，不足2点返回 0.0
+    """
+    valid = [p for p in last_prices if p is not None and not pd.isna(p) and p > 0]
     if len(valid) < 2:
         return 0.0
-    current = valid[-1]
-    # 3分钟前的close（倒数第4个，不够则取最早的）
-    idx = max(0, len(valid) - 4)
-    base = valid[idx]
-    if base == 0:
+    prev, cur = valid[-2], valid[-1]
+    if prev == 0:
         return 0.0
-    return (current - base) / base * 100
+    return (cur - prev) / prev * 100
+
+
+def compute_acceleration(speed_series: list) -> float:
+    """
+    涨速加速（末点）：accel[-1] = speed[-1] - speed[-2]
+    > 0 = 涨速在加快（加速上涨）；< 0 = 涨速在减缓或掉头。
+    :param speed_series: compute_speed_series 的输出（等长于 last_prices）
+    :return: 末点加速值，不足2点返回 0.0
+    """
+    if len(speed_series) < 2:
+        return 0.0
+    return speed_series[-1] - speed_series[-2]
 
 
 def _zscore(series: pd.Series) -> pd.Series:
@@ -111,11 +143,14 @@ def score_members(
     """
     对某板块的成分股计算综合评分并排名。
 
+    综合分用四维（涨幅/涨速/body/涨停）；acceleration 仅作为展示列返回，不进综合分。
+
     :param member_data: 成分股数据，必须含列：
         - code: 股票代码
-        - change_ratio: 实时涨幅 %
-        - speed: 涨速 %
-        - body: 实体涨幅 %
+        - change_ratio: 实时涨幅 %（相对昨收）
+        - speed: 涨速 %（1min 滚动末点）
+        - body: body %（开盘至今涨幅）
+        - acceleration: 涨速加速（可选，无则填 0）
         - stock_name: 股票名称（可选，用于展示）
     :param weights: 权重，默认取 SCORE_WEIGHTS
     :return: 按 score 降序排列的 DataFrame，新增列：
@@ -134,6 +169,9 @@ def score_members(
             df[col] = df[col].fillna(0.0)
         else:
             df[col] = 0.0
+    if "acceleration" not in df.columns:
+        df["acceleration"] = 0.0
+    df["acceleration"] = df["acceleration"].fillna(0.0)
 
     # 涨停分（0/1 二值，不参与标准化）
     df["limit_score"] = df.apply(
@@ -156,3 +194,4 @@ def score_members(
     # 排名
     df["rank"] = df["score"].rank(ascending=False, method="min").astype(int)
     return df.sort_values("rank")
+

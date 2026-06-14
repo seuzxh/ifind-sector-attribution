@@ -2,6 +2,50 @@
 
 本文件记录 ifind-sector-attribution 项目的版本改动，与 git commit 历史对应。
 
+## [Unreleased] - 2026-06-15
+
+### 重构（实时链路改用分时数据）
+- **实时数据源切换**：盘中实时链路从 iFinD 接口4（1min K 线）改用 **kline-fetcher 的分时数据**（`TrendFetcher`，中焯行情 API）
+  - 每只股票返回完整分时序列：集合竞价 `pre_market`（09:15~09:25，每3秒）+ 盘中 `trading`（09:30~15:00，每分钟 241 点）
+  - 数据形态根本不同：分时只有 `last_price/avg_price/volume/turnover`，**无 OHLC、无 changeRatio**，需自行用 `last_price` 推导
+  - 依赖：新增 `kline-fetcher` 包（pip install -e /root/Projects/kline-fetcher）；新增 `config.KLINE_API_BASE_URL`（走 config_local.py，敏感不入库）
+- **新增 `intraday_fetcher.py`**：分时数据批量并发封装层
+  - 32 线程拉取，每线程独立 `TrendFetcher` 实例绕过共享 throttle
+  - 代码格式转换（`002430.SZ` → `SZ002430`）；watchlist 279 只仅 **1.5s** 拉取完成
+- **`realtime_engine.py` 重写**：基于分时序列缓存 + 时刻切片
+  - 分时序列按 (trade_date, mode_key) 缓存，TTL 5s，历史日期全天缓存
+  - `snapshot_time` 切片：拖时间条回看任意时刻，纯内存毫秒级（不触发网络）
+  - 指标基于切片末点重算：涨幅 / body / 涨速 / 加速
+- **`stock_scorer.py` 算法改造**（适配分时数据）
+  - `compute_speed`：从"近3分钟"改为 **1min 滚动序列**，`speed[t]=(last[t]-last[t-1])/last[t-1]`；新增 `compute_speed_series`
+  - `compute_body_ratio`：语义从"最后一根K线实体"改为 **开盘至今涨幅** `(last-开盘价)/开盘价`，开盘价 = `pre_market[-1].ref_price`（09:25 集合竞价价）
+  - 新增 `compute_acceleration`：涨速加速 `speed[t]-speed[t-1]`，>0 加速 / <0 减缓，**仅展示不进综合分**
+- **新增可拖动时间条**（前端）：拖动回看任意时刻的板块排名，可观察板块轮动；"自动跟随最新"开关、"回到最新"按钮
+- **轮询周期**：前端 `15s → 3s`；3s 轮询由后端 TTL 缓存挡住，大部分走纯内存（缓存命中 0.12s）
+- **默认模式**：实时模式默认 **watchlist 聚焦**（279 只，1.5s），移除全市场模式开关
+
+### 改动
+- `api_server.py` `/api/realtime/dashboard`：移除 `start_time/end_time`，新增 `trade_date`/`snapshot_time`，默认 `watchlist_mode=True`；新增 `POST /api/realtime/clear_cache`
+- 返回结构新增字段：`snapshot_time` / `latest_time` / `available_times`（时间轴）/ `is_today` / 成分股 `acceleration`
+- `templates/index.html` 重做：时间滑块 + 3s 轮询 + 加速列（▲/▼）+ 默认实时模式
+
+### 算法对照（分时数据 vs 旧 1min K）
+| 指标 | 旧（1min K） | 新（分时数据） |
+|---|---|---|
+| 昨收 | 接口直给 changeRatio | `pre_market[0].ref_price` |
+| 开盘价 | K线 open | `pre_market[-1].ref_price`（09:25 集合竞价价） |
+| 涨幅 | changeRatio | `(last-昨收)/昨收` |
+| body | `(close-open)/open`（单根K线） | `(last-开盘价)/开盘价`（开盘至今累计） |
+| 涨速 | `(close[-1]-close[-3])/close[-3]`（近3分钟） | `(last[t]-last[t-1])/last[t-1]`（1min 滚动序列） |
+| 加速 | 无 | `speed[t]-speed[t-1]`（新增） |
+
+### 实测（2026-06-12 历史 + 4 板块样本验证）
+- 性能：watchlist 279 只 32 并发 1.5s；缓存命中 0.12s；全市场 5530 只 ~30s
+- 时间切片对比：9:50 半导体设备领涨（盛美上海 +13.34% / 加速 +1.2%），15:00 铜板块第一，体现板块轮动
+- 4 板块验证：沪深主板/科创/创业/北交所分时结构一致（pre_market 201 点 + trading 241 点）
+
+---
+
 ## [Unreleased] - 2026-06-14
 
 ### 新增
