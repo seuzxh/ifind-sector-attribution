@@ -8,6 +8,7 @@
 - **个股多概念归因**：L1 权重归因法（`weight × concept_return`），分解个股涨幅对各概念的贡献
 - **组合归因分析**：按持仓组合的市值暴露，匹配当前强势板块并预警
 - **A股范围限定**：全链路过滤海外代码，只处理沪深北交易所股票
+- **盘中实时监控**：可视化网站，9:30~9:40 实时刷新板块强度 + 成分股四维评分排名
 
 ## 5 个 iFinD 接口
 
@@ -16,7 +17,7 @@
 | 1 | `basic_data_service` (ths_the_ths_concept_index_stock) | 个股所属同花顺概念 | 一次性永久缓存 |
 | 2 | `data_pool` (p03473) | 概念板块成分股 | 一次性永久缓存 |
 | 3 | `cmd_history_quotation` | 历史行情日K | 按 (code, date) 缓存 |
-| 4 | `high_frequency` | 1min K线 | 保留最近2天（当前未启用） |
+| 4 | `high_frequency` | 1min K线 | 实时监控用（盘中拉取，不入库） |
 | 5 | `basic_data_service` (ths_index_short_name_index) | 概念基本信息字典 | 一次性永久缓存 |
 
 ## 项目结构
@@ -29,9 +30,13 @@ ifind_sector_attribution/
 ├── database.py            # SQLite 数据库封装
 ├── sync_pipeline.py       # 数据同步与计算管线
 ├── core_calculator.py     # 核心计算引擎（板块强度、多周期融合、L1归因）
-├── api_server.py          # FastAPI 服务层
+├── stock_scorer.py        # 成分股四维综合评分（涨幅/涨速/实体/涨停）
+├── realtime_engine.py     # 盘中实时引擎（接口4拉取+实时板块强度）
+├── api_server.py          # FastAPI 服务层（API + 可视化页面）
 ├── main.py                # 入口脚本
 ├── requirements.txt       # 依赖
+├── templates/
+│   └── index.html         # 可视化看板单页（plotly.js CDN）
 ├── data/                  # 数据库文件（已 gitignore）
 └── tests/
     └── test_api.py        # 接口测试脚本
@@ -91,11 +96,26 @@ python main.py daily --date 20260612 --codes my.txt  # 指定股票列表
 
 > **日期须为交易日**：传入非交易日（如周末）会因当日无数据而返回空结果。
 
-### 6. 启动 API 服务
+### 6. 启动服务（API + 可视化看板）
 
 ```bash
 python main.py server --host 0.0.0.0 --port 8000
 ```
+
+服务启动后：
+- **可视化看板**：浏览器打开 `http://localhost:8000`
+- **REST API**：见下方"API 接口"
+
+#### 可视化看板（盘中实时监控）
+
+页面顶部可切换两种模式：
+
+- **实时模式**（9:30~9:40 盘中）：前端每 15 秒自动轮询，后端实时调接口4 拉全市场 1min K 线，算实时板块强度。Top10 板块的成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 实体涨幅 0.2 / 涨停 0.2），涨停判定按板块（主板 9.8% / 创业科创 19.5% / 北交 29%）。
+- **历史模式**：选日期读已入库的收盘数据，秒级响应。成分股按当日涨幅排序（无 1min 历史，标注"仅涨幅"）。
+
+页面布局：顶部统计栏（股票数/涨跌/涨停）+ 左侧 Top10 强势板块柱状图 + 右侧 Bottom10 弱势板块 + 下方各板块成分股卡片。点击柱状图可高亮对应成分股卡片。
+
+> 实时模式仅在交易时段有数据，非交易时段会显示友好提示。
 
 ### 7. 清理海外数据（维护命令）
 
@@ -120,10 +140,14 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
+| `GET /` | 可视化看板页面（HTML） |
 | `GET /api/sector/rankings` | 获取板块强度排名（含多周期融合分） |
 | `POST /api/attribution/stock` | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | 组合归因 + 强势板块定位 |
 | `GET /api/realtime/sector` | 最新板块强度排名 |
+| `GET /api/realtime/dashboard` | **实时看板**（top/bottom 板块 + 成分股排名） |
+| `GET /api/history/dashboard` | **历史看板**（指定日期的板块 + 成分股） |
+| `GET /api/dates` | 已入库的板块强度日期列表 |
 | `GET /api/concept/list` | 全部 A 股概念板块列表 |
 | `GET /api/concept/members` | 概念板块成分股（`date` 不传则取最新缓存） |
 

@@ -10,6 +10,7 @@
 - [4. A 股过滤策略](#4-a-股过滤策略)
 - [5. L1 权重归因法](#5-l1-权重归因法)
 - [6. 数据流总览](#6-数据流总览)
+- [7. 盘中实时监控](#7-盘中实时监控)
 
 ---
 
@@ -208,9 +209,77 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 ┌─────────────────────────────────────────────────────────┐
 │  api_server（查询服务）                                  │
 │                                                         │
-│  GET /api/sector/rankings   ─ 板块强度排名              │
-│  POST /api/attribution/stock    ─ 个股归因              │
-│  POST /api/attribution/portfolio ─ 组合归因             │
-│  GET /api/concept/members   ─ 成分股（取最新缓存）       │
+│  GET /                       ─ 可视化看板页面            │
+│  GET /api/sector/rankings    ─ 板块强度排名              │
+│  POST /api/attribution/stock     ─ 个股归因              │
+│  POST /api/attribution/portfolio ─ 组合归因              │
+│  GET /api/realtime/dashboard ─ 实时看板（盘中）          │
+│  GET /api/history/dashboard  ─ 历史看板（收盘）          │
+│  GET /api/concept/members    ─ 成分股（取最新缓存）       │
 └─────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 7. 盘中实时监控
+
+实时监控是一条**独立于 daily 的链路**，不写库、不走多周期融合，只在交易时段内存计算。
+
+### 实时链路（realtime_engine.py）
+
+```
+前端 15s 轮询 GET /api/realtime/dashboard
+                ↓
+        后端内存缓存（TTL 10s）命中？─→ 直接返回
+                ↓ 未命中
+    接口4 拉全市场 A 股 09:30~当前 的 1min K（批量50，约110次请求）
+                ↓ 解析每只股票
+    realtime_df（列：code, change_ratio, speed, body, open, close）
+                ↓
+    calc_all_sectors_strength(realtime_df, members_map)  ← 复用收盘计算
+                ↓
+    对 Top10 板块各调 stock_scorer.score_members() → 成分股四维排名
+                ↓
+    组装返回 top/bottom 板块 + 成分股 + 市场统计
+```
+
+### 与 daily 的区别
+
+| 维度 | daily（盘后） | 实时（盘中） |
+|---|---|---|
+| 数据源 | 接口3 日K，入库 | 接口4 1min K，不入库 |
+| 板块强度 | 多周期融合（1d/5d/20d） | 仅 1d 实时强度 |
+| 成分股排名 | L1 归因（贡献占比） | 四维加权评分（涨幅/涨速/实体/涨停） |
+| 响应速度 | 入库后秒级 | 首次约 2 分钟，缓存命中秒级 |
+
+### 成分股四维评分（stock_scorer.py）
+
+```
+综合分 = 0.4×z(涨幅) + 0.2×z(涨速) + 0.2×z(实体涨幅) + 0.2×涨停分
+```
+
+| 维度 | 定义 | 数据来源 |
+|---|---|---|
+| 涨幅 | 相对昨收的累计涨跌幅 % | 最后一根 1min K 的 changeRatio |
+| 涨速 | (当前 close − 3分钟前 close) / 3分钟前 close × 100 | 最近 4 根 1min K 的 close |
+| 实体涨幅 | (close − open) / open × 100 | 最后一根 1min K 的 close/open |
+| 涨停分 | 涨停=1.0，未涨停=0.0（二值，不标准化） | 按板块判定阈值 |
+
+涨停判定阈值（用略低值规避四舍五入）：
+- 沪深主板：≥ 9.8%
+- 创业板（300xxx）/科创板（688xxx）：≥ 19.5%
+- 北交所（.BJ）：≥ 29%
+
+### 缓存策略
+
+后端全局缓存单例（`_last_dashboard`），TTL 10 秒：
+- 前端 15 秒轮询 → 后端多数请求命中缓存，避免打爆 iFinD
+- 缓存只缓存成功结果，失败不缓存
+- 引擎实例（含成分股映射）全局复用，避免每次重建
+
+### 历史模式降级
+
+历史看板（`/api/history/dashboard`）读已入库的收盘数据：
+- 板块强度：读 `concept_strength` 表
+- 成分股排名：读 `daily_kline` 当日涨幅，**降级为纯涨幅排序**（无 1min 历史，无法算涨速/实体）
+- 页面标注"历史模式仅涨幅"
