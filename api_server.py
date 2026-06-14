@@ -45,6 +45,12 @@ class PortfolioAttributionRequest(BaseModel):
     date: Optional[str] = None
 
 
+class PrescreenRequest(BaseModel):
+    date: Optional[str] = None
+    top_sector: Optional[int] = None
+    top_stock: Optional[int] = None
+
+
 # ========== API 接口 ==========
 @app.get("/", response_class=HTMLResponse)
 def root():
@@ -155,6 +161,8 @@ def get_realtime_dashboard(
     start_time: str = "09:30",
     end_time: str = None,
     top_n: int = 10,
+    watchlist_mode: bool = False,
+    watchlist_date: str = None,
 ):
     """
     实时看板：盘中实时拉取 1min K 线，算板块强度 + 成分股排名。
@@ -164,9 +172,63 @@ def get_realtime_dashboard(
     :param start_time: 起始时间 HH:MM，默认 09:30
     :param end_time: 结束时间 HH:MM，默认当前时刻
     :param top_n: 返回前 N 个板块
+    :param watchlist_mode: 是否聚焦 watchlist（盘前筛选出的板块+成分股）
+    :param watchlist_date: watchlist 日期
     """
     from realtime_engine import get_realtime_dashboard as _fetch
-    return _fetch(trade_date, start_time, end_time, use_cache=True)
+    return _fetch(
+        trade_date, start_time, end_time,
+        use_cache=True,
+        watchlist_mode=watchlist_mode,
+        watchlist_date=watchlist_date,
+    )
+
+
+@app.post("/api/prescreen")
+def trigger_prescreen(req: PrescreenRequest):
+    """
+    触发盘前筛选（页面按钮用）：5日涨幅选板块+成分股，存入 watchlist。
+    """
+    from prescreen import run_prescreen
+    date = req.date or datetime.now().strftime("%Y%m%d")
+    result = run_prescreen(
+        db, date,
+        top_sector=req.top_sector,
+        top_stock=req.top_stock,
+    )
+    return result
+
+
+@app.get("/api/watchlist")
+def get_watchlist(date: str = None):
+    """
+    读取 watchlist（盘前筛选结果）。
+    :param date: 日期，默认最近一次
+    """
+    date = date or db.get_latest_watchlist_date()
+    if not date:
+        return {"error": "无 watchlist 数据，请先盘前筛选", "date": None}
+    rows = db.get_watchlist(date)
+    # 按板块分组组装
+    sectors = {}
+    for r in rows:
+        cc = r["concept_code"]
+        if cc not in sectors:
+            sectors[cc] = {
+                "concept_code": cc,
+                "concept_name": r["concept_name"],
+                "sector_5d_return": r["sector_5d_return"],
+                "rank_sector": r["rank_sector"],
+                "stocks": [],
+            }
+        sectors[cc]["stocks"].append({
+            "stock_code": r["stock_code"],
+            "stock_name": r["stock_name"],
+            "stock_5d_return": r["stock_5d_return"],
+            "rank_stock": r["rank_stock"],
+        })
+    sector_list = sorted(sectors.values(), key=lambda x: x["rank_sector"])
+    return {"date": date, "sector_count": len(sector_list), "sectors": sector_list}
 
 
 @app.get("/api/history/dashboard")

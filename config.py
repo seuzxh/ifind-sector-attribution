@@ -172,6 +172,17 @@ def is_a_share_concept(concept_code: str) -> bool:
     """
     return concept_code is not None and concept_code[:3] in A_SHARE_CONCEPT_PREFIXES
 
+
+# ========== 盘前筛选配置 ==========
+# 盘前 watchlist 筛选参数
+PRESCREEN_PERIOD_DAYS = 5      # 用近 N 个交易日的累计涨幅筛选
+PRESCREEN_TOP_SECTOR = 20      # 选出的板块数
+PRESCREEN_TOP_STOCK = 30       # 每个板块选出的成分股数
+PRESCREEN_MIN_MEMBER = 6       # 板块最少成分股数（过滤迷你概念）
+# 服务端定时自动筛选（留空则不启用，格式 "HH:MM" 如 "09:20"）
+PRESCREEN_AUTO_TIME = ""
+
+
 # ========== 计算配置 ==========
 SCORE_WEIGHTS = {
     "s1": 0.40,   # 涨幅强度

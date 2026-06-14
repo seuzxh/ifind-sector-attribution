@@ -32,6 +32,7 @@ ifind_sector_attribution/
 ├── core_calculator.py     # 核心计算引擎（板块强度、多周期融合、L1归因）
 ├── stock_scorer.py        # 成分股四维综合评分（涨幅/涨速/实体/涨停）
 ├── realtime_engine.py     # 盘中实时引擎（接口4拉取+实时板块强度）
+├── prescreen.py           # 盘前筛选（5日涨幅选板块+成分股→watchlist）
 ├── api_server.py          # FastAPI 服务层（API + 可视化页面）
 ├── main.py                # 入口脚本
 ├── requirements.txt       # 依赖
@@ -108,16 +109,33 @@ python main.py server --host 0.0.0.0 --port 8000
 
 #### 可视化看板（盘中实时监控）
 
-页面顶部可切换两种模式：
+页面顶部可切换三种模式：
 
-- **实时模式**（9:30~9:40 盘中）：前端每 15 秒自动轮询，后端实时调接口4 拉全市场 1min K 线，算实时板块强度。Top10 板块的成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 实体涨幅 0.2 / 涨停 0.2），涨停判定按板块（主板 9.8% / 创业科创 19.5% / 北交 29%）。
+- **实时模式**（9:30~9:40 盘中）：前端每 15 秒自动轮询，后端实时调接口4 拉全市场 1min K 线，算实时板块强度。Top10 板块的成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 实体涨幅 0.2 / 涨停 0.2），涨停判定按板块（主板 9.8% / 创业科创 19.5% / 北交 29%）。勾选"watchlist聚焦"后只监控盘前筛选出的标的（拉取量从 5500 降到 ~290，响应从 2 分钟 → 约 30 秒）。
 - **历史模式**：选日期读已入库的收盘数据，秒级响应。成分股按当日涨幅排序（无 1min 历史，标注"仅涨幅"）。
+- **盘前筛选模式**：展示当日 watchlist（20 板块 + 各 30 成分股的 5d 涨幅），开盘前观察用。
 
-页面布局：顶部统计栏（股票数/涨跌/涨停）+ 左侧 Top10 强势板块柱状图 + 右侧 Bottom10 弱势板块 + 下方各板块成分股卡片。点击柱状图可高亮对应成分股卡片。
+页面布局：顶部统计栏（股票数/涨跌/涨停）+ 左侧 Top10 强势板块柱状图 + 右侧 Bottom10 弱势板块 + 下方各板块成分股卡片。点击柱状图可高亮对应成分股卡片。顶部"盘前筛选"按钮可即时触发筛选。
 
 > 实时模式仅在交易时段有数据，非交易时段会显示友好提示。
 
-### 7. 清理海外数据（维护命令）
+### 7. 盘前筛选（生成 watchlist）
+
+盘前（如 9:15~9:25）执行，选出近 5 个交易日强势的板块和成分股，供实时监控聚焦：
+
+```bash
+python main.py prescreen --date 20260612               # 默认前20板块，每板块前30成分股
+python main.py prescreen --date 20260612 --top-sector 30  # 自定义数量
+```
+
+筛选逻辑：
+1. 对所有 A 股概念算 5 日累计涨幅（成分股均值），取前 20 板块
+2. 对选出的每个板块，取其成分股 5 日累计涨幅前 30
+3. 结果存入 `watchlist` 表，供实时监控的 watchlist 模式使用
+
+也可通过可视化页面的"盘前筛选"按钮触发，或调用 `POST /api/prescreen`。
+
+### 8. 清理海外数据（维护命令）
 
 ```bash
 python main.py purge             # 删除所有海外数据，仅保留 A 股
@@ -132,7 +150,8 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 |---|---|
 | `init [--stocks FILE]` | 首次部署：拉取字典+成分股+映射，补全概念板块全集 |
 | `daily --date DATE [--codes FILE]` | 每日：同步 K 线 + 板块强度 + 个股归因 |
-| `server [--host H] [--port P]` | 启动 FastAPI 服务 |
+| `prescreen [--date DATE] [--top-sector N] [--top-stock M]` | 盘前筛选：5日涨幅选板块+成分股，存入 watchlist |
+| `server [--host H] [--port P]` | 启动 FastAPI 服务（API + 可视化页面） |
 | `test` | 测试 5 个 iFinD 接口连通性 |
 | `purge [--vacuum]` | 删除海外数据，仅保留 A 股 |
 
@@ -145,8 +164,10 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 | `POST /api/attribution/stock` | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | 组合归因 + 强势板块定位 |
 | `GET /api/realtime/sector` | 最新板块强度排名 |
-| `GET /api/realtime/dashboard` | **实时看板**（top/bottom 板块 + 成分股排名） |
+| `GET /api/realtime/dashboard` | **实时看板**（top/bottom 板块 + 成分股排名，支持 watchlist_mode） |
 | `GET /api/history/dashboard` | **历史看板**（指定日期的板块 + 成分股） |
+| `POST /api/prescreen` | **盘前筛选**（5日涨幅选板块+成分股，存入 watchlist） |
+| `GET /api/watchlist` | 读取当日 watchlist |
 | `GET /api/dates` | 已入库的板块强度日期列表 |
 | `GET /api/concept/list` | 全部 A 股概念板块列表 |
 | `GET /api/concept/members` | 概念板块成分股（`date` 不传则取最新缓存） |
@@ -163,6 +184,9 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 | `CONCEPT_MEMBERS_PROGRESS_EVERY` | 100 | 进度打印间隔 |
 | `A_SHARE_CONCEPT_PREFIXES` | 700/881/883/884/885/886 | A 股概念前缀白名单 |
 | `A_SHARE_SUFFIXES` | .SH/.SZ/.BJ | A 股个股后缀 |
+| `PRESCREEN_PERIOD_DAYS` | 5 | 盘前筛选用的累计涨幅天数 |
+| `PRESCREEN_TOP_SECTOR` | 20 | 盘前筛选选出的板块数 |
+| `PRESCREEN_TOP_STOCK` | 30 | 每个板块选出的成分股数 |
 
 ## 数据模型
 
@@ -177,6 +201,7 @@ SQLite 数据库（`data/sector_attribution.db`）包含 7 张表：
 | `min1_kline` | 1min K线（当前未启用） | — |
 | `concept_strength` | 板块强度评分（含 score_1d/5d/20d/final） | 仅 A 股概念 |
 | `stock_attribution` | 个股归因结果（含明细 JSON） | 仅 A 股代码 |
+| `watchlist` | 盘前筛选结果（板块+成分股，按日期） | 仅 A 股 |
 
 **永久缓存语义**：`stock_concept_map` / `concept_members` 是一次性缓存，查询时不传日期则取最新一份（`MAX(date)`），与 init 日期解耦。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 

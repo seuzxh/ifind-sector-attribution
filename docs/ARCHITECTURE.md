@@ -11,6 +11,7 @@
 - [5. L1 权重归因法](#5-l1-权重归因法)
 - [6. 数据流总览](#6-数据流总览)
 - [7. 盘中实时监控](#7-盘中实时监控)
+- [8. 盘前筛选与 watchlist](#8-盘前筛选与-watchlist)
 
 ---
 
@@ -283,3 +284,51 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 - 板块强度：读 `concept_strength` 表
 - 成分股排名：读 `daily_kline` 当日涨幅，**降级为纯涨幅排序**（无 1min 历史，无法算涨速/实体）
 - 页面标注"历史模式仅涨幅"
+
+---
+
+## 8. 盘前筛选与 watchlist
+
+### 目标
+
+盘前（如 9:15~9:25）从近 5 日强势标的中选出观察范围，开盘后实时监控聚焦这些标的，减少噪音和接口调用量。
+
+### 筛选算法（prescreen.py）
+
+**口径**：近 5 个交易日累计涨幅（`calc_period_return_df`，close_今日 / preClose_5天前 - 1）
+
+**步骤1：板块 5 日涨幅 → 前 20**
+```
+对每只 A 股股票算 5d 累计涨幅（复用 calc_period_return_df）
+    ↓
+对每个 A 股概念，取成分股 5d 涨幅均值 = 板块 5d 涨幅%
+    ↓
+按板块 5d 涨幅降序，取前 20（过滤 member_count < 6 的迷你概念）
+```
+
+**步骤2：板块成分股 5 日涨幅 → 各前 30**
+```
+对选出的 20 板块，分别取其成分股 5d 涨幅降序前 30
+```
+
+注意：板块 5d 涨幅是成分股**均值**（复用 `calc_sector_strength` 的 s1 逻辑，跳过 Z-score），**不是** `concept_strength` 表里的 `score_5d`（那是横截面 Z-score 相对分，有正有负）。
+
+### watchlist 持久化
+
+`watchlist` 表（PK: calc_date + concept_code + stock_code），每次 prescreen 用 `DELETE WHERE calc_date=?` + 批量插入覆盖当日。读取方法：
+- `get_watchlist(date)` — 完整板块+成分股
+- `get_watchlist_concepts(date)` — 板块代码列表
+- `get_watchlist_stock_codes(date)` — 成分股去重列表
+
+### 与实时监控的衔接
+
+实时监控（第 7 章）的 `compute_dashboard` 支持 `watchlist_mode=True`：
+1. 从 watchlist 表读当日 20 板块 + 去重成分股（约 290 只）
+2. `fetch_realtime_data` 只拉这 290 只（接口4 调用从 110 次降到 6 次，**响应 2 分钟 → 30 秒**）
+3. `calc_all_sectors_strength` 只对这 20 板块算强度
+
+前端实时模式有"watchlist聚焦"开关，默认开启（盘前已筛选时）；watchlist 为空时返回提示。
+
+### 复用的关键函数
+
+`calc_period_return_df(db, calc_date, days)` —— 从 `calc_multi_period_score` 闭包提取的模块级函数，算任意天数的累计涨幅。prescreen 用它算 5d 涨幅，多周期融合用它算 5d/20d。

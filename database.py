@@ -130,6 +130,20 @@ class Database:
             attribution_json TEXT,
             PRIMARY KEY (stock_code, calc_date)
         );
+
+        CREATE TABLE IF NOT EXISTS watchlist (
+            calc_date       TEXT NOT NULL,
+            concept_code    TEXT NOT NULL,
+            concept_name    TEXT,
+            sector_5d_return REAL,
+            rank_sector     INTEGER,
+            stock_code      TEXT NOT NULL,
+            stock_name      TEXT,
+            stock_5d_return REAL,
+            rank_stock      INTEGER,
+            PRIMARY KEY (calc_date, concept_code, stock_code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_wl_date ON watchlist(calc_date);
         """
         with self._connect() as conn:
             conn.executescript(ddl)
@@ -483,3 +497,59 @@ class Database:
             except Exception:
                 conn.rollback()
                 raise
+
+    # ========== watchlist（盘前筛选结果） ==========
+    def save_watchlist(self, calc_date: str, records: List[Dict]):
+        """
+        保存盘前筛选结果（覆盖当日）。
+        :param calc_date: 筛选日期
+        :param records: [{concept_code, concept_name, sector_5d_return, rank_sector,
+                          stock_code, stock_name, stock_5d_return, rank_stock}, ...]
+        """
+        with self._connect() as conn:
+            conn.execute("DELETE FROM watchlist WHERE calc_date = ?", (calc_date,))
+            if records:
+                conn.executemany("""
+                    INSERT OR REPLACE INTO watchlist
+                    (calc_date, concept_code, concept_name, sector_5d_return, rank_sector,
+                     stock_code, stock_name, stock_5d_return, rank_stock)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [(
+                    calc_date, r["concept_code"], r.get("concept_name"),
+                    r.get("sector_5d_return"), r.get("rank_sector"),
+                    r["stock_code"], r.get("stock_name"),
+                    r.get("stock_5d_return"), r.get("rank_stock")
+                ) for r in records])
+
+    def get_watchlist(self, calc_date: str) -> List[Dict]:
+        """读取当日 watchlist（含板块和成分股明细）"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM watchlist WHERE calc_date = ? ORDER BY rank_sector, rank_stock",
+                (calc_date,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_watchlist_concepts(self, calc_date: str) -> List[str]:
+        """读取当日 watchlist 的板块代码列表（去重，按板块排名）"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT DISTINCT concept_code FROM watchlist WHERE calc_date = ? ORDER BY rank_sector",
+                (calc_date,)
+            )
+            return [row["concept_code"] for row in cursor.fetchall()]
+
+    def get_watchlist_stock_codes(self, calc_date: str) -> List[str]:
+        """读取当日 watchlist 的全部成分股代码（去重）"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT DISTINCT stock_code FROM watchlist WHERE calc_date = ?",
+                (calc_date,)
+            )
+            return [row["stock_code"] for row in cursor.fetchall()]
+
+    def get_latest_watchlist_date(self) -> str:
+        """获取最近一次 watchlist 的日期"""
+        with self._connect() as conn:
+            row = conn.execute("SELECT MAX(calc_date) FROM watchlist").fetchone()
+            return row[0] if row else None

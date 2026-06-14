@@ -146,6 +146,44 @@ def calc_all_sectors_strength(
     return df.sort_values("rank_1d")
 
 
+def calc_period_return_df(db, calc_date: str, days: int) -> pd.DataFrame:
+    """
+    构造一个"伪单日"DataFrame，change_ratio 为最近 N 个交易日的累计涨幅。
+    累计涨幅 = (期末 close - 期初 preClose) / 期初 preClose * 100
+    期初取窗口起点（往前 days*2 自然日以覆盖 days 个交易日）的首个 preClose。
+
+    模块级函数（从 calc_multi_period_score 闭包提取），供 prescreen 等复用。
+
+    :param db: Database 实例
+    :param calc_date: 计算日期，YYYYMMDD 或 YYYY-MM-DD
+    :param days: 交易日数（如 5 表示 5 日累计涨幅）
+    :return: DataFrame [code, trade_date, change_ratio, close]，change_ratio 为累计涨幅 %
+    """
+    date_str = calc_date.replace("-", "")
+    date_obj = datetime.strptime(date_str, "%Y%m%d")
+
+    start = (date_obj - timedelta(days=days * 2)).strftime("%Y%m%d")
+    rows = db.get_daily_kline_by_date_range(start, date_str)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df = df.sort_values(["code", "trade_date"])
+    first = df.groupby("code").first().reset_index()[["code", "pre_close"]]
+    last = df[df["trade_date"] == date_str][["code", "close"]]
+    if last.empty:
+        return pd.DataFrame()
+    merged = first.merge(last, on="code", how="inner")
+    merged["change_ratio"] = merged.apply(
+        lambda r: (r["close"] / r["pre_close"] - 1) * 100
+        if r["pre_close"] and r["pre_close"] != 0 else 0.0,
+        axis=1
+    )
+    merged["trade_date"] = date_str
+    return merged[["code", "trade_date", "change_ratio", "close"]]
+
+
 def calc_multi_period_score(
     db,
     calc_date: str,
@@ -169,35 +207,9 @@ def calc_multi_period_score(
     date_str = calc_date.replace("-", "")
     date_obj = datetime.strptime(date_str, "%Y%m%d")
 
+    # 复用模块级函数（原为闭包，提取后供 prescreen 等复用）
     def _period_return_df(days: int) -> pd.DataFrame:
-        """
-        构造一个"伪单日"DataFrame，change_ratio 为最近 N 个交易日的累计涨幅。
-        累计涨幅 = (期末 close - 期初 preClose) / 期初 preClose * 100
-        期初取窗口起点（往前 days*2 自然日以覆盖 days 个交易日）的首个 preClose。
-        """
-        start = (date_obj - timedelta(days=days * 2)).strftime("%Y%m%d")
-        # 取窗口内全部 K 线
-        rows = db.get_daily_kline_by_date_range(start, date_str)
-        if not rows:
-            return pd.DataFrame()
-        df = pd.DataFrame(rows)
-        if df.empty:
-            return df
-        # 每只股票：期初 preClose（窗口内最早一条）、期末 close（calc_date 当天）
-        df = df.sort_values(["code", "trade_date"])
-        first = df.groupby("code").first().reset_index()[["code", "pre_close"]]
-        last = df[df["trade_date"] == date_str][["code", "close"]]
-        if last.empty:
-            return pd.DataFrame()
-        merged = first.merge(last, on="code", how="inner")
-        # 累计涨幅 %，防除零
-        merged["change_ratio"] = merged.apply(
-            lambda r: (r["close"] / r["pre_close"] - 1) * 100
-            if r["pre_close"] and r["pre_close"] != 0 else 0.0,
-            axis=1
-        )
-        merged["trade_date"] = date_str
-        return merged[["code", "trade_date", "change_ratio", "close"]]
+        return calc_period_return_df(db, calc_date, days)
 
     # 各周期数据：1d 直接用当日，5d/20d 用累计涨幅
     period_data = {}

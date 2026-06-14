@@ -64,13 +64,15 @@ class RealtimeEngine:
         trade_date: str = None,
         start_time: str = "09:30",
         end_time: str = None,
+        codes_override: List[str] = None,
     ) -> pd.DataFrame:
         """
-        拉取全市场 A 股的实时 1min K 线，构造 realtime_df。
+        拉取实时 1min K 线，构造 realtime_df。
 
         :param trade_date: 交易日，格式 YYYYMMDD 或 YYYY-MM-DD；默认今天
         :param start_time: 起始时间 HH:MM，默认 09:30
         :param end_time: 结束时间 HH:MM，默认当前时刻
+        :param codes_override: 指定股票代码列表（watchlist 模式用，默认全市场 A 股）
         :return: DataFrame，列 [code, change_ratio, speed, body, open, close, stock_name]
         """
         # 日期处理
@@ -87,9 +89,10 @@ class RealtimeEngine:
         start_full = f"{trade_date} {start_time}:00"
         end_full = f"{trade_date} {end_time}:59"
 
-        # 全市场 A 股代码
-        all_codes = self.db.get_all_member_stock_codes()
-        print(f"[REALTIME] 拉取 {len(all_codes)} 只股票 {trade_date} {start_time}~{end_time}")
+        # 股票代码：watchlist 模式用指定列表，否则全市场 A 股
+        all_codes = codes_override if codes_override else self.db.get_all_member_stock_codes()
+        mode_tag = "watchlist" if codes_override else "全市场"
+        print(f"[REALTIME] 拉取 {len(all_codes)} 只股票（{mode_tag}） {trade_date} {start_time}~{end_time}")
 
         # 分批调用接口4
         records = []
@@ -180,10 +183,14 @@ class RealtimeEngine:
         start_time: str = "09:30",
         end_time: str = None,
         top_n: int = 10,
+        watchlist_mode: bool = False,
+        watchlist_date: str = None,
     ) -> Dict:
         """
         计算完整看板数据：top/bottom 板块 + top 板块的成分股排名。
 
+        :param watchlist_mode: 是否聚焦 watchlist（盘前筛选出的板块+成分股）
+        :param watchlist_date: watchlist 日期，默认取最近一次
         :return: dict {
             trade_date, snapshot_time, market_stats,
             top_sectors: [{concept_code, concept_name, score, s1, s2, members_top10: [...]}],
@@ -192,13 +199,31 @@ class RealtimeEngine:
         """
         self._ensure_members_map()
 
-        # 1. 拉实时数据
-        rt_df = self.fetch_realtime_data(trade_date, start_time, end_time)
+        # watchlist 模式：限定拉取范围 + 板块范围
+        watchlist_concepts = None
+        codes_override = None
+        if watchlist_mode:
+            wl_date = watchlist_date or self.db.get_latest_watchlist_date()
+            if not wl_date:
+                return {"error": "watchlist 模式但当日未跑 prescreen，请先盘前筛选", "trade_date": trade_date}
+            watchlist_concepts = self.db.get_watchlist_concepts(wl_date)
+            codes_override = self.db.get_watchlist_stock_codes(wl_date)
+            if not watchlist_concepts or not codes_override:
+                return {"error": f"watchlist 为空（{wl_date}），请先盘前筛选", "trade_date": trade_date}
+            print(f"[REALTIME] watchlist 模式：{len(watchlist_concepts)} 板块，{len(codes_override)} 只股票")
+
+        # 1. 拉实时数据（watchlist 模式只拉 watchlist 股票）
+        rt_df = self.fetch_realtime_data(trade_date, start_time, end_time, codes_override=codes_override)
         if rt_df.empty:
             return {"error": "无实时数据（可能非交易时段）", "trade_date": trade_date}
 
         # 2. 算板块强度
-        strength_df = calc_all_sectors_strength(rt_df, self._members_map)
+        members_map = self._members_map
+        if watchlist_mode and watchlist_concepts:
+            # 只对 watchlist 板块算强度
+            members_map = {cc: self._members_map.get(cc, []) for cc in watchlist_concepts
+                           if cc in self._members_map}
+        strength_df = calc_all_sectors_strength(rt_df, members_map)
         if strength_df.empty:
             return {"error": "板块强度计算为空", "trade_date": trade_date}
 
@@ -267,6 +292,7 @@ class RealtimeEngine:
         return {
             "trade_date": trade_date,
             "snapshot_time": datetime.now().strftime("%H:%M:%S"),
+            "watchlist_mode": watchlist_mode,
             "market_stats": market_stats,
             "top_sectors": top_sectors,
             "bottom_sectors": bottom_sectors,
@@ -275,8 +301,9 @@ class RealtimeEngine:
 
 # 全局引擎实例 + 缓存（避免每次请求重建）
 _engine_instance = None
-_last_dashboard = None
-_last_dashboard_time = 0
+# 缓存按 watchlist_mode 分别存（避免切换模式时串数据）
+_last_dashboard = {}  # {mode_key: result}
+_last_dashboard_time = {}  # {mode_key: timestamp}
 CACHE_TTL = 10  # 秒
 
 
@@ -285,22 +312,30 @@ def get_realtime_dashboard(
     start_time: str = "09:30",
     end_time: str = None,
     use_cache: bool = True,
+    watchlist_mode: bool = False,
+    watchlist_date: str = None,
 ) -> Dict:
     """
     获取实时看板数据（带内存缓存）。
     若距上次拉取 < CACHE_TTL 秒，直接返回缓存（避免高频请求打爆 iFinD）。
+    watchlist 模式与全市场模式分别缓存。
     """
-    global _engine_instance, _last_dashboard, _last_dashboard_time
+    global _engine_instance
 
+    mode_key = "watchlist" if watchlist_mode else "market"
     now = time.time()
-    if use_cache and _last_dashboard is not None and (now - _last_dashboard_time) < CACHE_TTL:
-        return _last_dashboard
+    if use_cache and mode_key in _last_dashboard and (now - _last_dashboard_time.get(mode_key, 0)) < CACHE_TTL:
+        return _last_dashboard[mode_key]
 
     if _engine_instance is None:
         _engine_instance = RealtimeEngine()
 
-    result = _engine_instance.compute_dashboard(trade_date, start_time, end_time)
+    result = _engine_instance.compute_dashboard(
+        trade_date, start_time, end_time,
+        watchlist_mode=watchlist_mode,
+        watchlist_date=watchlist_date,
+    )
     if "error" not in result:
-        _last_dashboard = result
-        _last_dashboard_time = now
+        _last_dashboard[mode_key] = result
+        _last_dashboard_time[mode_key] = now
     return result

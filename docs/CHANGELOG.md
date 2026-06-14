@@ -5,11 +5,17 @@
 ## [Unreleased] - 2026-06-14
 
 ### 新增
-- **盘中实时监控可视化网站**：FastAPI + 单页 HTML + plotly.js，支持实时/历史双模式
+- **盘前筛选（prescreen）功能**：5 日累计涨幅选板块+成分股，存入 watchlist，实时监控可聚焦
+  - `prescreen.py`：筛选核心（板块 5d 涨幅均值 → 前 20；每板块成分股 5d 涨幅 → 各前 30）
+  - `watchlist` 表：持久化筛选结果（PK: 日期+板块+成分股）
+  - `realtime_engine.py` watchlist 模式：实时拉取范围从全市场 5530 只缩减到 ~290 只，响应 2 分钟 → 30 秒
+  - 三入口：`main.py prescreen` 命令、页面"盘前筛选"按钮、`POST /api/prescreen`
+  - 前端新增"盘前筛选"模式（展示 watchlist）+ 实时模式 watchlist 聚焦开关
+- **盘中实时监控可视化网站**：FastAPI + 单页 HTML + plotly.js，支持实时/历史/watchlist 三模式
   - `stock_scorer.py`：成分股四维综合评分（涨幅 0.4 / 涨速 0.2 / 实体涨幅 0.2 / 涨停 0.2），涨停判定按板块（主板 9.8% / 创业科创 19.5% / 北交 29%）
   - `realtime_engine.py`：实时引擎，接口4 拉全市场 1min K → 构造 realtime_df → 算板块强度 + 成分股排名，带 10 秒内存缓存
   - `templates/index.html`：单页前端，日期选择 + Top10/Bottom10 双柱状图 + 成分股卡片 + 15 秒轮询，plotly.js 走 CDN
-- **新 API 路由**：`/api/realtime/dashboard`（实时看板）、`/api/history/dashboard`（历史看板）、`/api/dates`（可用日期列表）
+- **新 API 路由**：`/api/realtime/dashboard`（实时看板，支持 watchlist_mode）、`/api/history/dashboard`（历史看板）、`/api/prescreen`（盘前筛选）、`/api/watchlist`（读 watchlist）、`/api/dates`（可用日期列表）
 - **`init_concept_universe` 流程**：扫描全市场股票补全 `885xxx/886xxx` 概念板块码的字典+成分股+映射，解决双概念编码体系脱节问题（归因从 0 → 5500+ 股票）
 - **多周期融合**：`calc_multi_period_score` 启用 1d/5d/20d 三周期评分，5d/20d 用累计涨幅（期末 close / 期初 preClose - 1）
 - **A股过滤**：`config.py` 新增 `is_a_share_code` / `is_a_share_concept` 判定函数 + 前缀白名单；全链路（init/daily/计算）限定 A 股
@@ -32,6 +38,7 @@
 - `cmd_daily` 不再硬编码 7 只测试代码
 - `init_concept_dict` 跳过海外行业指数（861/871 等）
 - API `/api/concept/members` 不再用"今天"兜底，`date=None` 直接取最新缓存
+- `calc_multi_period_score` 的 5d/20d 闭包 `_period_return_df` 提取为模块级函数 `calc_period_return_df`，供 prescreen 复用
 
 ### 实测数据（2026-06-08 ~ 06-12 全市场 A 股）
 - 每日：5527 条 K 线 → 1068 板块多周期评分 → 5500 股票归因
@@ -40,6 +47,7 @@
 - 多周期融合捕捉中期趋势（铜板块 6/12 登顶，前几日单日排名靠后）
 - **实时监控验证**（6/12 09:30~09:35 模拟）：5512 股拉取成功，Top3=航天装备/磁性材料/印制电路板，成分股 301323 涨 4.71%/涨速 8.73%/综合分 2.67 排第一
 - **历史看板验证**（6/12）：秒级响应，Top3=铜/铅锌/铜A股，104 只涨停，成分股为真实涨停股
+- **盘前筛选验证**（6/12）：1068 有效板块中选出 20 个 + 去重 290 只成分股，Top5=工业气体/非金属材料/机器人/半导体材料；watchlist 模式实时拉取量从 5530→290 只，响应 2 分钟→30 秒
 
 ---
 

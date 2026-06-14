@@ -82,12 +82,17 @@
     <select id="modeSel" onchange="onModeChange()">
       <option value="history">历史（收盘）</option>
       <option value="realtime">实时（盘中）</option>
+      <option value="watchlist">盘前筛选（watchlist）</option>
     </select>
     <label>日期：</label>
     <select id="dateSel" onchange="onDateChange()"></select>
     <label>实时时段：</label>
     <input type="time" id="startTime" value="09:30" style="display:none">
     <input type="time" id="endTime" style="display:none">
+    <label id="wlSwitchLabel" style="display:none;">
+      <input type="checkbox" id="wlSwitch" checked onchange="refresh()"> watchlist聚焦
+    </label>
+    <button onclick="runPrescreen()" style="background:#67c23a;color:#fff;border-color:#67c23a;">盘前筛选</button>
     <button class="primary" onclick="refresh()">刷新</button>
   </div>
   <div class="status" id="statusBar"></div>
@@ -113,6 +118,13 @@
   </div>
 </div>
 
+<div class="members-section" id="watchlistSection" style="display:none;">
+  <h2>盘前 watchlist（5日涨幅筛选）<span class="sub" id="wlHint"></span></h2>
+  <div class="members-grid" id="watchlistGrid">
+    <div class="empty-msg">点击右上角"盘前筛选"生成</div>
+  </div>
+</div>
+
 <script>
 let pollTimer = null;
 const POLL_INTERVAL = 15000; // 15秒轮询
@@ -125,14 +137,23 @@ function setStatus(text, cls) {
 function onModeChange() {
   const mode = document.getElementById('modeSel').value;
   const isRealtime = mode === 'realtime';
+  const isWatchlist = mode === 'watchlist';
   document.getElementById('startTime').style.display = isRealtime ? '' : 'none';
   document.getElementById('endTime').style.display = isRealtime ? '' : 'none';
+  // watchlist 聚焦开关：仅实时模式显示
+  document.getElementById('wlSwitchLabel').style.display = isRealtime ? '' : 'none';
   document.getElementById('modeHint').textContent = isRealtime
     ? '（实时：涨幅/涨速/实体/涨停 加权）' : '（历史：仅按当日涨幅排序）';
 
-  // 实时模式：启动轮询；历史模式：停止
+  // watchlist 视图区：仅 watchlist 模式显示
+  document.getElementById('watchlistSection').style.display = isWatchlist ? '' : 'none';
+  // 主看板（板块图+成分股）：watchlist 模式隐藏
+  document.querySelector('.panels').style.display = isWatchlist ? 'none' : 'grid';
+  document.querySelector('.members-section').style.display = isWatchlist ? 'none' : '';
+
   stopPolling();
   if (isRealtime) startPolling();
+  if (isWatchlist) loadWatchlist();
   refresh();
 }
 
@@ -161,14 +182,26 @@ async function loadDates() {
 
 async function refresh() {
   const mode = document.getElementById('modeSel').value;
+
+  // watchlist 模式：单独加载，不走主看板
+  if (mode === 'watchlist') {
+    await loadWatchlist();
+    return;
+  }
+
   setStatus('加载中...', 'loading');
 
   let url, payload;
   if (mode === 'realtime') {
     const st = document.getElementById('startTime').value;
     const et = document.getElementById('endTime').value;
+    const wlMode = document.getElementById('wlSwitch').checked;
     const params = new URLSearchParams({start_time: st});
     if (et) params.set('end_time', et);
+    if (wlMode) {
+      params.set('watchlist_mode', 'true');
+      setStatus('加载中...（watchlist聚焦，约30秒）', 'loading');
+    }
     url = '/api/realtime/dashboard?' + params.toString();
     payload = await fetchJson(url);
   } else {
@@ -191,7 +224,8 @@ async function refresh() {
   renderCharts(payload);
   renderMembers(payload);
   const ts = payload.snapshot_time || payload.date || '';
-  setStatus(mode === 'realtime' ? `实时 · 更新 ${ts} · 自动 15s` : `历史 · ${ts}`, 'live');
+  const wlTag = payload.watchlist_mode ? ' · watchlist聚焦' : '';
+  setStatus(mode === 'realtime' ? `实时${wlTag} · 更新 ${ts} · 自动 15s` : `历史 · ${ts}`, 'live');
 }
 
 async function fetchJson(url) {
@@ -305,6 +339,81 @@ function highlightSector(code) {
 function fmt(n) {
   if (n === null || n === undefined || isNaN(n)) return '-';
   return (n > 0 ? '+' : '') + Number(n).toFixed(2);
+}
+
+// ========== 盘前筛选 ==========
+async function runPrescreen() {
+  const date = document.getElementById('dateSel').value || '';
+  setStatus('盘前筛选中（约5秒）...', 'loading');
+  try {
+    const r = await fetch('/api/prescreen', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({date: date || undefined})
+    });
+    const data = await r.json();
+    if (data.error) {
+      setStatus('⚠ ' + data.error, '');
+      return;
+    }
+    setStatus(`盘前筛选完成：${data.sector_count} 板块，${data.stock_count} 股票`, 'live');
+    // 若当前在 watchlist 模式，刷新视图
+    if (document.getElementById('modeSel').value === 'watchlist') {
+      loadWatchlist();
+    }
+  } catch(e) {
+    setStatus('⚠ 筛选失败: ' + e.message, '');
+  }
+}
+
+async function loadWatchlist() {
+  const grid = document.getElementById('watchlistGrid');
+  grid.innerHTML = '<div class="empty-msg">加载中...</div>';
+  const r = await fetch('/api/watchlist');
+  const data = await r.json();
+  if (data.error) {
+    grid.innerHTML = '<div class="empty-msg">' + data.error + '</div>';
+    document.getElementById('wlHint').textContent = '';
+    setStatus(data.error, '');
+    return;
+  }
+  document.getElementById('wlHint').textContent =
+    `（${data.date} · ${data.sector_count} 板块）`;
+  renderWatchlist(data);
+  setStatus(`watchlist · ${data.date} · ${data.sector_count} 板块`, 'live');
+}
+
+function renderWatchlist(data) {
+  const grid = document.getElementById('watchlistGrid');
+  const sectors = data.sectors || [];
+  if (sectors.length === 0) {
+    grid.innerHTML = '<div class="empty-msg">无数据</div>';
+    return;
+  }
+  grid.innerHTML = sectors.map(s => watchlistCardHtml(s)).join('');
+}
+
+function watchlistCardHtml(s) {
+  const headColor = s.sector_5d_return >= 0 ? '#e6a23c' : '#909399';
+  const rows = (s.stocks || []).map(m => {
+    const cls = m.stock_5d_return > 0 ? 'up' : (m.stock_5d_return < 0 ? 'down' : '');
+    return `<tr>
+      <td>${m.stock_code}</td>
+      <td>${m.stock_name || ''}</td>
+      <td class="${cls}">${fmt(m.stock_5d_return)}%</td>
+      <td>${m.rank_stock}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="sector-card">
+    <div class="card-head" style="background:${headColor};">
+      <span>#${s.rank_sector} ${s.concept_name}</span>
+      <span class="score">5d ${fmt(s.sector_5d_return)}%</span>
+    </div>
+    <table>
+      <tr><th>代码</th><th>名称</th><th>5d涨幅</th><th>排名</th></tr>
+      ${rows || '<tr><td colspan="4" style="text-align:center;color:#999;">无成分股</td></tr>'}
+    </table>
+  </div>`;
 }
 
 // 初始化
