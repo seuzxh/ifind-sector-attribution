@@ -313,6 +313,18 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 
 注意：板块 5d 涨幅是成分股**均值**（复用 `calc_sector_strength` 的 s1 逻辑，跳过 Z-score），**不是** `concept_strength` 表里的 `score_5d`（那是横截面 Z-score 相对分，有正有负）。
 
+### 新股过滤
+
+筛选前剔除上市不足 `period_days`（默认 5）个交易日的新股，避免连板新股（如北交所上市首日 +300%）撑高板块涨幅均值。
+
+判定方式（无需额外接口，从 `daily_kline` 反推）：
+```
+取 calc_date 及之前的交易日序列 [d1, d2, ..., dN]
+cutoff = d(N - min_days + 1)   # 第6个交易日（含）
+股票最早出现日期 > cutoff  →  视为新股，剔除
+```
+实测：6/12 筛选剔除 2 只新股（920206 首日 6/8、301669 首日 6/9），老股不受影响。
+
 ### watchlist 持久化
 
 `watchlist` 表（PK: calc_date + concept_code + stock_code），每次 prescreen 用 `DELETE WHERE calc_date=?` + 批量插入覆盖当日。读取方法：

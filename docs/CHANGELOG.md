@@ -7,6 +7,7 @@
 ### 新增
 - **盘前筛选（prescreen）功能**：5 日累计涨幅选板块+成分股，存入 watchlist，实时监控可聚焦
   - `prescreen.py`：筛选核心（板块 5d 涨幅均值 → 前 20；每板块成分股 5d 涨幅 → 各前 30）
+  - 新股过滤：剔除上市不足 5 个交易日的新股（从 K 线历史反推），避免连板新股撑高板块涨幅
   - `watchlist` 表：持久化筛选结果（PK: 日期+板块+成分股）
   - `realtime_engine.py` watchlist 模式：实时拉取范围从全市场 5530 只缩减到 ~290 只，响应 2 分钟 → 30 秒
   - 三入口：`main.py prescreen` 命令、页面"盘前筛选"按钮、`POST /api/prescreen`
