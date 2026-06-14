@@ -553,3 +553,30 @@ class Database:
         with self._connect() as conn:
             row = conn.execute("SELECT MAX(calc_date) FROM watchlist").fetchone()
             return row[0] if row else None
+
+    def get_new_stock_codes(self, calc_date: str, min_days: int = 5) -> set:
+        """
+        返回上市不足 min_days 个交易日的股票代码集合（新股）。
+        判定：该股票在 daily_kline 的最早出现日期，距 calc_date 不足 min_days 个交易日。
+
+        :param calc_date: 基准日期 YYYYMMDD
+        :param min_days: 最小上市交易日数，默认 5
+        :return: set of stock_code
+        """
+        with self._connect() as conn:
+            # 取 calc_date 及之前的交易日列表（升序）
+            trade_dates = [r[0] for r in conn.execute(
+                "SELECT DISTINCT trade_date FROM daily_kline "
+                "WHERE trade_date <= ? ORDER BY trade_date", (calc_date,)
+            ).fetchall()]
+            if len(trade_dates) < min_days:
+                return set()  # 历史不足，无法判定，不过滤
+            # cutoff：第 (len - min_days) 个交易日（含），早于此日首现才算老股
+            cutoff_idx = len(trade_dates) - min_days
+            cutoff = trade_dates[cutoff_idx]
+            # 首现日期 > cutoff 的股票 = 上市不足 min_days 天
+            rows = conn.execute(
+                "SELECT code, MIN(trade_date) first_date FROM daily_kline "
+                "GROUP BY code HAVING first_date > ?", (cutoff,)
+            ).fetchall()
+            return {r[0] for r in rows}

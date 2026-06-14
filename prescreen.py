@@ -54,6 +54,14 @@ def run_prescreen(
     if return_df.empty:
         return {"error": f"日期 {calc_date} 无足够历史 K 线（需 ≥{period_days+1} 个交易日）"}
     stock_return = dict(zip(return_df["code"], return_df["change_ratio"]))
+
+    # 1.5 剔除上市不足 min_days 的新股（避免连板新股撑高板块涨幅）
+    new_stocks = db.get_new_stock_codes(calc_date, min_days=period_days)
+    if new_stocks:
+        before = len(stock_return)
+        stock_return = {c: v for c, v in stock_return.items() if c not in new_stocks}
+        print(f"[PRESCREEN] 剔除上市不足 {period_days} 天的新股 {len(new_stocks)} 只"
+              f"（{before} → {len(stock_return)}）")
     print(f"[PRESCREEN] {len(stock_return)} 只股票有 {period_days}d 涨幅数据")
 
     # 2. 算每个 A 股概念的 N 日涨幅（成分股均值）
