@@ -232,20 +232,43 @@ def get_watchlist(date: str = None):
 
 
 @app.get("/api/history/dashboard")
-def get_history_dashboard(date: str, top_n: int = 10):
+def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
     """
     历史看板：读取已入库的收盘数据（concept_strength + daily_kline）。
     成分股排名按当日涨幅（历史模式无1min，降级为纯涨幅）。
 
     :param date: 历史日期 YYYYMMDD
     :param top_n: 返回前 N 个板块
+    :param force_calc: 无数据时是否自动拉取并计算（耗时约2分钟）
     """
     import sqlite3
 
     # 板块强度（读 concept_strength）
     rankings = db.get_sector_rankings(date, top_n=999)  # 取全部再切片
     if not rankings:
-        return {"error": f"日期 {date} 无板块强度数据（请先运行 daily）", "date": date}
+        # force_calc：按需拉取 K 线 + 计算
+        if force_calc:
+            from sync_pipeline import SyncPipeline
+            # 校验日期格式
+            try:
+                datetime.strptime(date, "%Y%m%d")
+            except ValueError:
+                return {"error": f"日期格式错误，需 YYYYMMDD：{date}", "date": date}
+            try:
+                pipeline = SyncPipeline()
+                # 检查该日是否有 K 线（接口3 单日窗口在交易日能拿到数据）
+                # run_daily 会同步单日 K 线 + 算板块强度 + 归因
+                pipeline.sync_daily_kline(pipeline.db.get_all_member_stock_codes(), date, date)
+                pipeline.calc_daily_strength(date)
+                pipeline.calc_daily_attribution(date)
+                # 重新读取
+                rankings = db.get_sector_rankings(date, top_n=999)
+            except Exception as e:
+                return {"error": f"计算失败：{e}", "date": date}
+            if not rankings:
+                return {"error": f"日期 {date} 可能非交易日或无行情数据", "date": date}
+        else:
+            return {"error": f"日期 {date} 无数据，可点击\"拉取并计算\"获取", "date": date, "can_calc": True}
 
     # 概念名映射
     concept_names = {}

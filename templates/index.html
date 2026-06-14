@@ -197,7 +197,8 @@
       <option value="watchlist">盘前筛选</option>
     </select>
     <label>日期</label>
-    <select id="dateSel" onchange="onDateChange()"></select>
+    <input type="date" id="dateSel" min="2026-01-01" max="2026-12-31" onchange="onDateChange()">
+    <span id="dateHint" style="font-size:11px;color:#9ca3af;"></span>
     <label id="timeLabel" style="display:none">时段</label>
     <input type="time" id="startTime" value="09:30" style="display:none">
     <input type="time" id="endTime" style="display:none">
@@ -309,10 +310,25 @@ async function loadDates() {
   try {
     const r = await fetch('/api/dates');
     const data = await r.json();
-    const sel = document.getElementById('dateSel');
-    sel.innerHTML = (data.dates||[]).map(d => `<option value="${d}">${d}</option>`).join('')
-      || '<option value="">无数据</option>';
+    const dates = data.dates || [];
+    const input = document.getElementById('dateSel');
+    const hint = document.getElementById('dateHint');
+    if (dates.length > 0) {
+      // 默认选最新入库日期；input type=date 需要 YYYY-MM-DD 格式
+      const latest = dates[0]; // YYYYMMDD
+      input.value = latest.slice(0,4) + '-' + latest.slice(4,6) + '-' + latest.slice(6,8);
+      const oldest = dates[dates.length-1];
+      hint.textContent = `已入库 ${oldest}~${latest}`;
+    } else {
+      hint.textContent = '暂无入库数据，选择日期后将自动拉取';
+    }
   } catch(e) { console.error(e); }
+}
+
+// 把 input[type=date] 的值（YYYY-MM-DD）转为后端用的 YYYYMMDD
+function getDateVal() {
+  const v = document.getElementById('dateSel').value; // YYYY-MM-DD or ''
+  return v ? v.replace(/-/g, '') : '';
 }
 
 async function refresh() {
@@ -330,9 +346,17 @@ async function refresh() {
     if (wl) { params.set('watchlist_mode', 'true'); setStatus('加载中（watchlist，约30秒）...', 'warn'); }
     payload = await fetchJson('/api/realtime/dashboard?' + params.toString());
   } else {
-    const date = document.getElementById('dateSel').value;
+    const date = getDateVal();
     if (!date) { setStatus('请选择日期', ''); return; }
+    // 先尝试读已有数据
     payload = await fetchJson('/api/history/dashboard?date=' + date + '&top_n=10');
+    // 无数据且可计算：提示用户是否拉取
+    if (payload.error && payload.can_calc) {
+      if (confirm(`日期 ${date} 无历史数据，是否拉取并计算？\n（约需2分钟，会同步K线+板块强度+归因）`)) {
+        setStatus('正在拉取并计算（约2分钟）...', 'warn');
+        payload = await fetchJson('/api/history/dashboard?date=' + date + '&top_n=10&force_calc=true');
+      }
+    }
   }
 
   if (payload.error) {
@@ -555,7 +579,7 @@ function highlightSector(code) {
 
 // ========== 盘前筛选 ==========
 async function runPrescreen() {
-  const date = document.getElementById('dateSel').value || '';
+  const date = getDateVal();
   document.getElementById('prescreenModal').classList.add('show');
   document.getElementById('modalBody').innerHTML = '<div class="empty-msg">筛选中（约5秒）...</div>';
   try {
