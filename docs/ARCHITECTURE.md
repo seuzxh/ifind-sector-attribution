@@ -1,0 +1,216 @@
+# 架构设计
+
+本文档记录系统的关键设计决策，特别是数据流、概念编码体系、缓存语义与过滤策略。
+
+## 目录
+
+- [1. 双概念编码体系](#1-双概念编码体系)
+- [2. 永久缓存语义](#2-永久缓存语义)
+- [3. 多周期融合算法](#3-多周期融合算法)
+- [4. A 股过滤策略](#4-a-股过滤策略)
+- [5. L1 权重归因法](#5-l1-权重归因法)
+- [6. 数据流总览](#6-数据流总览)
+
+---
+
+## 1. 双概念编码体系
+
+同花顺的概念体系包含**两套独立的编码**，本系统需要同时使用两套才能完成归因。
+
+### 问题背景
+
+| 体系 | 编码前缀 | 来源 | 示例 |
+|---|---|---|---|
+| **行业分类** | `700xxx / 881xxx / 883xxx / 884xxx` | `config.ALL_CONCEPT_CODES`（静态配置） | `700471.TI` 铜(A股)、`884055.TI` 铅锌 |
+| **概念板块** | `885xxx / 886xxx` | 接口1（个股→概念）返回 | `885338.TI` 融资融券、`885376.TI` 苹果概念 |
+
+**两套体系的交集为 0**。如果只用行业分类码，则接口1 返回的个股概念（`885xxx`）在字典里查不到，`get_stock_concepts` 的 `JOIN ths_concept_dict` 会过滤掉所有映射，导致归因恒为空。
+
+### 解决方案：`init_concept_universe`
+
+首次部署时，在行业字典初始化后追加一步：
+
+```
+扫描全市场股票（接口1）
+    ↓ 收集所有出现过的概念码（885xxx/886xxx）
+    ↓ 按前缀过滤掉海外概念
+补全字典（接口5）+ 成分股（接口2）+ 全市场个股映射
+```
+
+完成后字典同时包含两套编码，归因的 JOIN 打通。实测：归因覆盖股票数从 0 → 5500+。
+
+### 海外行业指数（需排除）
+
+同花顺还有**海外市场行业指数**，编码与含义：
+
+| 前缀 | 市场 | 示例 |
+|---|---|---|
+| `861xxx / 864xxx / 865xxx` | 美股 | `861076.TI` 金融[US] |
+| `871xxx / 875xxx` | 港股 | `871077.TI` 房地产管理和开发[HK] |
+
+这些概念的成分股全是 `.O / .N / .HK` 等海外代码，会污染 A 股股票池。通过 `A_SHARE_CONCEPT_PREFIXES` 白名单（见第 4 节）排除。
+
+---
+
+## 2. 永久缓存语义
+
+### 问题背景
+
+`stock_concept_map` 和 `concept_members` 是"一次性永久缓存"（概念归属相对稳定），但原实现用每日变化的 `calc_date` 作为查询键，导致：
+
+- init 用 `2026-06-14` 入库，daily 用 `2026-06-12` 查询 → 查不到
+- 日期格式不统一（`stock_concept_map` 用 `2026-06-14` 带横杠，`concept_members` 用 `20260614` 无横杠）→ 键不匹配
+
+### 解决方案：日期参数可选，不传取最新
+
+`database.py` 的三个查询方法改为：
+
+```python
+def get_concept_members(self, concept_code: str, member_date: str = None):
+    if member_date is None:
+        # 取该概念最新一份快照
+        WHERE member_date = (SELECT MAX(member_date) FROM ... WHERE concept_code = ?)
+    else:
+        WHERE member_date = ?   # 向后兼容：按日期查
+```
+
+- 计算链路（板块强度、归因）调用时**不传日期** → 永远取最新缓存，与 init 日期解耦
+- API 层仍可按日期查（回溯历史快照）
+- 同时根治了日期格式不统一问题
+
+---
+
+## 3. 多周期融合算法
+
+### 设计目标
+
+板块强度不仅看当日表现，还要融合中期趋势，避免单日噪音主导排名。
+
+### 算法（`calc_multi_period_score`）
+
+**三个周期分别计算板块强度，再按权重融合：**
+
+| 周期 | 收益定义 | 数据来源 |
+|---|---|---|
+| 1d | 当日涨幅 `change_ratio` | `get_daily_kline_by_date(calc_date)` |
+| 5d | 近 5 个交易日**累计涨幅** | `get_daily_kline_by_date_range(start, calc_date)` |
+| 20d | 近 20 个交易日累计涨幅 | 同上，窗口更长 |
+
+**累计涨幅** = `期末 close / 期初 preClose - 1`（每只股票算一个值，作为该周期的 `change_ratio` 喂给 `calc_all_sectors_strength`）。
+
+**融合公式：**
+
+```
+score_final = 0.5 × score_1d + 0.3 × score_5d + 0.2 × score_20d
+```
+
+（权重由 `config.PERIOD_WEIGHTS` 控制）
+
+### 退化处理
+
+历史数据不足时（如刚部署、20d 窗口只有 5 天数据），对应周期 `score` 填 0，不阻断计算。系统会随数据积累自然增强多周期信号。
+
+### 实测效果
+
+铜板块在 2026-06-12 登顶 #1，但其前几日单日排名靠后（#147~#1049）。多周期融合准确捕捉到了它的中期走强趋势——这正是融合的价值。
+
+---
+
+## 4. A 股过滤策略
+
+### 背景
+
+成分股表里的海外代码（美股/港股）占比曾达 60%+，源于 `config.ALL_CONCEPT_CODES` 混入了海外行业指数概念。
+
+### 四层过滤（互补）
+
+| 层 | 位置 | 作用 |
+|---|---|---|
+| **源头** | `init_concept_dict` | 按 `is_a_share_concept` 跳过海外概念，不拉字典 |
+| **补充** | `init_concept_universe` | 扫描收集时过滤海外概念，不入 `stock_concept_map` |
+| **数据源** | `get_all_member_stock_codes` / `get_all_mapped_stock_codes` | 只返回 `.SH/.SZ/.BJ` 后缀的代码 |
+| **计算** | `calc_daily_strength` / `calc_daily_attribution` | 用 `get_a_share_concept_codes` 仅处理 A 股概念 |
+
+### 判定函数（`config.py`）
+
+```python
+A_SHARE_SUFFIXES = (".SH", ".SZ", ".BJ")
+A_SHARE_CONCEPT_PREFIXES = ("700", "881", "883", "884", "885", "886")
+
+def is_a_share_code(code): ...        # 个股代码后缀判定
+def is_a_share_concept(concept_code): # 概念代码前缀判定
+```
+
+### 清理工具
+
+已入库的海外数据可用 `python main.py purge` 删除（`database.purge_overseas_data`，单事务，幂等）。
+
+---
+
+## 5. L1 权重归因法
+
+### 算法（`l1_stock_attribution`）
+
+对每只股票，将其总涨幅分解到所属的各个概念：
+
+```
+对每个概念 c:
+    contribution_c = weight_c × concept_return_c
+
+其中:
+    weight_c = 1 / 该股票所属概念数（等权）
+    concept_return_c = 概念 c 成分股当日涨幅均值（不含该股票自身）
+```
+
+**贡献占比** = `|contribution_c| / Σ|contribution_i|`，主导概念 = 贡献占比最大者。
+
+### concept_return 的计算
+
+关键设计：**概念的当日收益 = 其成分股当日涨幅的均值**，复用已入库的全市场股票 K 线，而非查概念指数本身的 K 线。
+
+原因：daily 同步的代码列表是股票（不含概念指数），查概念指数 K 线会拿不到数据。用成分股均值既复用现有数据，又与板块强度的 S1 计算口径一致。
+
+### nan 防御
+
+停牌股的 `change_ratio` 为 nan，会传染均值计算。三层防御：
+1. `concept_returns` 计算时过滤 nan 成分股
+2. `calc_daily_attribution` 跳过 nan 涨幅的股票
+3. `l1_stock_attribution` 对 nan 的 `concept_return` 视为 0
+
+---
+
+## 6. 数据流总览
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  init（首次部署）                                         │
+│                                                         │
+│  接口5 ─→ ths_concept_dict（行业码，过滤海外）            │
+│  接口1 ─→ stock_concept_map（样本股票映射）              │
+│  接口2 ─→ concept_members（行业码成分股，8线程并发）      │
+│  接口1+5+2 ─→ 补全 885xxx 概念板块全集 + 全市场映射      │
+└─────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────┐
+│  daily（每日盘后）                                       │
+│                                                         │
+│  接口3 ─→ daily_kline（全市场 A 股当日 K 线）            │
+│                                                         │
+│  daily_kline + concept_members                          │
+│      ─→ calc_multi_period_score（1d/5d/20d 融合）       │
+│      ─→ concept_strength（板块强度，含 score_final）     │
+│                                                         │
+│  daily_kline + stock_concept_map + concept_members      │
+│      ─→ l1_stock_attribution（L1 权重归因）             │
+│      ─→ stock_attribution（个股归因明细）                │
+└─────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────┐
+│  api_server（查询服务）                                  │
+│                                                         │
+│  GET /api/sector/rankings   ─ 板块强度排名              │
+│  POST /api/attribution/stock    ─ 个股归因              │
+│  POST /api/attribution/portfolio ─ 组合归因             │
+│  GET /api/concept/members   ─ 成分股（取最新缓存）       │
+└─────────────────────────────────────────────────────────┘
+```
