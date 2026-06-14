@@ -1,0 +1,35 @@
+[Unit]
+Description=iFinD 板块强度实时监控服务
+Documentation=https://github.com/seuzxh/ifind-sector-attribution
+After=network.target
+
+[Service]
+Type=simple
+
+# 运行用户（root，因 conda 环境在 /root 下）
+User=root
+
+# 工作目录（让 config_local.py / data/ 等相对路径生效）
+WorkingDirectory=/root/projects/2.monitor_940/ifind-sector-attribution
+
+# 启动命令（conda 环境 python，绑 0.0.0.0 支持外网访问）
+Environment=PYTHONPATH=/root/projects/2.monitor_940/ifind-sector-attribution
+ExecStart=/root/Projects/5.test-autoresearch/qlib/miniconda3/envs/vibe-trading/bin/python main.py server --host 0.0.0.0 --port 8000
+
+# 重启策略：崩溃后 5 秒自动重启，无限次
+Restart=always
+RestartSec=5
+
+# 日志
+StandardOutput=append:/var/log/ifind-monitor.log
+StandardError=append:/var/log/ifind-monitor.log
+
+# 资源限制
+LimitNOFILE=65536
+
+# 优雅停止：发 SIGTERM 后等 30 秒再 SIGKILL
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
