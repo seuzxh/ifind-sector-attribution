@@ -262,8 +262,23 @@ def get_history_dashboard(date: str, top_n: int = 10):
     # 成分股映射
     concept_codes = [r["concept_code"] for r in rankings]
 
-    def _build_member_ranking(concept_code: str, limit: int = 10):
-        """历史模式：成分股按当日涨幅降序（无1min，纯涨幅）"""
+    # 成分股名称映射
+    stock_names = {}
+    import sqlite3 as _sqlite3
+    with _sqlite3.connect(db.db_path) as _conn:
+        _conn.row_factory = _sqlite3.Row
+        for _row in _conn.execute(
+            "SELECT stock_code, stock_name FROM concept_members "
+            "WHERE member_date = (SELECT MAX(member_date) FROM concept_members)"
+        ):
+            if _row["stock_code"] not in stock_names:
+                stock_names[_row["stock_code"]] = _row["stock_name"]
+
+    def _build_member_ranking(concept_code: str, limit: int = 10, reverse: bool = True):
+        """
+        历史模式：成分股按当日涨幅排序。
+        :param reverse: True=降序(涨幅最大在前，给top板块)；False=升序(跌幅最深在前，给bottom板块)
+        """
         members = db.get_concept_members(concept_code)
         member_changes = []
         for m in members:
@@ -271,16 +286,17 @@ def get_history_dashboard(date: str, top_n: int = 10):
             if chg is not None and not pd.isna(chg):
                 member_changes.append({
                     "code": m["stock_code"],
+                    "name": stock_names.get(m["stock_code"], ""),
                     "change_ratio": round(float(chg), 2),
-                    "speed": 0.0,   # 历史模式无涨速
-                    "body": 0.0,    # 历史模式无实体
+                    "speed": 0.0,
+                    "body": 0.0,
                     "limit": 0,
-                    "score": round(float(chg), 4),  # 历史模式 score = 涨幅
+                    "score": round(float(chg), 4),
                 })
-        member_changes.sort(key=lambda x: x["change_ratio"], reverse=True)
+        member_changes.sort(key=lambda x: x["change_ratio"], reverse=reverse)
         return member_changes[:limit]
 
-    # Top 板块（含成分股）
+    # Top 板块（含成分股，涨幅最大前10）
     top_rankings = rankings[:top_n]
     top_sectors = []
     for r in top_rankings:
@@ -292,21 +308,23 @@ def get_history_dashboard(date: str, top_n: int = 10):
             "s1_return": r.get("s1_return", 0),
             "s2_breadth": r.get("s2_breadth", 0),
             "member_count": r.get("member_count", 0),
-            "members_top10": _build_member_ranking(cc, 10),
+            "members_top10": _build_member_ranking(cc, 10, reverse=True),
         })
 
-    # Bottom 板块（不含成分股）
+    # Bottom 板块（含成分股，跌幅最深前10）
     bottom_rankings = rankings[-top_n:][::-1]
-    bottom_sectors = [
-        {
-            "concept_code": r["concept_code"],
-            "concept_name": concept_names.get(r["concept_code"], r["concept_code"]),
+    bottom_sectors = []
+    for r in bottom_rankings:
+        cc = r["concept_code"]
+        bottom_sectors.append({
+            "concept_code": cc,
+            "concept_name": concept_names.get(cc, cc),
             "score": r.get("score_final", r.get("score_1d", 0)),
             "s1_return": r.get("s1_return", 0),
             "s2_breadth": r.get("s2_breadth", 0),
-        }
-        for r in bottom_rankings
-    ]
+            "member_count": r.get("member_count", 0),
+            "members_top10": _build_member_ranking(cc, 10, reverse=False),
+        })
 
     # 市场统计
     if not daily_df.empty:

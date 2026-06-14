@@ -232,47 +232,55 @@ class RealtimeEngine:
         top_df = strength_sorted.head(top_n)
         bottom_df = strength_sorted.tail(top_n).iloc[::-1]  # 最弱在前
 
-        # 4. top 板块的成分股排名
-        top_sectors = []
-        for _, row in top_df.iterrows():
+        # 4. top/bottom 板块的成分股排名
+        # 成分股名称映射（从 concept_members 最新快照取）
+        stock_name_map = {}
+        import sqlite3 as _sqlite3
+        with _sqlite3.connect(self.db.db_path) as _conn:
+            _conn.row_factory = _sqlite3.Row
+            for _row in _conn.execute(
+                "SELECT stock_code, stock_name FROM concept_members "
+                "WHERE member_date = (SELECT MAX(member_date) FROM concept_members)"
+            ):
+                if _row["stock_code"] not in stock_name_map:
+                    stock_name_map[_row["stock_code"]] = _row["stock_name"]
+
+        def _build_sector_entry(row, asc):
+            """
+            组装单个板块的看板数据（含成分股排名）。
+            :param asc: False=综合分降序(给top)；True=综合分升序(给bottom，最弱在前)
+            """
             cc = row["concept_code"]
             members = self._members_map.get(cc, [])
-            # 该板块有实时数据的成分股
             member_df = rt_df[rt_df["code"].isin(members)].copy()
-            if member_df.empty:
-                continue
-            scored = score_members(member_df)
-            top10 = scored.head(10)
-            top_sectors.append({
-                "concept_code": cc,
-                "concept_name": self._concept_names.get(cc, cc),
-                "score": round(float(row["score"]), 4),
-                "s1_return": round(float(row["s1_return"]), 2),
-                "s2_breadth": round(float(row["s2_breadth"]), 4),
-                "member_count": int(row["member_count"]),
-                "members_top10": [
+            members_top10 = []
+            if not member_df.empty:
+                scored = score_members(member_df)
+                picked = scored.tail(10).iloc[::-1] if asc else scored.head(10)
+                members_top10 = [
                     {
                         "code": r["code"],
+                        "name": stock_name_map.get(r["code"], ""),
                         "change_ratio": round(float(r["change_ratio"]), 2),
                         "speed": round(float(r["speed"]), 2),
                         "body": round(float(r["body"]), 2),
                         "limit": int(r["limit_score"]),
                         "score": round(float(r["score"]), 4),
                     }
-                    for _, r in top10.iterrows()
-                ],
-            })
-
-        bottom_sectors = [
-            {
-                "concept_code": row["concept_code"],
-                "concept_name": self._concept_names.get(row["concept_code"], row["concept_code"]),
+                    for _, r in picked.iterrows()
+                ]
+            return {
+                "concept_code": cc,
+                "concept_name": self._concept_names.get(cc, cc),
                 "score": round(float(row["score"]), 4),
                 "s1_return": round(float(row["s1_return"]), 2),
                 "s2_breadth": round(float(row["s2_breadth"]), 4),
+                "member_count": int(row["member_count"]),
+                "members_top10": members_top10,
             }
-            for _, row in bottom_df.iterrows()
-        ]
+
+        top_sectors = [_build_sector_entry(row, asc=False) for _, row in top_df.iterrows()]
+        bottom_sectors = [_build_sector_entry(row, asc=True) for _, row in bottom_df.iterrows()]
 
         # 市场统计
         market_stats = {

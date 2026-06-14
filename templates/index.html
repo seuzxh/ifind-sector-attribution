@@ -3,121 +3,209 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>板块强度实时监控</title>
+<title>板块强度监控</title>
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: #f5f6fa; color: #2c3e50; padding: 16px;
+    background: #f0f2f5; color: #1f2937; padding: 16px; font-size: 14px;
   }
+  /* ===== 顶部栏 ===== */
   .header {
-    background: #fff; padding: 14px 20px; border-radius: 8px; margin-bottom: 14px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-    display: flex; align-items: center; flex-wrap: wrap; gap: 16px;
+    background: #fff; padding: 12px 20px; border-radius: 10px; margin-bottom: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
   }
-  .header h1 { font-size: 20px; color: #1a1a2e; margin-right: 8px; }
-  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .controls label { font-size: 13px; color: #666; }
-  select, button, input {
-    padding: 6px 12px; border: 1px solid #dcdfe6; border-radius: 4px;
-    font-size: 13px; background: #fff; cursor: pointer;
+  .header h1 { font-size: 18px; color: #111827; margin-right: 4px; white-space: nowrap; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .controls label { font-size: 12px; color: #6b7280; }
+  select, button, input[type=time] {
+    padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px;
+    font-size: 13px; background: #fff; cursor: pointer; transition: all .15s;
   }
-  button.primary { background: #409eff; color: #fff; border-color: #409eff; }
-  button.primary:hover { background: #66b1ff; }
-  .status { margin-left: auto; font-size: 13px; color: #888; }
-  .status .live { color: #67c23a; font-weight: bold; }
-  .status .loading { color: #e6a23c; }
+  select:hover, button:hover { border-color: #60a5fa; }
+  button.primary { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+  button.primary:hover { background: #2563eb; }
+  button.success { background: #10b981; color: #fff; border-color: #10b981; }
+  button.success:hover { background: #059669; }
+  .status { margin-left: auto; font-size: 12px; color: #9ca3af; white-space: nowrap; }
+  .status .live { color: #10b981; font-weight: 600; }
+  .status .warn { color: #f59e0b; font-weight: 600; }
 
+  /* ===== 统计栏 ===== */
   .stats-bar {
-    display: flex; gap: 18px; padding: 10px 20px; background: #fff;
-    border-radius: 8px; margin-bottom: 14px; font-size: 13px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06); flex-wrap: wrap;
+    display: flex; gap: 20px; padding: 12px 20px; background: #fff;
+    border-radius: 10px; margin-bottom: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06); flex-wrap: wrap; align-items: center;
   }
-  .stats-bar .item { color: #555; }
-  .stats-bar .item b { color: #1a1a2e; font-size: 15px; }
-  .stats-bar .up { color: #f56c6c; }
-  .stats-bar .down { color: #67c23a; }
+  .stats-bar .item { display: flex; flex-direction: column; gap: 2px; }
+  .stats-bar .item .label { font-size: 11px; color: #9ca3af; }
+  .stats-bar .item .val { font-size: 16px; font-weight: 600; color: #111827; }
+  .stats-bar .up .val { color: #ef4444; }
+  .stats-bar .down .val { color: #10b981; }
 
+  /* ===== 图表面板 ===== */
   .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
   .panel {
-    background: #fff; border-radius: 8px; padding: 14px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    background: #fff; border-radius: 10px; padding: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   }
-  .panel h2 { font-size: 15px; margin-bottom: 10px; color: #1a1a2e; }
-  .panel h2 .sub { font-size: 12px; color: #999; font-weight: normal; }
+  .panel h2 {
+    font-size: 14px; margin-bottom: 10px; color: #111827;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel h2 .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: normal; }
+  .badge-red { background: #fee2e2; color: #dc2626; }
+  .badge-green { background: #d1fae5; color: #059669; }
+  .panel h2 .hint { font-size: 11px; color: #9ca3af; font-weight: normal; margin-left: auto; }
 
+  /* ===== 成分股区 ===== */
   .members-section {
-    background: #fff; border-radius: 8px; padding: 14px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    background: #fff; border-radius: 10px; padding: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 14px;
   }
-  .members-section h2 { font-size: 15px; margin-bottom: 10px; color: #1a1a2e; }
-  .members-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .members-section h2 { font-size: 14px; margin-bottom: 10px; color: #111827; }
+  .members-section h2 .sub { font-size: 11px; color: #9ca3af; font-weight: normal; margin-left: 8px; }
+  .members-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .members-tabs button {
+    padding: 5px 14px; border: 1px solid #d1d5db; background: #fff; border-radius: 16px;
+    font-size: 12px; cursor: pointer;
+  }
+  .members-tabs button.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+  .members-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+
+  /* ===== 板块卡片 ===== */
   .sector-card {
-    border: 1px solid #ebeef5; border-radius: 6px; overflow: hidden;
+    border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; transition: box-shadow .15s;
   }
+  .sector-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
   .sector-card .card-head {
-    padding: 8px 12px; font-size: 13px; font-weight: bold; color: #fff;
+    padding: 8px 12px; font-size: 13px; font-weight: 600; color: #fff;
     display: flex; justify-content: space-between; align-items: center;
   }
-  .sector-card .card-head .score { font-size: 12px; opacity: 0.9; }
+  .sector-card .card-head .meta { font-size: 11px; opacity: 0.9; font-weight: normal; }
+  .sector-card .card-head .num { display: inline-block; width: 18px; height: 18px; line-height: 18px;
+    text-align: center; border-radius: 50%; background: rgba(255,255,255,0.25); margin-right: 6px; font-size: 11px; }
+
+  /* ===== 成分股表格 ===== */
   .sector-card table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .sector-card th, .sector-card td {
-    padding: 5px 8px; text-align: right; border-bottom: 1px solid #f0f0f0;
+    padding: 6px 8px; text-align: right; border-bottom: 1px solid #f3f4f6; white-space: nowrap;
   }
-  .sector-card th { background: #fafafa; color: #888; font-weight: normal; }
-  .sector-card td:first-child, .sector-card th:first-child { text-align: left; }
-  .sector-card td.up { color: #f56c6c; }
-  .sector-card td.down { color: #67c23a; }
-  .sector-card td.limit { color: #fff; background: #f56c6c; font-weight: bold; }
-  .empty-msg { color: #999; text-align: center; padding: 30px; font-size: 14px; }
+  .sector-card th {
+    background: #f9fafb; color: #6b7280; font-weight: 500; cursor: pointer; user-select: none;
+    position: relative;
+  }
+  .sector-card th:hover { background: #f3f4f6; }
+  .sector-card th.sorted::after { content: attr(data-order); margin-left: 3px; color: #3b82f6; }
+  .sector-card th.left, .sector-card td.left { text-align: left; }
+  .sector-card td.up { color: #ef4444; }
+  .sector-card td.down { color: #10b981; }
+  .sector-card td .limit-tag {
+    display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px;
+    background: #dc2626; color: #fff; margin-left: 3px;
+  }
+  .sector-card .stock-name { color: #374151; max-width: 70px; overflow: hidden; text-overflow: ellipsis; }
+
+  .empty-msg { color: #9ca3af; text-align: center; padding: 40px; font-size: 14px; }
+
+  /* ===== 弹层 ===== */
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 100;
+    display: none; align-items: flex-start; justify-content: center; padding: 30px 16px; overflow: auto;
+  }
+  .modal-mask.show { display: flex; }
+  .modal {
+    background: #fff; border-radius: 12px; max-width: 1000px; width: 100%;
+    max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  }
+  .modal-head {
+    padding: 16px 20px; border-bottom: 1px solid #e5e7eb; display: flex;
+    justify-content: space-between; align-items: center; flex-shrink: 0;
+  }
+  .modal-head h2 { font-size: 16px; color: #111827; }
+  .modal-head .close {
+    width: 28px; height: 28px; border: none; background: #f3f4f6; border-radius: 50%;
+    cursor: pointer; font-size: 16px; color: #6b7280;
+  }
+  .modal-head .close:hover { background: #e5e7eb; }
+  .modal-body { padding: 16px 20px; overflow: auto; }
+  .modal-body .summary { font-size: 13px; color: #6b7280; margin-bottom: 14px; }
+  .prescreen-list { display: flex; flex-direction: column; gap: 10px; }
+  .prescreen-sector {
+    border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px;
+  }
+  .prescreen-sector .ps-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  }
+  .prescreen-sector .rank {
+    width: 24px; height: 24px; line-height: 24px; text-align: center;
+    border-radius: 50%; background: #f59e0b; color: #fff; font-size: 12px; font-weight: 600;
+  }
+  .prescreen-sector .name { font-weight: 600; color: #111827; }
+  .prescreen-sector .ret { font-size: 13px; color: #ef4444; margin-left: auto; font-weight: 600; }
+  .prescreen-sector .ret.neg { color: #10b981; }
+  .prescreen-sector table { width: 100%; font-size: 12px; border-collapse: collapse; }
+  .prescreen-sector th, .prescreen-sector td { padding: 4px 8px; text-align: left; border-bottom: 1px solid #f3f4f6; }
+  .prescreen-sector th { color: #9ca3af; font-weight: 500; }
+  .prescreen-sector td.r { text-align: right; }
 </style>
 </head>
 <body>
 
+<!-- 顶部栏 -->
 <div class="header">
-  <h1>板块强度监控</h1>
+  <h1>📊 板块强度监控</h1>
   <div class="controls">
-    <label>模式：</label>
+    <label>模式</label>
     <select id="modeSel" onchange="onModeChange()">
       <option value="history">历史（收盘）</option>
       <option value="realtime">实时（盘中）</option>
-      <option value="watchlist">盘前筛选（watchlist）</option>
+      <option value="watchlist">盘前筛选</option>
     </select>
-    <label>日期：</label>
+    <label>日期</label>
     <select id="dateSel" onchange="onDateChange()"></select>
-    <label>实时时段：</label>
+    <label id="timeLabel" style="display:none">时段</label>
     <input type="time" id="startTime" value="09:30" style="display:none">
     <input type="time" id="endTime" style="display:none">
-    <label id="wlSwitchLabel" style="display:none;">
+    <label id="wlSwitchLabel" style="display:none">
       <input type="checkbox" id="wlSwitch" checked onchange="refresh()"> watchlist聚焦
     </label>
-    <button onclick="runPrescreen()" style="background:#67c23a;color:#fff;border-color:#67c23a;">盘前筛选</button>
-    <button class="primary" onclick="refresh()">刷新</button>
+    <button class="success" onclick="runPrescreen()">🔍 盘前筛选</button>
+    <button class="primary" onclick="refresh()">🔄 刷新</button>
   </div>
   <div class="status" id="statusBar"></div>
 </div>
 
+<!-- 统计栏 -->
 <div class="stats-bar" id="statsBar"></div>
 
-<div class="panels">
+<!-- 图表面板 -->
+<div class="panels" id="panels">
   <div class="panel">
-    <h2>Top 10 强势板块 <span class="sub">点击柱子查看成分股</span></h2>
-    <div id="topChart" style="height:360px;"></div>
+    <h2><span class="badge badge-red">强势</span> Top 10 板块 <span class="hint">悬停看详情 · 点击高亮成分股</span></h2>
+    <div id="topChart" style="height:380px;"></div>
   </div>
   <div class="panel">
-    <h2>Bottom 10 弱势板块</h2>
-    <div id="bottomChart" style="height:360px;"></div>
+    <h2><span class="badge badge-green">弱势</span> Bottom 10 板块 <span class="hint">悬停看详情</span></h2>
+    <div id="bottomChart" style="height:380px;"></div>
   </div>
 </div>
 
-<div class="members-section">
-  <h2>Top 板块成分股（综合评分 Top10）<span class="sub" id="modeHint"></span></h2>
+<!-- 成分股区 -->
+<div class="members-section" id="membersSection">
+  <h2>板块成分股 <span class="sub" id="modeHint"></span></h2>
+  <div class="members-tabs">
+    <button class="active" onclick="switchMembersTab('top', this)">📈 强势板块成分股</button>
+    <button onclick="switchMembersTab('bottom', this)">📉 弱势板块成分股</button>
+  </div>
   <div class="members-grid" id="membersGrid">
     <div class="empty-msg">请选择日期或开启实时模式</div>
   </div>
 </div>
 
+<!-- 盘前筛选视图（watchlist 模式专用） -->
 <div class="members-section" id="watchlistSection" style="display:none;">
   <h2>盘前 watchlist（5日涨幅筛选）<span class="sub" id="wlHint"></span></h2>
   <div class="members-grid" id="watchlistGrid">
@@ -125,245 +213,300 @@
   </div>
 </div>
 
+<!-- 筛选结果弹层 -->
+<div class="modal-mask" id="prescreenModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>🔍 盘前筛选结果</h2>
+      <button class="close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody">
+      <div class="empty-msg">加载中...</div>
+    </div>
+  </div>
+</div>
+
 <script>
 let pollTimer = null;
-const POLL_INTERVAL = 15000; // 15秒轮询
+let lastPayload = null;       // 最近一次 dashboard 数据
+let membersTab = 'top';       // 成分股当前 tab
+const POLL_INTERVAL = 15000;
 
+// ========== 工具 ==========
 function setStatus(text, cls) {
-  const el = document.getElementById('statusBar');
-  el.innerHTML = `<span class="${cls||''}">${text}</span>`;
+  document.getElementById('statusBar').innerHTML = `<span class="${cls||''}">${text}</span>`;
 }
+function fmt(n) {
+  if (n === null || n === undefined || isNaN(n)) return '-';
+  return (n > 0 ? '+' : '') + Number(n).toFixed(2);
+}
+function fmtPct(n) { return fmt(n) + '%'; }
 
+// ========== 模式切换 ==========
 function onModeChange() {
   const mode = document.getElementById('modeSel').value;
-  const isRealtime = mode === 'realtime';
-  const isWatchlist = mode === 'watchlist';
-  document.getElementById('startTime').style.display = isRealtime ? '' : 'none';
-  document.getElementById('endTime').style.display = isRealtime ? '' : 'none';
-  // watchlist 聚焦开关：仅实时模式显示
-  document.getElementById('wlSwitchLabel').style.display = isRealtime ? '' : 'none';
-  document.getElementById('modeHint').textContent = isRealtime
-    ? '（实时：涨幅/涨速/实体/涨停 加权）' : '（历史：仅按当日涨幅排序）';
+  const isRT = mode === 'realtime';
+  const isWL = mode === 'watchlist';
+  document.getElementById('timeLabel').style.display = isRT ? '' : 'none';
+  document.getElementById('startTime').style.display = isRT ? '' : 'none';
+  document.getElementById('endTime').style.display = isRT ? '' : 'none';
+  document.getElementById('wlSwitchLabel').style.display = isRT ? '' : 'none';
+  document.getElementById('modeHint').textContent = isRT
+    ? '（实时：涨幅/涨速/实体/涨停 加权）' : '（历史：按当日涨幅，点击表头排序）';
 
-  // watchlist 视图区：仅 watchlist 模式显示
-  document.getElementById('watchlistSection').style.display = isWatchlist ? '' : 'none';
-  // 主看板（板块图+成分股）：watchlist 模式隐藏
-  document.querySelector('.panels').style.display = isWatchlist ? 'none' : 'grid';
-  document.querySelector('.members-section').style.display = isWatchlist ? 'none' : '';
+  document.getElementById('watchlistSection').style.display = isWL ? '' : 'none';
+  document.getElementById('panels').style.display = isWL ? 'none' : 'grid';
+  document.getElementById('membersSection').style.display = isWL ? 'none' : '';
 
   stopPolling();
-  if (isRealtime) startPolling();
-  if (isWatchlist) loadWatchlist();
+  if (isRT) startPolling();
+  if (isWL) loadWatchlist();
   refresh();
 }
-
 function onDateChange() { refresh(); }
-
 function startPolling() {
   if (pollTimer) return;
   pollTimer = setInterval(refresh, POLL_INTERVAL);
-  setStatus('实时模式 · 自动刷新 15s', 'live');
 }
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
+// ========== 数据加载 ==========
 async function loadDates() {
   try {
     const r = await fetch('/api/dates');
     const data = await r.json();
     const sel = document.getElementById('dateSel');
-    sel.innerHTML = data.dates.map(d => `<option value="${d}">${d}</option>`).join('');
-    if (data.dates.length === 0) {
-      sel.innerHTML = '<option value="">无数据</option>';
-    }
+    sel.innerHTML = (data.dates||[]).map(d => `<option value="${d}">${d}</option>`).join('')
+      || '<option value="">无数据</option>';
   } catch(e) { console.error(e); }
 }
 
 async function refresh() {
   const mode = document.getElementById('modeSel').value;
+  if (mode === 'watchlist') { await loadWatchlist(); return; }
+  setStatus('加载中...', 'warn');
 
-  // watchlist 模式：单独加载，不走主看板
-  if (mode === 'watchlist') {
-    await loadWatchlist();
-    return;
-  }
-
-  setStatus('加载中...', 'loading');
-
-  let url, payload;
+  let payload;
   if (mode === 'realtime') {
     const st = document.getElementById('startTime').value;
     const et = document.getElementById('endTime').value;
-    const wlMode = document.getElementById('wlSwitch').checked;
+    const wl = document.getElementById('wlSwitch').checked;
     const params = new URLSearchParams({start_time: st});
     if (et) params.set('end_time', et);
-    if (wlMode) {
-      params.set('watchlist_mode', 'true');
-      setStatus('加载中...（watchlist聚焦，约30秒）', 'loading');
-    }
-    url = '/api/realtime/dashboard?' + params.toString();
-    payload = await fetchJson(url);
+    if (wl) { params.set('watchlist_mode', 'true'); setStatus('加载中（watchlist，约30秒）...', 'warn'); }
+    payload = await fetchJson('/api/realtime/dashboard?' + params.toString());
   } else {
     const date = document.getElementById('dateSel').value;
     if (!date) { setStatus('请选择日期', ''); return; }
-    url = '/api/history/dashboard?date=' + date + '&top_n=10';
-    payload = await fetchJson(url);
+    payload = await fetchJson('/api/history/dashboard?date=' + date + '&top_n=10');
   }
 
   if (payload.error) {
-    setStatus('⚠ ' + payload.error, '');
+    setStatus('⚠ ' + payload.error, 'warn');
     document.getElementById('statsBar').innerHTML = '';
-    document.getElementById('topChart').innerHTML = '';
-    document.getElementById('bottomChart').innerHTML = '';
+    Plotly.purge('topChart'); Plotly.purge('bottomChart');
     document.getElementById('membersGrid').innerHTML = '<div class="empty-msg">' + payload.error + '</div>';
     return;
   }
-
+  lastPayload = payload;
   renderStats(payload);
   renderCharts(payload);
-  renderMembers(payload);
+  renderMembers();
   const ts = payload.snapshot_time || payload.date || '';
-  const wlTag = payload.watchlist_mode ? ' · watchlist聚焦' : '';
-  setStatus(mode === 'realtime' ? `实时${wlTag} · 更新 ${ts} · 自动 15s` : `历史 · ${ts}`, 'live');
+  const wlTag = payload.watchlist_mode ? ' · watchlist' : '';
+  setStatus(mode === 'realtime' ? `实时${wlTag} · ${ts} · 自动15s` : `历史 · ${ts}`, 'live');
 }
 
 async function fetchJson(url) {
-  try {
-    const r = await fetch(url);
-    return await r.json();
-  } catch(e) {
-    return {error: '请求失败: ' + e.message};
-  }
+  try { const r = await fetch(url); return await r.json(); }
+  catch(e) { return {error: '请求失败: ' + e.message}; }
 }
 
+// ========== 渲染：统计栏 ==========
 function renderStats(payload) {
   const s = payload.market_stats;
   if (!s) { document.getElementById('statsBar').innerHTML = ''; return; }
   document.getElementById('statsBar').innerHTML = `
-    <span class="item">股票数 <b>${s.stock_count}</b></span>
-    <span class="item">平均涨幅 <b>${fmt(s.market_avg_change)}%</b></span>
-    <span class="item up">上涨 <b>${s.up_count}</b></span>
-    <span class="item down">下跌 <b>${s.down_count}</b></span>
-    <span class="item">平盘 <b>${s.flat_count}</b></span>
-    <span class="item up">涨停 <b>${s.limit_up_count}</b></span>
+    <div class="item"><span class="label">监控股票</span><span class="val">${s.stock_count}</span></div>
+    <div class="item"><span class="label">平均涨幅</span><span class="val">${fmt(s.market_avg_change)}%</span></div>
+    <div class="item up"><span class="label">上涨</span><span class="val">${s.up_count}</span></div>
+    <div class="item down"><span class="label">下跌</span><span class="val">${s.down_count}</span></div>
+    <div class="item"><span class="label">平盘</span><span class="val">${s.flat_count}</span></div>
+    <div class="item up"><span class="label">涨停</span><span class="val">${s.limit_up_count}</span></div>
   `;
 }
 
+// ========== 渲染：图表（中文标签 + tooltip + 真实比例）==========
 function renderCharts(payload) {
   const top = payload.top_sectors || [];
   const bottom = payload.bottom_sectors || [];
-
-  const topTrace = {
-    y: top.map(s => s.concept_name),
-    x: top.map(s => s.score),
-    type: 'bar', orientation: 'h',
-    marker: {color: top.map(s => s.score >= 0 ? '#f56c6c' : '#67c23a')},
-    text: top.map(s => `s1:${fmt(s.s1_return)}% s2:${(s.s2_breadth*100).toFixed(0)}%`),
-    textposition: 'outside',
-    customdata: top.map(s => s.concept_code),
+  const layoutBase = {
+    margin: {l: 120, r: 20, t: 10, b: 30},
+    yaxis: {autorange: 'reversed', tickfont: {size: 11}},
+    xaxis: {tickfont: {size: 10}, title: '强度评分（Z-score，正值=强于市场均值）'},
+    height: 380, hovermode: 'closest',
   };
-  Plotly.newPlot('topChart', [topTrace], {
-    margin: {l: 110, r: 60, t: 10, b: 30},
-    yaxis: {autorange: 'reversed', font: {size: 11}},
-    xaxis: {font: {size: 10}},
-    height: 360,
-  }, {displayModeBar: false});
-  // 点击柱子高亮该板块
+  // tooltip 说明各指标含义
+  function makeTrace(sectors, name) {
+    return {
+      y: sectors.map(s => s.concept_name),
+      x: sectors.map(s => s.score),
+      type: 'bar', orientation: 'h',
+      marker: {color: sectors.map(s => s.score >= 0 ? '#ef4444' : '#10b981')},
+      customdata: sectors.map(s => s.concept_code),
+      hovertemplate: sectors.map(s =>
+        `<b>${s.concept_name}</b><br>` +
+        `强度评分: ${fmt(s.score)}<br>` +
+        `涨幅强度(S1): ${fmtPct(s.s1_return)}（成分股平均涨幅）<br>` +
+        `上涨广度(S2): ${(s.s2_breadth*100).toFixed(0)}%（成分股上涨比例）<extra></extra>`
+      ).join('|').split('|'),
+      hoverlabel: {align: 'left'},
+    };
+  }
+  Plotly.newPlot('topChart', [makeTrace(top)], layoutBase, {displayModeBar: false, responsive: true});
   document.getElementById('topChart').on('plotly_click', function(d) {
     const code = d.points[0].customdata;
     highlightSector(code);
   });
-
-  const bottomTrace = {
-    y: bottom.map(s => s.concept_name),
-    x: bottom.map(s => s.score),
-    type: 'bar', orientation: 'h',
-    marker: {color: bottom.map(s => s.score >= 0 ? '#f56c6c' : '#67c23a')},
-    text: bottom.map(s => `s1:${fmt(s.s1_return)}%`),
-    textposition: 'outside',
-  };
-  Plotly.newPlot('bottomChart', [bottomTrace], {
-    margin: {l: 110, r: 60, t: 10, b: 30},
-    yaxis: {autorange: 'reversed', font: {size: 11}},
-    xaxis: {font: {size: 10}},
-    height: 360,
-  }, {displayModeBar: false});
+  Plotly.newPlot('bottomChart', [makeTrace(bottom)], layoutBase, {displayModeBar: false, responsive: true});
 }
 
-function renderMembers(payload) {
-  const top = payload.top_sectors || [];
+// ========== 渲染：成分股（带表头排序）==========
+function switchMembersTab(tab, btn) {
+  membersTab = tab;
+  document.querySelectorAll('.members-tabs button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderMembers();
+}
+
+function renderMembers() {
+  if (!lastPayload) return;
+  const sectors = membersTab === 'top'
+    ? (lastPayload.top_sectors || [])
+    : (lastPayload.bottom_sectors || []);
   const grid = document.getElementById('membersGrid');
-  if (top.length === 0) {
-    grid.innerHTML = '<div class="empty-msg">无板块数据</div>';
-    return;
-  }
-  grid.innerHTML = top.map(s => sectorCardHtml(s)).join('');
+  if (sectors.length === 0) { grid.innerHTML = '<div class="empty-msg">无数据</div>'; return; }
+  grid.innerHTML = sectors.map((s, i) => { s._idx = i + 1; return sectorCardHtml(s, membersTab); }).join('');
 }
 
-function sectorCardHtml(s) {
-  const headColor = s.score >= 0 ? '#f56c6c' : '#909399';
+function sectorCardHtml(s, tab) {
+  const color = tab === 'top'
+    ? (s.score >= 0 ? '#ef4444' : '#f59e0b')
+    : (s.score < 0 ? '#10b981' : '#6b7280');
   const members = s.members_top10 || [];
-  const rows = members.map(m => {
+  const idx = s._idx || '';
+  const rows = members.map((m, i) => {
     const changeCls = m.change_ratio > 0 ? 'up' : (m.change_ratio < 0 ? 'down' : '');
-    const limitTag = m.limit ? '<span style="color:#fff;background:#f56c6c;padding:0 4px;border-radius:2px;font-size:10px;">停</span>' : '';
+    const limitTag = m.limit ? '<span class="limit-tag">涨停</span>' : '';
     return `<tr>
-      <td>${m.code}</td>
-      <td class="${changeCls}">${fmt(m.change_ratio)}%</td>
-      <td>${m.speed ? fmt(m.speed)+'%' : '-'}</td>
-      <td>${m.body ? fmt(m.body)+'%' : '-'}</td>
-      <td>${limitTag}</td>
-      <td><b>${m.score.toFixed(2)}</b></td>
+      <td class="left">${m.code}</td>
+      <td class="left"><div class="stock-name" title="${m.name||''}">${m.name||''}</div></td>
+      <td class="r ${changeCls}" data-k="change_ratio">${fmt(m.change_ratio)}%${limitTag}</td>
+      <td class="r" data-k="speed">${m.speed ? fmt(m.speed)+'%' : '-'}</td>
+      <td class="r" data-k="body">${m.body ? fmt(m.body)+'%' : '-'}</td>
+      <td class="r" data-k="score"><b>${fmt(m.score)}</b></td>
     </tr>`;
   }).join('');
+  const s1Tip = 'S1=成分股平均涨幅';
+  const s2Tip = 'S2=上涨成分股占比';
   return `<div class="sector-card" data-code="${s.concept_code}">
-    <div class="card-head" style="background:${headColor};">
-      <span>${s.concept_name}</span>
-      <span class="score">分 ${s.score.toFixed(2)} | s1 ${fmt(s.s1_return)}%</span>
+    <div class="card-head" style="background:${color};">
+      <span><span class="num">${s._idx||''}</span>${s.concept_name}</span>
+      <span class="meta">评分 ${fmt(s.score)} · S1 ${fmtPct(s.s1_return)} · S2 ${(s.s2_breadth*100).toFixed(0)}%</span>
     </div>
     <table>
-      <tr><th>代码</th><th>涨幅</th><th>涨速</th><th>实体</th><th></th><th>综合分</th></tr>
-      ${rows || '<tr><td colspan="6" style="text-align:center;color:#999;">无数据</td></tr>'}
+      <thead><tr>
+        <th class="left" onclick="sortCard(this,'code')">代码</th>
+        <th class="left">名称</th>
+        <th class="r sorted" data-order="" onclick="sortCard(this,'change_ratio')">涨幅</th>
+        <th class="r" onclick="sortCard(this,'speed')">涨速</th>
+        <th class="r" onclick="sortCard(this,'body')">实体</th>
+        <th class="r" onclick="sortCard(this,'score')">综合分</th>
+      </tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:#9ca3af;">无数据</td></tr>'}</tbody>
     </table>
   </div>`;
 }
 
-function highlightSector(code) {
-  document.querySelectorAll('.sector-card').forEach(c => {
-    c.style.outline = c.dataset.code === code ? '2px solid #409eff' : 'none';
+// 表头排序（单卡片内）
+function sortCard(th, key) {
+  const tbody = th.closest('table').querySelector('tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  if (rows.length === 0) return;
+  // 当前排序方向
+  const cur = th.dataset.order === '↓' ? '↑' : '↓';
+  th.dataset.order = cur;
+  // 清除同表其它 th 的排序标记
+  th.closest('thead').querySelectorAll('th').forEach(t => { if (t !== th) { t.classList.remove('sorted'); t.dataset.order=''; }});
+  th.classList.add('sorted');
+  const desc = cur === '↓';
+  rows.sort((a, b) => {
+    const av = parseFloat(a.querySelector(`[data-k="${key}"]`).textContent) || 0;
+    const bv = parseFloat(b.querySelector(`[data-k="${key}"]`).textContent) || 0;
+    return desc ? bv - av : av - bv;
   });
-  const target = document.querySelector(`.sector-card[data-code="${code}"]`);
-  if (target) target.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  rows.forEach(r => tbody.appendChild(r));
 }
 
-function fmt(n) {
-  if (n === null || n === undefined || isNaN(n)) return '-';
-  return (n > 0 ? '+' : '') + Number(n).toFixed(2);
+function highlightSector(code) {
+  document.querySelectorAll('.sector-card').forEach(c => {
+    c.style.outline = c.dataset.code === code ? '2px solid #3b82f6' : 'none';
+  });
+  const t = document.querySelector(`.sector-card[data-code="${code}"]`);
+  if (t) t.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 }
 
 // ========== 盘前筛选 ==========
 async function runPrescreen() {
   const date = document.getElementById('dateSel').value || '';
-  setStatus('盘前筛选中（约5秒）...', 'loading');
+  document.getElementById('prescreenModal').classList.add('show');
+  document.getElementById('modalBody').innerHTML = '<div class="empty-msg">筛选中（约5秒）...</div>';
   try {
     const r = await fetch('/api/prescreen', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({date: date || undefined})
     });
     const data = await r.json();
     if (data.error) {
-      setStatus('⚠ ' + data.error, '');
+      document.getElementById('modalBody').innerHTML = '<div class="empty-msg">⚠ ' + data.error + '</div>';
       return;
     }
-    setStatus(`盘前筛选完成：${data.sector_count} 板块，${data.stock_count} 股票`, 'live');
-    // 若当前在 watchlist 模式，刷新视图
-    if (document.getElementById('modeSel').value === 'watchlist') {
-      loadWatchlist();
-    }
+    renderPrescreenModal(data);
+    if (document.getElementById('modeSel').value === 'watchlist') loadWatchlist();
   } catch(e) {
-    setStatus('⚠ 筛选失败: ' + e.message, '');
+    document.getElementById('modalBody').innerHTML = '<div class="empty-msg">⚠ 筛选失败: ' + e.message + '</div>';
   }
+}
+function closeModal() { document.getElementById('prescreenModal').classList.remove('show'); }
+
+function renderPrescreenModal(data) {
+  const sectors = data.sectors || [];
+  const html = `
+    <div class="summary">📅 ${data.date} · 共选出 <b>${data.sector_count}</b> 个强势板块、<b>${data.stock_count}</b> 只成分股（5日累计涨幅）</div>
+    <div class="prescreen-list">
+      ${sectors.map(s => `
+        <div class="prescreen-sector">
+          <div class="ps-head">
+            <span class="rank">${s.rank_sector}</span>
+            <span class="name">${s.concept_name}</span>
+            <span class="ret ${s.sector_5d_return<0?'neg':''}">5d ${fmtPct(s.sector_5d_return)}</span>
+          </div>
+          <table>
+            <thead><tr><th>代码</th><th>名称</th><th class="r">5日涨幅</th></tr></thead>
+            <tbody>
+              ${(s.stocks||[]).slice(0,5).map(m => `
+                <tr>
+                  <td>${m.stock_code}</td>
+                  <td>${m.stock_name||''}</td>
+                  <td class="r" style="color:${m.stock_5d_return>=0?'#ef4444':'#10b981'}">${fmtPct(m.stock_5d_return)}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`).join('')}
+    </div>`;
+  document.getElementById('modalBody').innerHTML = html;
 }
 
 async function loadWatchlist() {
@@ -374,52 +517,48 @@ async function loadWatchlist() {
   if (data.error) {
     grid.innerHTML = '<div class="empty-msg">' + data.error + '</div>';
     document.getElementById('wlHint').textContent = '';
-    setStatus(data.error, '');
+    setStatus(data.error, 'warn');
     return;
   }
-  document.getElementById('wlHint').textContent =
-    `（${data.date} · ${data.sector_count} 板块）`;
-  renderWatchlist(data);
+  document.getElementById('wlHint').textContent = `（${data.date} · ${data.sector_count} 板块）`;
+  grid.innerHTML = (data.sectors||[]).map((s, i) => {
+    s._idx = i + 1;
+    return watchlistCardHtml(s);
+  }).join('');
   setStatus(`watchlist · ${data.date} · ${data.sector_count} 板块`, 'live');
 }
 
-function renderWatchlist(data) {
-  const grid = document.getElementById('watchlistGrid');
-  const sectors = data.sectors || [];
-  if (sectors.length === 0) {
-    grid.innerHTML = '<div class="empty-msg">无数据</div>';
-    return;
-  }
-  grid.innerHTML = sectors.map(s => watchlistCardHtml(s)).join('');
-}
-
 function watchlistCardHtml(s) {
-  const headColor = s.sector_5d_return >= 0 ? '#e6a23c' : '#909399';
-  const rows = (s.stocks || []).map(m => {
+  const rows = (s.stocks||[]).map(m => {
     const cls = m.stock_5d_return > 0 ? 'up' : (m.stock_5d_return < 0 ? 'down' : '');
     return `<tr>
-      <td>${m.stock_code}</td>
-      <td>${m.stock_name || ''}</td>
-      <td class="${cls}">${fmt(m.stock_5d_return)}%</td>
-      <td>${m.rank_stock}</td>
+      <td class="left">${m.stock_code}</td>
+      <td class="left"><div class="stock-name" title="${m.stock_name||''}">${m.stock_name||''}</div></td>
+      <td class="r ${cls}">${fmt(m.stock_5d_return)}%</td>
+      <td class="r">${m.rank_stock}</td>
     </tr>`;
   }).join('');
   return `<div class="sector-card">
-    <div class="card-head" style="background:${headColor};">
-      <span>#${s.rank_sector} ${s.concept_name}</span>
-      <span class="score">5d ${fmt(s.sector_5d_return)}%</span>
+    <div class="card-head" style="background:#f59e0b;">
+      <span><span class="num">${s._idx}</span>${s.concept_name}</span>
+      <span class="meta">5d ${fmtPct(s.sector_5d_return)}</span>
     </div>
     <table>
-      <tr><th>代码</th><th>名称</th><th>5d涨幅</th><th>排名</th></tr>
-      ${rows || '<tr><td colspan="4" style="text-align:center;color:#999;">无成分股</td></tr>'}
+      <thead><tr><th class="left">代码</th><th class="left">名称</th><th class="r">5d涨幅</th><th class="r">排名</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" style="text-align:center;color:#9ca3af;">无</td></tr>'}</tbody>
     </table>
   </div>`;
 }
 
+// 点击遮罩关闭弹层
+document.getElementById('prescreenModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
 // 初始化
 (async function init() {
   await loadDates();
-  onModeChange(); // 默认历史模式，触发首次加载
+  onModeChange();
 })();
 </script>
 </body>
