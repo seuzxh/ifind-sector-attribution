@@ -24,8 +24,9 @@
 | 数据库 | `data/sector_attribution.db`（SQLite，首次 init 自动创建） |
 | 操作系统 | Linux（systemd） |
 | 权限 | root（因 conda 环境在 /root 下） |
+| **服务器地址** | **115.191.14.82** |
 
-服务器在内网，服务绑 `127.0.0.1`，**通过 SSH 隧道访问**（不直接暴露公网）。
+服务绑 `0.0.0.0:8000`，**支持两种访问方式**：公网直连（需安全组放行）和 SSH 隧道（无需开放端口）。
 
 ---
 
@@ -48,7 +49,7 @@ sudo bash install_service.sh
 | `User` | root | 运行用户（conda 在 /root 下） |
 | `WorkingDirectory` | 项目目录 | 让 `config_local.py` / `data/` 相对路径生效 |
 | `Environment=PYTHONPATH` | 项目目录 | 确保 import 正确 |
-| `ExecStart` | python main.py server **--host 127.0.0.1** --port 8000 | 仅绑本地，通过 SSH 隧道访问 |
+| `ExecStart` | python main.py server **--host 0.0.0.0** --port 8000 | 绑全部网卡，公网 115.191.14.82:8000 可达 |
 | `Restart` | always | 崩溃自动重启 |
 | `RestartSec` | 5 | 崩溃后 5 秒重启 |
 | `KillSignal` | SIGINT | 优雅停止（uvicorn 收到 SIGINT 完成清理） |
@@ -74,82 +75,85 @@ sudo systemctl start ifind-monitor
 
 ---
 
-## 3. 访问方式：SSH 隧道
+## 3. 访问方式
 
-服务绑 `127.0.0.1:8000`，外部无法直接访问。通过 SSH 端口转发把服务映射到你本地机器。
+服务器地址 **115.191.14.82**。服务绑 `0.0.0.0:8000`，支持两种访问方式。
 
-### 基本用法
+### 方式A：公网直连（推荐，日常使用）
 
-在你的**本地电脑**（笔记本/工作站）执行：
+浏览器直接打开：
+
+```
+http://115.191.14.82:8000
+```
+
+**前提**：云服务商安全组放行 TCP 8000 入站（见下方）。
+
+### ⚠ 安全组放行（公网直连的前提）
+
+服务绑 `0.0.0.0` + 本机防火墙（ufw）已关闭，但**云服务商的安全组**是独立的一层。若公网无法访问，**99% 是安全组未放行**。
+
+在云控制台的安全组规则里添加：
+
+| 方向 | 协议 | 端口 | 来源 |
+|---|---|---|---|
+| 入站 | TCP | 8000 | 0.0.0.0/0（或限制特定IP段，更安全） |
+
+修改后立即生效，无需重启服务。
+
+### 方式B：SSH 隧道（无需开放端口，更安全）
+
+不开放公网端口时，通过 SSH 端口转发访问。在你的**本地电脑**执行：
 
 ```bash
-ssh -L 8000:127.0.0.1:8000 <用户名>@<服务器入口地址>
+ssh -L 8000:127.0.0.1:8000 <用户名>@115.191.14.82
 ```
 
-- `<用户名>`：服务器登录用户（如 root）
-- `<服务器入口地址>`：你平时 SSH 连服务器用的地址（IP 或域名，可能是跳板机）
+然后本地浏览器打开：**`http://127.0.0.1:8000`**
 
-然后本地浏览器打开：**`http://127.0.0.1:8000`**（这是你本地机器的地址，SSH 会自动转发到服务器）
-
-### 后台隧道（不占用终端）
-
-加 `-N -f` 让隧道后台运行：
+后台运行隧道（不占用终端）：
 
 ```bash
-ssh -N -f -L 8000:127.0.0.1:8000 <用户名>@<服务器入口地址>
+ssh -N -f -L 8000:127.0.0.1:8000 <用户名>@115.191.14.82
 ```
 
-- `-N`：不执行远程命令，仅做端口转发
-- `-f`：认证后转入后台
+关闭后台隧道：`pkill -f "ssh -N -f -L 8000"`
 
-关闭后台隧道：
+### 两种方式对比
+
+| | 公网直连 | SSH 隧道 |
+|---|---|---|
+| 便利性 | 浏览器直接开 | 每次先建隧道 |
+| 安全性 | 端口对公网开放 | 仅 SSH 用户可达 |
+| 适用 | 日常监控、多人共享 | 敏感场景、单人调试 |
+
+### 更换端口
+
+若 8000 被占用或想换端口：
+
+1. 编辑 `/etc/systemd/system/ifind-monitor.service`，把 `--port 8000` 改为目标端口
+2. `sudo systemctl daemon-reload && sudo systemctl restart ifind-monitor`
+3. 公网访问需同步更新安全组规则
+
+### HTTPS（可选，生产建议）
+
+当前是 HTTP。若需 HTTPS，加 nginx 反向代理 + Let's Encrypt：
 
 ```bash
-# Linux/Mac：查找并杀掉隧道进程
-ps aux | grep "ssh -N -f -L 8000" | grep -v grep
-kill <PID>
-
-# 或用 pkill
-pkill -f "ssh -N -f -L 8000"
+sudo apt install nginx certbot python3-certbot-nginx
 ```
 
-### 通过跳板机访问（两层转发）
+nginx 配置示例（反代到 8000）：
 
-如果服务器在跳板机后面：
-
-```bash
-# 本地 → 跳板机 → 目标服务器
-ssh -L 8000:127.0.0.1:8000 -J <跳板机用户>@<跳板机地址> <目标用户>@<目标服务器内网IP>
-```
-
-### SSH config 配置（推荐，简化日常使用）
-
-在本地 `~/.ssh/config` 添加：
-
-```
-Host ifind-monitor
-    HostName <服务器入口地址>
-    User <用户名>
-    LocalForward 8000 127.0.0.1:8000
-    # 若经过跳板机，加：ProxyJump <跳板机>
-```
-
-之后只需 `ssh ifind-monitor`，隧道自动建立，浏览器开 `http://127.0.0.1:8000`。
-
-### Windows 用户
-
-- **PowerShell/cmd**：同样用 `ssh -L 8000:127.0.0.1:8000 ...`（Win10+ 自带 OpenSSH）
-- **PuTTY**：Connection → SSH → Tunnels，Source port 填 `8000`，Destination 填 `127.0.0.1:8000`，点 Add 然后 Open
-- **MobaXterm**：Session → SSH → Tunneling，新建端口转发
-
-### 多人同时访问
-
-SSH 隧道是每人在自己电脑上各建一条。若需多人共享一条隧道，可在本地把 `-L` 改为绑全部网卡：
-
-```bash
-# 允许同内网其它人通过你的电脑访问
-ssh -L 0.0.0.0:8000:127.0.0.1:8000 <用户名>@<服务器>
-# 同事访问 http://<你的本地IP>:8000
+```nginx
+server {
+    server_name your-domain.com;
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
 ```
 
 ---
@@ -233,17 +237,32 @@ journalctl -u ifind-monitor -e | tail -30
 #    - data/ 目录权限 → chmod 或 chown
 ```
 
-### SSH 隧道连不上
+### 公网访问不通（方式A）
 
 ```bash
-# 1. 确认服务在跑且监听 127.0.0.1
+# 1. 确认服务在跑且监听 0.0.0.0
 sudo ss -tlnp | grep 8000
-# 应显示 127.0.0.1:8000
+# 应显示 0.0.0.0:8000（若显示 127.0.0.1 则公网不通）
 
 # 2. 在服务器本地测试
 curl http://127.0.0.1:8000/    # 应返回 200
 
-# 3. SSH 隧道错误排查
+# 3. 检查本机防火墙
+sudo ufw status
+sudo iptables -L INPUT -n | grep 8000
+
+# 4. 检查云安全组（最常见原因）
+#    → 云控制台确认 TCP 8000 入站已放行
+#    本地能通但公网不通，几乎都是安全组问题
+```
+
+### SSH 隧道连不上（方式B）
+
+```bash
+# 1. 确认服务在跑
+sudo ss -tlnp | grep 8000
+
+# 2. SSH 隧道错误排查
 #    "bind: Address already in use" → 本地 8000 被占用，换端口
 #    ssh -L 8888:127.0.0.1:8000 ...  # 本地用 8888 访问
 #    "channel_setup_fwd_listener: cannot listen to port" → 同上
