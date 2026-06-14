@@ -278,6 +278,7 @@ def get_history_dashboard(date: str, top_n: int = 10):
         """
         历史模式：成分股按当日涨幅排序。
         :param reverse: True=降序(涨幅最大在前，给top板块)；False=升序(跌幅最深在前，给bottom板块)
+        :return: (排序后的前 limit 只, 有当日涨幅数据的成分股总数)
         """
         members = db.get_concept_members(concept_code)
         member_changes = []
@@ -294,21 +295,22 @@ def get_history_dashboard(date: str, top_n: int = 10):
                     "score": round(float(chg), 4),
                 })
         member_changes.sort(key=lambda x: x["change_ratio"], reverse=reverse)
-        return member_changes[:limit]
+        return member_changes[:limit], len(member_changes)
 
     # Top 板块（含成分股，涨幅最大前10）
     top_rankings = rankings[:top_n]
     top_sectors = []
     for r in top_rankings:
         cc = r["concept_code"]
+        top10, total_cnt = _build_member_ranking(cc, 10, reverse=True)
         top_sectors.append({
             "concept_code": cc,
             "concept_name": concept_names.get(cc, cc),
             "score": r.get("score_final", r.get("score_1d", 0)),
             "s1_return": r.get("s1_return", 0),
             "s2_breadth": r.get("s2_breadth", 0),
-            "member_count": r.get("member_count", 0),
-            "members_top10": _build_member_ranking(cc, 10, reverse=True),
+            "member_count": total_cnt,
+            "members_top10": top10,
         })
 
     # Bottom 板块（含成分股，跌幅最深前10）
@@ -316,14 +318,15 @@ def get_history_dashboard(date: str, top_n: int = 10):
     bottom_sectors = []
     for r in bottom_rankings:
         cc = r["concept_code"]
+        top10, total_cnt = _build_member_ranking(cc, 10, reverse=False)
         bottom_sectors.append({
             "concept_code": cc,
             "concept_name": concept_names.get(cc, cc),
             "score": r.get("score_final", r.get("score_1d", 0)),
             "s1_return": r.get("s1_return", 0),
             "s2_breadth": r.get("s2_breadth", 0),
-            "member_count": r.get("member_count", 0),
-            "members_top10": _build_member_ranking(cc, 10, reverse=False),
+            "member_count": total_cnt,
+            "members_top10": top10,
         })
 
     # 市场统计

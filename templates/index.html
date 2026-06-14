@@ -395,7 +395,7 @@ function renderRankTable(containerId, sectors, tab) {
     const s1Cls = s.s1_return > 0 ? 'up' : (s.s1_return < 0 ? 'down' : '');
     return `<tr data-code="${s.concept_code}" onclick="onSectorRowClick('${s.concept_code}', this)">
       <td class="center">${rankBadge(i)}</td>
-      <td class="left concept-name">${s.concept_name}</td>
+      <td class="left concept-name">${s.concept_name}<div style="font-size:11px;color:#9ca3af;font-weight:normal;">${s.concept_code}</div></td>
       <td class="${s1Cls}" data-v="${s.s1_return}">${fmt(s.s1_return)}%</td>
       <td data-v="${s.s2_breadth}">${(s.s2_breadth*100).toFixed(0)}%</td>
       <td data-v="${s.member_count||0}">${s.member_count||'-'}</td>
@@ -406,9 +406,9 @@ function renderRankTable(containerId, sectors, tab) {
   el.innerHTML = `<table class="rank-table">
     <thead><tr>
       <th class="center">#</th>
-      <th class="left">板块名称</th>
-      <th class="sorted" data-order="↓" data-k="s1" onclick="sortRankTable(this)">涨幅↑<br><span style="font-weight:normal;color:#9ca3af;">S1成分均值</span></th>
-      <th data-k="s2" onclick="sortRankTable(this)">广度<br><span style="font-weight:normal;color:#9ca3af;">S2上涨比</span></th>
+      <th class="left">板块名称 / 代码</th>
+      <th class="sorted" data-order="↓" data-k="s1" onclick="sortRankTable(this)">涨幅<br><span style="font-weight:normal;color:#9ca3af;">成分股平均涨幅</span></th>
+      <th data-k="s2" onclick="sortRankTable(this)">上涨广度<br><span style="font-weight:normal;color:#9ca3af;">上涨股数/总股数</span></th>
       <th data-k="cnt" onclick="sortRankTable(this)">成分<br><span style="font-weight:normal;color:#9ca3af;">股数</span></th>
       <th class="sorted" data-order="↓" data-k="score" onclick="sortRankTable(this)">评分<br><span style="font-weight:normal;color:#9ca3af;">综合分</span></th>
     </tr></thead>
