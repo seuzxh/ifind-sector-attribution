@@ -261,6 +261,7 @@ class RealtimeEngine:
         # 默认沿用概念板块体系；custom 模式覆盖为自选股分组
         active_members_map = None    # None 表示第4步再用 self._members_map（或 watchlist 过滤）
         active_concept_names = self._concept_names
+        holding_stocks = []          # 持仓股清单（仅 custom 模式填，供前端醒目标注）
 
         # 自选股分组模式（优先级最高）：用 custom_group 表的分组替代概念板块
         if custom_mode:
@@ -270,7 +271,14 @@ class RealtimeEngine:
             active_concept_names = self.db.get_custom_group_names()
             codes = self.db.get_custom_all_stock_codes()
             mode_key = "custom_group"
-            print(f"[REALTIME] 自选分组模式：{len(active_members_map)} 分组，{len(codes)} 只股票")
+            # 识别持仓分组（按 config.HOLDING_GROUP_NAME 匹配 block_name），取其成分股作为持仓股
+            holding_name = getattr(config, "HOLDING_GROUP_NAME", "")
+            for gid, gname in active_concept_names.items():
+                if gname == holding_name:
+                    holding_stocks = active_members_map.get(gid, [])
+                    break
+            print(f"[REALTIME] 自选分组模式：{len(active_members_map)} 分组，{len(codes)} 只股票"
+                  f"{f'，持仓分组 {holding_name}={len(holding_stocks)} 只' if holding_stocks else ''}")
         # watchlist 模式：限定拉取范围 + 板块范围
         elif watchlist_mode:
             wl_date = watchlist_date or self.db.get_latest_watchlist_date()
@@ -348,6 +356,8 @@ class RealtimeEngine:
                     }
                     for _, r in picked.iterrows()
                 ]
+            # 该分组完整成分股与持仓股的交集（基于全部成分股，非仅 top10）
+            holding_in = sorted(set(members) & set(holding_stocks)) if holding_stocks else []
             return {
                 "concept_code": cc,
                 "concept_name": active_concept_names.get(cc, cc),
@@ -355,6 +365,7 @@ class RealtimeEngine:
                 "s1_return": round(float(row["s1_return"]), 2),
                 "s2_breadth": round(float(row["s2_breadth"]), 4),
                 "member_count": int(row["member_count"]),
+                "holding_in_group": holding_in,   # 本分组包含的持仓股（供前端醒目标注）
                 "members_top10": members_top10,
             }
 
@@ -375,6 +386,7 @@ class RealtimeEngine:
             "market_stats": market_stats,
             "top_sectors": top_sectors,
             "bottom_sectors": bottom_sectors,
+            "holding_stocks": holding_stocks,   # 持仓股清单（仅 custom 模式非空，供前端醒目标注）
         }
 
     @staticmethod

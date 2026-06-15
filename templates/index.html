@@ -180,6 +180,25 @@
   .sector-card .stock-name { color: #374151; max-width: 70px; overflow: hidden; text-overflow: ellipsis; }
   .accel-tag { font-size: 10px; font-weight: 600; }
 
+  /* ===== 持仓醒目标注（自选看板，金色高亮）===== */
+  .rank-table tbody tr.has-holding {
+    background: linear-gradient(90deg, #fef9c3 0%, #fffbeb 100%) !important;
+    border-left: 3px solid #f59e0b;
+  }
+  .rank-table tbody tr.has-holding td { color: #92400e; }
+  .rank-table tbody tr.has-holding:hover { background: #fef3c7 !important; }
+  .holding-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px;
+    font-weight: 700; background: #f59e0b; color: #fff; margin-left: 5px; vertical-align: middle;
+  }
+  .sector-card.has-holding { border: 2px solid #f59e0b; box-shadow: 0 0 0 2px rgba(245,158,11,0.15); }
+  .sector-card tbody tr.is-holding { background: #fef9c3 !important; }
+  .sector-card tbody tr.is-holding td:first-child { border-left: 3px solid #f59e0b; }
+  .holding-tag {
+    display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px;
+    background: #f59e0b; color: #fff; margin-left: 3px; font-weight: 600;
+  }
+
   .empty-msg { color: #9ca3af; text-align: center; padding: 40px; font-size: 14px; }
 
   /* ===== 弹层 ===== */
@@ -732,9 +751,13 @@ function renderRankTable(containerId, sectors, tab) {
 
   const rows = sectors.map((s, i) => {
     const s1Cls = s.s1_return > 0 ? 'up' : (s.s1_return < 0 ? 'down' : '');
-    return `<tr data-code="${s.concept_code}" onclick="onSectorRowClick('${s.concept_code}', this)">
+    // 含持仓的分组：行高亮 + 概念名后加持仓徽章（仅自选看板）
+    const holdingIn = (isCustomBoard && s.holding_in_group && s.holding_in_group.length) ? s.holding_in_group : null;
+    const holdCls = holdingIn ? ' has-holding' : '';
+    const holdBadge = holdingIn ? `<span class="holding-badge">持仓${holdingIn.length}</span>` : '';
+    return `<tr data-code="${s.concept_code}" class="${holdCls.trim()}" onclick="onSectorRowClick('${s.concept_code}', this)">
       <td class="center">${rankBadge(i)}</td>
-      <td class="left concept-name">${s.concept_name}<div style="font-size:11px;color:#9ca3af;font-weight:normal;">${s.concept_code}</div></td>
+      <td class="left concept-name">${s.concept_name}${holdBadge}<div style="font-size:11px;color:#9ca3af;font-weight:normal;">${s.concept_code}</div></td>
       <td class="${s1Cls}" data-v="${s.s1_return}">${fmt(s.s1_return)}%</td>
       <td data-v="${s.s2_breadth}">${Math.round(s.s2_breadth*(s.member_count||0))}/${s.member_count||0}</td>
       <td data-v="${s.member_count||0}">${s.member_count||'-'}</td>
@@ -854,20 +877,25 @@ function accelHtml(a) {
 function sectorCardHtml(s, tab) {
   const color = tab === 'top' ? (s.score >= 0 ? '#ef4444' : '#f59e0b') : (s.score < 0 ? '#10b981' : '#6b7280');
   const members = s.members_top10 || [];
+  const holdingSet = (isCustomBoard && s.holding_in_group) ? new Set(s.holding_in_group) : null;
   const rows = members.map(m => {
     const changeCls = m.change_ratio > 0 ? 'up' : (m.change_ratio < 0 ? 'down' : '');
     const limitTag = m.limit ? '<span class="limit-tag">涨停</span>' : '';
-    return `<tr>
+    const isHolding = holdingSet && holdingSet.has(m.code);
+    const holdCls = isHolding ? ' is-holding' : '';
+    const holdTag = isHolding ? '<span class="holding-tag">持仓</span>' : '';
+    return `<tr class="${holdCls.trim()}">
       <td class="left">${m.code}</td>
       <td class="left"><div class="stock-name" title="${m.name||''}">${m.name||''}</div></td>
-      <td class="r ${changeCls}" data-k="change_ratio">${fmt(m.change_ratio)}%${limitTag}</td>
+      <td class="r ${changeCls}" data-k="change_ratio">${fmt(m.change_ratio)}%${limitTag}${holdTag}</td>
       <td class="r" data-k="speed">${m.speed ? fmt(m.speed)+'%' : '-'}</td>
       <td class="r" data-k="acceleration">${accelHtml(m.acceleration)}</td>
       <td class="r" data-k="body">${m.body !== undefined && m.body !== null ? fmt(m.body)+'%' : '-'}</td>
       <td class="r" data-k="score"><b>${fmt(m.score)}</b></td>
     </tr>`;
   }).join('');
-  return `<div class="sector-card" data-code="${s.concept_code}">
+  const cardHoldCls = (isCustomBoard && s.holding_in_group && s.holding_in_group.length) ? ' has-holding' : '';
+  return `<div class="sector-card${cardHoldCls}" data-code="${s.concept_code}">
     <div class="card-head" style="background:${color};">
       <span><span class="num">${s._idx||''}</span>${s.concept_name}</span>
       <span class="meta">评分 ${fmt(s.score)} · S1 ${fmtPct(s.s1_return)} · S2 ${(s.s2_breadth*100).toFixed(0)}%</span>
