@@ -567,14 +567,31 @@ async function loadDates() {
     const dates = data.dates || [];
     const input = document.getElementById('dateSel');
     const hint = document.getElementById('dateHint');
+    // 已入库日期范围（历史模式参考用）
     if (dates.length > 0) {
       const latest = dates[0];
-      input.value = latest.slice(0,4) + '-' + latest.slice(4,6) + '-' + latest.slice(6,8);
       const oldest = dates[dates.length-1];
       hint.textContent = `已入库 ${oldest}~${latest}`;
     } else {
       hint.textContent = '暂无入库数据';
     }
+    // 默认日期 = 今天（实时模式拉分时数据，不依赖日K入库）
+    // 若今天非交易日（周末/节假日），回退到最近一个交易日
+    const today = new Date();
+    let defaultDate = today;
+    if (tradeDays.size > 0) {
+      const fmt = d => d.getFullYear() + '' + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
+      if (!tradeDays.has(fmt(today))) {
+        for (let i = 1; i <= 7; i++) {
+          const prev = new Date(today);
+          prev.setDate(prev.getDate() - i);
+          if (tradeDays.has(fmt(prev))) { defaultDate = prev; break; }
+        }
+      }
+    }
+    input.value = defaultDate.getFullYear() + '-'
+      + String(defaultDate.getMonth()+1).padStart(2,'0') + '-'
+      + String(defaultDate.getDate()).padStart(2,'0');
   } catch(e) { console.error(e); }
 }
 
@@ -1018,8 +1035,8 @@ document.getElementById('prescreenModal').addEventListener('click', function(e) 
   // 按看板类型设置标题（自选分组 / 板块强度）
   document.getElementById('boardTitle').textContent = BOARD_TITLE;
   document.title = isCustomBoard ? '自选分组监控' : '板块强度监控';
+  await loadTradeCalendar();  // 先拉交易日历，供 loadDates 判断默认日期（今天是否交易日）
   await loadDates();
-  await loadTradeCalendar();  // 拉当年交易日，供日期选择器过滤
   onModeChange();
   checkSession();             // 启动时判断交易时段（盘前停止轮询）
   // 每分钟刷新会话状态（应对页面长期挂着跨过开盘/收盘点）
