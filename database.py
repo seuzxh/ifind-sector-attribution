@@ -144,6 +144,15 @@ class Database:
             PRIMARY KEY (calc_date, concept_code, stock_code)
         );
         CREATE INDEX IF NOT EXISTS idx_wl_date ON watchlist(calc_date);
+
+        -- 自选股分组（同花顺 custom_block 导入，静态手动分组）
+        CREATE TABLE IF NOT EXISTS custom_group (
+            group_id    TEXT NOT NULL,
+            group_name  TEXT NOT NULL,
+            stock_code  TEXT NOT NULL,
+            PRIMARY KEY (group_id, stock_code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cg_group ON custom_group(group_id);
         """
         with self._connect() as conn:
             conn.executescript(ddl)
@@ -599,3 +608,45 @@ class Database:
                 "GROUP BY code HAVING first_date > ?", (cutoff,)
             ).fetchall()
             return {r[0] for r in rows}
+
+    # ========== 自选股分组（custom_group） ==========
+    def save_custom_groups(self, rows: List[Dict]):
+        """
+        覆盖写入自选股分组（先清表再批量插入）。幂等，可重复导入更新。
+
+        :param rows: [{group_id, group_name, stock_code}, ...]
+        """
+        with self._connect() as conn:
+            conn.execute("DELETE FROM custom_group")
+            if rows:
+                conn.executemany("""
+                    INSERT OR REPLACE INTO custom_group
+                    (group_id, group_name, stock_code)
+                    VALUES (?, ?, ?)
+                """, [(r["group_id"], r["group_name"], r["stock_code"]) for r in rows])
+
+    def get_custom_members_map(self) -> Dict[str, List[str]]:
+        """返回 {group_id: [stock_code, ...]}，供板块强度计算用"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT group_id, stock_code FROM custom_group ORDER BY group_id, stock_code"
+            )
+            m: Dict[str, List[str]] = {}
+            for row in cursor:
+                m.setdefault(row["group_id"], []).append(row["stock_code"])
+            return m
+
+    def get_custom_group_names(self) -> Dict[str, str]:
+        """返回 {group_id: group_name}，供展示用"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT group_id, group_name FROM custom_group "
+                "GROUP BY group_id, group_name"
+            )
+            return {row["group_id"]: row["group_name"] for row in cursor}
+
+    def get_custom_all_stock_codes(self) -> List[str]:
+        """返回去重后的全部分组股票代码（A 股格式），供分时拉取用"""
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT DISTINCT stock_code FROM custom_group")
+            return [row["stock_code"] for row in cursor]

@@ -4,7 +4,7 @@
 
 ## 一句话
 
-基于同花顺 iFinD API 的 **A股行业归因 + 板块强度检测** 系统。**仅处理沪深北交易所 A 股**（.SH/.SZ/.BJ），全链路过滤海外代码。输出：哪个板块最强、每只股票被哪个概念带涨。
+基于同花顺 iFinD API 的 **A股行业归因 + 板块强度检测** 系统。**仅处理沪深北交易所 A 股**（.SH/.SZ/.BJ），全链路过滤海外代码。输出：哪个板块最强、每只股票被哪个概念带涨。盘中实时监控基于 kline-fetcher 分时数据，**从 9:15 集合竞价即可开始**（ref_price 推算涨跌）。
 
 ## 运行环境（关键，别猜）
 
@@ -12,11 +12,15 @@
 |---|---|
 | 项目根目录 | `/root/projects/2.monitor_940/ifind-sector-attribution` |
 | Python | conda 环境 **`vibe-trading`**：`/root/Projects/5.test-autoresearch/qlib/miniconda3/envs/vibe-trading/bin/python` |
-| 工作目录约定 | 所有命令须在本项目根目录执行（`config_local.py`、`data/` 均为相对路径） |
-| token | 读 `config_local.py`（`ACCESS_TOKEN` / `REFRESH_TOKEN`，已 gitignore，**勿提交、勿外传**） |
-| 数据库 | `data/sector_attribution.db`（SQLite，~92MB） |
+| 工作目录约定 | 所有命令须在本项目根目录执行（`config_local.py`、`data/` 均为相对路径），跑 main.py 需 `PYTHONPATH=.` |
+| iFinD token | `ACCESS_TOKEN` / `REFRESH_TOKEN`：读 `config_local.py` 或环境变量 `IFIND_ACCESS_TOKEN` / `IFIND_REFRESH_TOKEN` |
+| **分时数据依赖** | **`kline-fetcher` 本地包（不在 PyPI，须单独装）**：`pip install -e /root/Projects/kline-fetcher`，或 `pip install git+https://github.com/seuzxh/kline-fetcher.git` |
+| **kline API 地址** | `KLINE_API_BASE_URL`（中焯行情 API，盘中实时监控用）：配在 `config_local.py` 或环境变量，**不配则实时链路不可用** |
+| 数据库 | `data/sector_attribution.db`（SQLite，~92MB，9 张表） |
+| 交易日历缓存 | `data/trade_calendar.txt`（`trade_calendar.py` 三级缓存的本地落盘，缺失会自动重建） |
+| 服务器 / 部署 | **115.191.14.82:8000**；systemd 服务 `ifind-monitor`，一键装 `sudo bash install_service.sh`（详见 `docs/DEPLOYMENT.md`） |
 
-跑命令前请用上面那个 conda python，否则缺 `fastapi`/`pandas`/`numpy`/`plotly` 等依赖。
+> ⚠️ 上述 `config_local.py` 已 gitignore，**勿提交、勿外传**（含真实 token）。跑命令前务必用上面的 conda python，否则缺 `fastapi`/`pandas`/`numpy`/`plotly` 等依赖；盘中实时链路还需 `kline-fetcher`。
 
 ## 入口命令（`main.py`）
 
@@ -25,7 +29,8 @@
 | `init` | 首次部署：拉字典+成分股+映射，补全概念板块全集 | 耗时较长（并发拉取全市场） |
 | `daily --date YYYYMMDD` | 每日盘后：同步日K → 板块强度 → 个股归因 | 日期须为交易日；不传 `--codes` 自动反查全市场 |
 | `prescreen --date YYYYMMDD` | 盘前筛选：5日涨幅选 top 板块+成分股，写入 `watchlist` | 可 `--top-sector` / `--top-stock` 调数量 |
-| `server` | 启动 FastAPI（API + 可视化看板），默认 `0.0.0.0:8000` | 生产用 systemd，调试加 `--reload` |
+| `server [--host H] [--port P] [--reload]` | 启动 FastAPI（API + 可视化看板），默认 `0.0.0.0:8000` | 生产用 systemd，调试加 `--reload` |
+| `import-groups [--json FILE]` | 导入同花顺自选股分组 JSON → `custom_group` 表（幂等覆盖） | 默认读 `ths-custom-block-data/同花顺自选分组导出.json`；自动过滤指数/ETF/可转债等非 A 股标的 |
 | `purge [--vacuum]` | 删除海外数据，仅留 A 股 | **破坏性**：执行前备份数据库；幂等可重跑 |
 | `test` | 测试 5 个 iFinD 接口连通性 | — |
 
@@ -43,15 +48,18 @@
 | `prescreen.py` | 盘前筛选 | 低 |
 | `stock_scorer.py` | 盘中成分股四维评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速 | 低 |
 | `realtime_engine.py` | 盘中实时引擎（分时序列缓存 + 时刻切片 + 内存计算，**不入库**） | 低 |
+| `trade_calendar.py` | 交易日历模块（`TradeCalendar` 单例，三级缓存：内存→`data/trade_calendar.txt`→网络→DB 兜底；复用 `kline_fetcher.fetch_trade_calendar`） | 低 |
+| `probe_auction.py` | 集合竞价数据探针脚本（生产环境验证 `pre_market` 形态用，非业务链路） | 低 |
 | `api_server.py` | FastAPI 服务（REST API + 可视化页面） | 中（加接口看这） |
 | `templates/index.html` | 可视化看板单页（时间滑块 + 3s 轮询 + 加速列） | 低 |
+| `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
 | `main.py` | 命令入口（argparse 子命令） | 低 |
 
 ## 数据库（必读）
 
 完整结构见 **`data/DATABASE_MANIFEST.json`**（机器可读，包含每张表的列定义、行数、日期范围、样本数据、常见查询 SQL、caveats）。智能体查询数据库前应先读这个文件。
 
-8 张表：`ths_concept_dict` / `stock_concept_map` / `concept_members` / `daily_kline` / `min1_kline`（空）/ `concept_strength` / `stock_attribution` / `watchlist`。
+9 张表：`ths_concept_dict` / `stock_concept_map` / `concept_members` / `daily_kline` / `min1_kline`（空）/ `concept_strength` / `stock_attribution` / `watchlist` / **`custom_group`**（自选股分组，`import-groups` 导入）。
 
 **最容易踩的坑**：
 1. **日期格式跨表不一致** — `ths_concept_dict`/`stock_concept_map` 用 `YYYY-MM-DD`，其余表用 `YYYYMMDD`。跨表 JOIN 前必须格式归一，否则键对不上。
@@ -79,6 +87,14 @@
 | 缓存 | 持久化 `concept_strength` / `stock_attribution` | 分时序列内存缓存（TTL 5s，历史日期全天缓存） |
 | 拉取范围 | 全市场 A 股 | **默认 watchlist 聚焦**（~279 只，1.5s） |
 
+## 盘中实时链路补充（易忽略）
+
+- **集合竞价也能监控（9:15~9:25）**：此阶段 `trading` 为空，但 `pre_market` 有逐点 `ref_price`（3 秒一点，~201 点）。`realtime_engine._build_indicator_df` 按两阶段分支：集合竞价**只用末点 ref_price 算涨幅**，`speed/body/acceleration` 置 0；进度条 `available_times` 含 09:15~09:25 点，**自动从 09:15 起**。
+- **trading 切片严格按 snapshot_time 过滤，不兜底回退**（否则 9:20 会误用 9:30 数据）。
+- **交易时段由服务端 `session_phase` 决定**（`trade_calendar.py`，7 个 phase：`pre_open`/`auction`/`pre_morning`/`morning`/`lunch`/`afternoon`/`closed`）。前端仅 `<9:15(pre_open)` 和非交易日停 3s 轮询，**收盘后 `closed` 仍轮询**展示全天数据供回看。
+- **历史日期回看 ≠ 历史看板**：实时接口传 `trade_date=YYYYMMDD` 走分时链路（拉该日全天分时 + 内存切片）；`/api/history/dashboard` 读已入库的 `concept_strength`（降级为纯涨幅排序）。两条路径别混。
+- **自选股分组看板**：`GET /api/custom/dashboard` 用 `custom_group` 表替代概念板块算分组强弱，复用 realtime_engine 的缓存/切片（仅 `members_map` 来源不同）。需先用 `import-groups` 导入分组。
+
 ## 三套数据源（重要）
 
 | 源 | 用途 | 调用方 |
@@ -100,6 +116,26 @@
   - 时间条 `snapshot_time` 切片：截 `trading[:snapshot_time]` 用末点重算，纯内存毫秒级
 - **最小成分股数** `MIN_MEMBER_COUNT=6`，低于此的概念不参与排名（样本过小 Z-score 失真）。
 
+## REST API（`api_server.py`，默认 `0.0.0.0:8000`）
+
+| 接口 | 方法 | 说明 |
+|---|---|---|
+| `GET /` | — | 可视化看板页面（HTML） |
+| `GET /api/sector/rankings` | — | 板块强度排名（含多周期融合分） |
+| `POST /api/attribution/stock` | — | 个股多概念归因 |
+| `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
+| `GET /api/realtime/dashboard` | — | **实时看板**（分时切片，支持 `trade_date`/`snapshot_time`/`watchlist_mode`） |
+| `GET /api/custom/dashboard` | — | **自选分组看板**（用 `custom_group` 替代概念板块，复用实时切片） |
+| `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
+| `GET /api/history/dashboard` | — | **历史看板**（指定日期，读入库 `concept_strength`，降级纯涨幅） |
+| `POST /api/prescreen` | — | 盘前筛选（5日涨幅选板块+成分股 → `watchlist`） |
+| `GET /api/watchlist` | — | 读当日 watchlist |
+| `GET /api/dates` | — | 已入库的板块强度日期列表 |
+| `GET /api/concept/list` | — | 全部 A 股概念板块列表 |
+| `GET /api/concept/members` | — | 概念成分股（`date` 不传则取最新缓存） |
+| `GET /api/trade_calendar?year=YYYY` | — | 交易日列表（前端日期选择器过滤非交易日用） |
+| `GET /api/session_status` | — | 当前交易时段状态（`is_trading_day`/`phase`/`next_open_time`/`next_trade_day`，前端盘前判断用） |
+
 ## 常见任务 → 怎么做
 
 | 想做的事 | 怎么做 |
@@ -109,6 +145,9 @@
 | 改某个表的字段 | 改 `database.py` 建表 + 读写方法，**同步更新 `data/DATABASE_MANIFEST.json`** |
 | 加新概念分类 | `config.ALL_CONCEPT_CODES` 加码 → 重跑 `init` 的 `init_concept_universe` |
 | 查数据库结构/样本/查询模板 | 读 `data/DATABASE_MANIFEST.json`，别猜 |
+| 盘中实时拉取失败 / `ImportError: kline_fetcher` | 检查 kline-fetcher 是否 `pip install -e` 装好 + `KLINE_API_BASE_URL` 是否配置 |
+| 接入自选股分组监控 | `main.py import-groups` 导入 JSON → 调 `GET /api/custom/dashboard` |
+| 改盘前筛选/时段判定 | `prescreen.py`（筛选）/ `trade_calendar.py`（`session_phase`、交易日历） |
 
 ## 深入阅读
 

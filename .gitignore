@@ -23,6 +23,9 @@ config_local.py
 .env
 *.token
 
+# 自选股分组数据（个人持仓/观察列表，导入用，不入库）
+ths-custom-block-data/
+
 # IDE
 .vscode/
 .idea/

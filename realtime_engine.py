@@ -236,6 +236,7 @@ class RealtimeEngine:
         top_n: int = 10,
         watchlist_mode: bool = True,
         watchlist_date: str = None,
+        custom_mode: bool = False,
     ) -> Dict:
         """
         计算完整看板数据（基于分时序列切片）。
@@ -245,6 +246,8 @@ class RealtimeEngine:
         :param top_n: 返回前/后 N 个板块
         :param watchlist_mode: 是否聚焦 watchlist（默认 True）
         :param watchlist_date: watchlist 日期，默认最近一次
+        :param custom_mode: 自选股分组模式（优先级高于 watchlist_mode），
+                            用 custom_group 表的分组替代概念板块
         """
         self._ensure_maps()
 
@@ -254,9 +257,22 @@ class RealtimeEngine:
         trade_date = trade_date.replace("-", "")
         is_today = (trade_date == today_str)
 
+        # active_* 变量：当前看板实际使用的分组映射与名称
+        # 默认沿用概念板块体系；custom 模式覆盖为自选股分组
+        active_members_map = None    # None 表示第4步再用 self._members_map（或 watchlist 过滤）
+        active_concept_names = self._concept_names
+
+        # 自选股分组模式（优先级最高）：用 custom_group 表的分组替代概念板块
+        if custom_mode:
+            active_members_map = self.db.get_custom_members_map()
+            if not active_members_map:
+                return {"error": "自选股分组为空，请先 import-groups 导入", "trade_date": trade_date}
+            active_concept_names = self.db.get_custom_group_names()
+            codes = self.db.get_custom_all_stock_codes()
+            mode_key = "custom_group"
+            print(f"[REALTIME] 自选分组模式：{len(active_members_map)} 分组，{len(codes)} 只股票")
         # watchlist 模式：限定拉取范围 + 板块范围
-        watchlist_concepts = None
-        if watchlist_mode:
+        elif watchlist_mode:
             wl_date = watchlist_date or self.db.get_latest_watchlist_date()
             if not wl_date:
                 return {"error": "watchlist 模式但当日未跑 prescreen，请先盘前筛选", "trade_date": trade_date}
@@ -291,10 +307,14 @@ class RealtimeEngine:
             return {"error": "指标计算为空", "trade_date": trade_date}
 
         # 4. 算板块强度
-        members_map = self._members_map
-        if watchlist_mode and watchlist_concepts:
+        if active_members_map is not None:
+            # custom 模式已设置完整的自定义分组映射
+            members_map = active_members_map
+        elif watchlist_mode and watchlist_concepts:
             members_map = {cc: self._members_map.get(cc, []) for cc in watchlist_concepts
                            if cc in self._members_map}
+        else:
+            members_map = self._members_map
         strength_df = calc_all_sectors_strength(rt_df, members_map)
         if strength_df.empty:
             return {"error": "板块强度计算为空", "trade_date": trade_date}
@@ -309,7 +329,7 @@ class RealtimeEngine:
 
         def _build_sector_entry(row, asc):
             cc = row["concept_code"]
-            members = self._members_map.get(cc, [])
+            members = members_map.get(cc, [])
             member_df = rt_df[rt_df["code"].isin(members)].copy()
             members_top10 = []
             if not member_df.empty:
@@ -330,7 +350,7 @@ class RealtimeEngine:
                 ]
             return {
                 "concept_code": cc,
-                "concept_name": self._concept_names.get(cc, cc),
+                "concept_name": active_concept_names.get(cc, cc),
                 "score": round(float(row["score"]), 4),
                 "s1_return": round(float(row["s1_return"]), 2),
                 "s2_breadth": round(float(row["s2_breadth"]), 4),
@@ -351,6 +371,7 @@ class RealtimeEngine:
             "available_times": available_times,
             "is_today": is_today,
             "watchlist_mode": watchlist_mode,
+            "custom_mode": custom_mode,
             "market_stats": market_stats,
             "top_sectors": top_sectors,
             "bottom_sectors": bottom_sectors,
@@ -389,6 +410,7 @@ def get_realtime_dashboard(
     watchlist_mode: bool = True,
     watchlist_date: str = None,
     top_n: int = 10,
+    custom_mode: bool = False,
 ) -> Dict:
     """获取实时看板（分时数据版）。序列缓存在 engine 内部按 TTL 管理。"""
     global _engine_instance
@@ -400,6 +422,7 @@ def get_realtime_dashboard(
         top_n=top_n,
         watchlist_mode=watchlist_mode,
         watchlist_date=watchlist_date,
+        custom_mode=custom_mode,
     )
 
 

@@ -101,6 +101,50 @@ def cmd_prescreen(args):
         print(f"\n[PRESCREEN] 完成：{result['sector_count']} 板块，{result['stock_count']} 只股票已存入 watchlist")
 
 
+def cmd_import_groups(args):
+    """导入同花顺自选股分组 JSON 到 custom_group 表（幂等，可重复导入更新）"""
+    import json
+    import os
+
+    # market_code → A 股后缀（仅真正的 A 股个股，指数/ETF/可转债等过滤掉）
+    A_SHARE_MARKET = {"17": ".SH", "33": ".SZ", "151": ".BJ"}
+
+    json_path = args.json
+    if not os.path.exists(json_path):
+        print(f"[IMPORT-GROUPS] 文件不存在: {json_path}")
+        return
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    groups = data.get("groups", [])
+    rows = []
+    skipped = 0
+    for g in groups:
+        gid = g.get("block_id", "")
+        gname = g.get("block_name", gid)
+        for s in g.get("stocks", []):
+            mc = s.get("market_code", "")
+            if mc not in A_SHARE_MARKET:
+                skipped += 1
+                continue  # 过滤非 A 股（指数/ETF/可转债/B股等）
+            code = s.get("code", "")
+            rows.append({
+                "group_id": str(gid),
+                "group_name": gname,
+                "stock_code": f"{code}{A_SHARE_MARKET[mc]}",
+            })
+
+    db = Database()
+    db.save_custom_groups(rows)
+
+    group_count = len({r["group_id"] for r in rows})
+    stock_count = len({r["stock_code"] for r in rows})
+    print(f"[IMPORT-GROUPS] 导入完成：{group_count} 个分组，{len(rows)} 条成员（{stock_count} 只独立股票）")
+    print(f"[IMPORT-GROUPS] 已过滤 {skipped} 条非 A 股标的（指数/ETF/可转债等）")
+    print(f"[IMPORT-GROUPS] 来源: {json_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="行业归因与板块强度检测系统")
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
@@ -138,6 +182,15 @@ def main():
     prescreen_parser.add_argument("--top-sector", type=int, default=None, help="选出的板块数，默认20")
     prescreen_parser.add_argument("--top-stock", type=int, default=None, help="每板块成分股数，默认30")
     prescreen_parser.set_defaults(func=cmd_prescreen)
+
+    # import-groups
+    DEFAULT_JSON = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "ths-custom-block-data", "同花顺自选分组导出.json"
+    )
+    ig_parser = subparsers.add_parser("import-groups", help="导入同花顺自选股分组 JSON（幂等，可重复导入更新）")
+    ig_parser.add_argument("--json", type=str, default=DEFAULT_JSON, help="自选分组 JSON 文件路径")
+    ig_parser.set_defaults(func=cmd_import_groups)
 
     args = parser.parse_args()
     if args.command:

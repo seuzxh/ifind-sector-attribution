@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>板块 / 自选分组 监控</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f0f2f5; display: flex; flex-direction: column;
+  }
+  /* Tab 栏 */
+  .tabbar {
+    display: flex; gap: 0; background: #fff; padding: 8px 16px 0 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06); flex-shrink: 0; border-bottom: 1px solid #e5e7eb;
+  }
+  .tabbar .tab {
+    padding: 10px 22px; font-size: 14px; font-weight: 600; cursor: pointer;
+    border: 1px solid transparent; border-bottom: none; border-radius: 8px 8px 0 0;
+    color: #6b7280; background: transparent; transition: all .15s;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .tabbar .tab:hover { color: #3b82f6; background: #f9fafb; }
+  .tabbar .tab.active {
+    color: #1e40af; background: #f0f2f5; border-color: #e5e7eb;
+    position: relative;
+  }
+  .tabbar .tab.active::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: -1px;
+    height: 2px; background: #f0f2f5;
+  }
+  /* iframe 容器 */
+  .frames { flex: 1; position: relative; overflow: hidden; }
+  .frames iframe {
+    position: absolute; inset: 0; width: 100%; height: 100%; border: none;
+    background: #f0f2f5; display: none;
+  }
+  .frames iframe.active { display: block; }
+</style>
+</head>
+<body>
+
+<div class="tabbar">
+  <div class="tab active" data-board="sector" onclick="switchTab('sector')">📊 板块强度监控</div>
+  <div class="tab" data-board="custom" onclick="switchTab('custom')">⭐ 自选分组监控</div>
+</div>
+
+<div class="frames">
+  <iframe id="frame-sector" src="/?board=sector" class="active"></iframe>
+  <iframe id="frame-custom" src="/?board=custom"></iframe>
+</div>
+
+<script>
+// Tab 切换：显隐对应 iframe，状态由浏览器各自保留（互不影响）
+function switchTab(board) {
+  document.querySelectorAll('.tabbar .tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.board === board);
+  });
+  document.querySelectorAll('.frames iframe').forEach(f => {
+    f.classList.toggle('active', f.id === 'frame-' + board);
+  });
+  // 懒加载：custom iframe 默认有 src，首次切换时才真正加载（节省首屏开销）
+  // 这里所有 iframe 都设了 src，如要懒加载可改成切换时再赋 src
+}
+</script>
+</body>
+</html>
