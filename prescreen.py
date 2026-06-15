@@ -52,7 +52,15 @@ def run_prescreen(
     # 1. 算每只股票的 N 日累计涨幅
     return_df = calc_period_return_df(db, calc_date, period_days)
     if return_df.empty:
-        return {"error": f"日期 {calc_date} 无足够历史 K 线（需 ≥{period_days+1} 个交易日）"}
+        # calc_date 当天无日K时 calc_period_return_df 已自动回退到最近交易日；
+        # 仍为空说明窗口内（calc_date 往前 period_days*2 自然日）完全没有历史 K 线
+        last_td = db.get_latest_trade_date()
+        return {"error": f"日期 {calc_date} 往前 {period_days*2} 自然日内无历史 K 线"
+                         f"（盘前筛选请确保最近交易日已 daily 入库；DB 最新交易日={last_td}）"}
+    # 盘前回退时 trade_date ≠ calc_date，提示实际使用的期末日
+    actual_end_date = return_df["trade_date"].iloc[0]
+    if str(actual_end_date) != calc_date.replace("-", ""):
+        print(f"[PRESCREEN] 实际期末交易日：{actual_end_date}（{calc_date} 当天无日K，已回退）")
     stock_return = dict(zip(return_df["code"], return_df["change_ratio"]))
 
     # 1.5 剔除上市不足 min_days 的新股（避免连板新股撑高板块涨幅）

@@ -154,16 +154,29 @@ def calc_period_return_df(db, calc_date: str, days: int) -> pd.DataFrame:
 
     模块级函数（从 calc_multi_period_score 闭包提取），供 prescreen 等复用。
 
+    盘前场景兼容：若 calc_date 当天尚无日K（盘前未收盘），自动回退到窗口内
+    最新的实际交易日作为期末价，并打印 warning。daily 盘后场景 calc_date 当天
+    一定有数据，回退不会触发，行为不变。
+
     :param db: Database 实例
     :param calc_date: 计算日期，YYYYMMDD 或 YYYY-MM-DD
     :param days: 交易日数（如 5 表示 5 日累计涨幅）
-    :return: DataFrame [code, trade_date, change_ratio, close]，change_ratio 为累计涨幅 %
+    :return: DataFrame [code, trade_date, change_ratio, close]，change_ratio 为累计涨幅 %；
+             trade_date 为实际使用的期末交易日（盘前回退时 ≠ calc_date）。无数据返回空 DataFrame。
     """
     date_str = calc_date.replace("-", "")
-    date_obj = datetime.strptime(date_str, "%Y%m%d")
 
-    start = (date_obj - timedelta(days=days * 2)).strftime("%Y%m%d")
-    rows = db.get_daily_kline_by_date_range(start, date_str)
+    # 期末交易日：优先 calc_date 当天；当天无数据（盘前场景）则回退到 <= calc_date 的最新交易日。
+    # 窗口起点必须基于"实际 end_date"计算，否则回退后的窗口与直接调用该 end_date 不一致。
+    end_date = db.get_latest_trade_date(on_or_before=date_str)
+    if not end_date:
+        return pd.DataFrame()
+    if end_date != date_str:
+        print(f"[CALC] {date_str} 当天无日K，回退到最近交易日 {end_date} 作为期末价（盘前筛选模式）")
+
+    end_obj = datetime.strptime(end_date, "%Y%m%d")
+    start = (end_obj - timedelta(days=days * 2)).strftime("%Y%m%d")
+    rows = db.get_daily_kline_by_date_range(start, end_date)
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
@@ -171,7 +184,7 @@ def calc_period_return_df(db, calc_date: str, days: int) -> pd.DataFrame:
         return df
     df = df.sort_values(["code", "trade_date"])
     first = df.groupby("code").first().reset_index()[["code", "pre_close"]]
-    last = df[df["trade_date"] == date_str][["code", "close"]]
+    last = df[df["trade_date"] == end_date][["code", "close"]]
     if last.empty:
         return pd.DataFrame()
     merged = first.merge(last, on="code", how="inner")
@@ -180,7 +193,7 @@ def calc_period_return_df(db, calc_date: str, days: int) -> pd.DataFrame:
         if r["pre_close"] and r["pre_close"] != 0 else 0.0,
         axis=1
     )
-    merged["trade_date"] = date_str
+    merged["trade_date"] = end_date
     return merged[["code", "trade_date", "change_ratio", "close"]]
 
 

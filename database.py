@@ -356,6 +356,25 @@ class Database:
             """, (trade_date,))
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_latest_trade_date(self, on_or_before: str = None) -> Optional[str]:
+        """
+        获取 daily_kline 中已入库的最新交易日（YYYYMMDD）。
+        :param on_or_before: 若给定，返回 <= 该日期的最新交易日（用于盘前回退定位）。
+                             日期格式 YYYYMMDD；None 时返回全局最新。
+        :return: YYYYMMDD 字符串，无数据返回 None。
+        """
+        with self._connect() as conn:
+            if on_or_before:
+                row = conn.execute(
+                    "SELECT MAX(trade_date) FROM daily_kline WHERE trade_date <= ?",
+                    (on_or_before,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT MAX(trade_date) FROM daily_kline"
+                ).fetchone()
+            return row[0] if row else None
+
     def get_daily_kline_by_date_range(self, start_date: str, end_date: str) -> List[Dict]:
         """
         获取某日期区间内全部代码的日K线（用于多周期累计涨幅计算）。
