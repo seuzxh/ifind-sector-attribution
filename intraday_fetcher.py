@@ -15,6 +15,10 @@
              "volume": 41537.0, "turnover": 52801004.0},
             ...
         ],
+        "pre_market": [               # 集合竞价逐点序列（09:15 ~ 09:25，3秒一个点）
+            {"time": "09:15", "ref_price": 1279.0},   # ref_price = 该时刻撮合参考价
+            ...
+        ],
     }
 """
 
@@ -79,10 +83,22 @@ class IntradayFetcher:
         if not pm and not tr:
             return None
 
+        # 集合竞价序列归一化（09:15~09:25，3秒一个点）：
+        # 每点的 ref_price 即该时刻的撮合参考价，末点 ref_price = 开盘价。
+        # realengine 在集合竞价阶段（trading 为空）用此序列算涨跌幅。
+        pre_market = []
+        for p in pm:
+            rp = p.get("ref_price")
+            if rp is None:
+                continue
+            pre_market.append({
+                "time": _norm_time(p.get("time", "")),
+                "ref_price": float(rp),
+            })
+
         # 昨收 = pre_market 起始 ref_price；开盘价 = pre_market 末尾 ref_price
-        refs = [p.get("ref_price") for p in pm if p.get("ref_price") is not None]
-        pre_close = refs[0] if refs else None
-        open_price = refs[-1] if refs else None
+        pre_close = pre_market[0]["ref_price"] if pre_market else None
+        open_price = pre_market[-1]["ref_price"] if pre_market else None
 
         # 盘中序列归一化：时间去秒、字段对齐
         trading = []
@@ -109,6 +125,7 @@ class IntradayFetcher:
             "pre_close": pre_close,
             "open": open_price,
             "trading": trading,
+            "pre_market": pre_market,   # 集合竞价逐点序列（供 realtime_engine 在 trading 为空时算涨跌幅）
         }
 
     def fetch_batch(

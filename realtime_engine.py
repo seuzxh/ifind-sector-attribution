@@ -132,10 +132,13 @@ class RealtimeEngine:
             print("[REALTIME] 分时序列为空")
             return None
 
-        # 构建时间轴（所有股票 trading 时间点的并集，去重升序）
+        # 构建时间轴（trading + pre_market 时间点的并集，去重升序）
+        # 集合竞价期间 trading 为空，需纳入 pre_market 时间点，否则时间轴为空
         times_set = set()
         for rec in series.values():
-            for p in rec["trading"]:
+            for p in rec.get("trading", []):
+                times_set.add(p["time"])
+            for p in rec.get("pre_market", []):
                 times_set.add(p["time"])
         available_times = sorted(times_set)
         latest_time = available_times[-1] if available_times else None
@@ -174,27 +177,46 @@ class RealtimeEngine:
         """
         把分时序列按 snapshot_time 切片，计算每只股票的指标，返回 DataFrame。
         列：[code, change_ratio, speed, body, acceleration]
+
+        两阶段处理（按 snapshot_time 严格判断归属）：
+          - snapshot_time 落在盘中（trading 有 <= 该时刻的点）：用连续竞价切片算全部指标
+          - snapshot_time 落在集合竞价（trading 无 <= 该时刻的点，但 pre_market 有）：
+            仅用 pre_market 末点 ref_price 算 change_ratio，speed/body/acceleration 置 0
         """
         rows = []
         for code, rec in series.items():
             pre_close = rec.get("pre_close")
-            open_price = rec.get("open")
-            sliced = self._slice_to_snapshot(rec.get("trading", []), snapshot_time)
-            if not sliced or not pre_close or pre_close == 0:
+            if not pre_close or pre_close == 0:
                 continue
 
-            last_prices = [p["last_price"] for p in sliced]
-            last = last_prices[-1]
+            # 严格按 snapshot_time 切 trading（不兜底回退，否则会把 9:20 误判成 9:30）
+            trading = rec.get("trading", [])
+            if snapshot_time:
+                sliced = [p for p in trading if p["time"] <= snapshot_time]
+            else:
+                sliced = trading  # 无 snapshot_time = 取最新
 
-            # 涨幅（相对昨收）
-            change_ratio = (last / pre_close - 1) * 100
-            # body（开盘至今）
-            body = compute_body_ratio(open_price, last)
-            # 涨速（1min 滚动末点）
-            speed = compute_speed(last_prices)
-            # 加速 = speed 序列末点差分
-            speed_series = compute_speed_series(last_prices)
-            acceleration = compute_acceleration(speed_series)
+            if sliced:
+                # —— 盘中：用连续竞价序列算全部指标 ——
+                last_prices = [p["last_price"] for p in sliced]
+                last = last_prices[-1]
+                change_ratio = (last / pre_close - 1) * 100
+                body = compute_body_ratio(rec.get("open"), last)
+                speed = compute_speed(last_prices)
+                speed_series = compute_speed_series(last_prices)
+                acceleration = compute_acceleration(speed_series)
+            else:
+                # —— 集合竞价：仅用 pre_market 末点 ref_price 算涨跌幅 ——
+                pm = rec.get("pre_market") or []
+                pm_sliced = self._slice_to_snapshot(pm, snapshot_time) if snapshot_time else pm
+                if not pm_sliced:
+                    continue
+                last = pm_sliced[-1]["ref_price"]
+                change_ratio = (last / pre_close - 1) * 100
+                # 此阶段无连续价格序列，speed/body/acceleration 无意义，置 0
+                body = 0.0
+                speed = 0.0
+                acceleration = 0.0
 
             rows.append({
                 "code": code,

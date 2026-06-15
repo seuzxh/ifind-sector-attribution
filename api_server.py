@@ -193,6 +193,44 @@ def clear_realtime_cache():
     return {"ok": True}
 
 
+# ========== 交易日历 / 交易时段（服务前端盘前判断与日期选择器）==========
+@app.get("/api/trade_calendar")
+def get_trade_calendar(year: Optional[int] = None):
+    """
+    返回交易日列表（YYYYMMDD）。
+    :param year: 指定年份；不传则返回近 3 年全部（供前端日期选择器过滤非交易日）
+    """
+    from trade_calendar import TradeCalendar
+    cal = TradeCalendar.instance()
+    days = cal.get_trade_days(year=year)
+    return {"count": len(days), "trade_days": days}
+
+
+@app.get("/api/session_status")
+def get_session_status():
+    """
+    返回当前交易时段状态（前端据此决定是否启动 3s 轮询）。
+    :return is_trading_day: 今天是否交易日
+    :return phase: pre_open/auction/pre_morning/morning/lunch/afternoon/closed
+    :return next_open_time: 下一个有数据时刻 HH:MM（当前已有数据则 null）
+    :return next_trade_day: 下一个交易日 YYYYMMDD（当前已收盘则用）
+    :return now: 服务器当前时间 HH:MM:SS
+    """
+    from trade_calendar import TradeCalendar
+    cal = TradeCalendar.instance()
+    now = datetime.now()
+    phase = cal.session_phase(now)
+    next_open = cal.next_open_time(now)
+    next_trade_day = cal.next_trade_day(now.strftime("%Y%m%d")) if next_open else None
+    return {
+        "is_trading_day": cal.is_trading_day(now.strftime("%Y%m%d")),
+        "phase": phase,
+        "next_open_time": next_open,
+        "next_trade_day": next_trade_day,
+        "now": now.strftime("%H:%M:%S"),
+    }
+
+
 @app.post("/api/prescreen")
 def trigger_prescreen(req: PrescreenRequest):
     """

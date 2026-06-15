@@ -4,6 +4,34 @@
 
 ## [Unreleased] - 2026-06-15
 
+### 新增：集合竞价（9:15~9:25）强弱监控
+- **集合竞价阶段可用 ref_price 算涨跌幅**：实测 pre_market 在 9:15~9:25 有 201 个点（3秒采样），末点 ref_price = 开盘价，首点 ref_price = 昨收
+  - 此阶段仅看涨跌幅，`speed/body/acceleration` 置 0（无连续价格序列）
+  - snapshot_time 回看正常：拖滑块到 9:20 即看当时撮合价的板块强弱
+- **`intraday_fetcher.py`**：`_fetch_one` 返回结构新增 `pre_market` 字段（之前只取首尾两个 ref_price，逐点序列被丢弃）
+- **`realtime_engine.py`**：
+  - `_build_indicator_df` 新增集合竞价分支：trading 严格按 snapshot_time 切片（不兜底回退），切片为空则用 pre_market 末点 ref_price 算涨跌幅
+  - `_ensure_series` 时间轴纳入 pre_market 时间点（之前只从 trading 构建，集合竞价期间 available_times 为空）
+- **进度条自动从 09:15 开始**：available_times 含 `['09:15',...,'09:25','09:30',...]` 共 252 点
+- 验证：氟化工板块 9:20 集合竞价时三美/巨化/中欣氟材均 +10% 涨停，正确反映开盘前抢筹信号
+- 新增 `probe_auction.py`：集合竞价数据探针脚本（生产环境验证 pre_market 形态用）
+
+### 新增：交易日历模块（复用 kline-fetcher）
+- **新增 `trade_calendar.py`**：`TradeCalendar` 单例，三级缓存（内存 → `data/trade_calendar.txt` → 网络 → DB 兜底）
+  - 数据源：`kline_fetcher.fetch_trade_calendar`（拉上证指数日K反推交易日）
+  - API：`is_trading_day` / `get_latest_trade_day` / `next_trade_day` / `session_phase` / `next_open_time`
+  - `session_phase` 区分：`pre_open`(<9:15) / `auction`(9:15-9:25) / `pre_morning` / `morning` / `lunch` / `afternoon` / `closed`
+  - 未来日期超出已加载范围时用工作日规则粗筛（节假日由实时接口无数据兜底）
+- **`api_server.py` 新增端点**：
+  - `GET /api/trade_calendar?year=2026` — 返回交易日列表（日期选择器用）
+  - `GET /api/session_status` — 返回当前交易时段状态（前端盘前判断用）
+
+### 改进：前端体验
+- **表头排序在 3s 刷新后保持**：新增 `rankSort`/`cardSort` 全局状态，`applyRankSort`/`applyCardSort` 内核函数供点击与重渲染复用；修正表头默认视觉 bug（s1/score 原双标 sorted，现仅 score）
+- **9:15 之前停止轮询 + 友好提示**：`checkSession` 查 `/api/session_status`，非交易日/盘前(`pre_open`)/收盘后停轮询并显示提示（如"⏰ 盘前 · 09:15 后自动开始监控"）；`scheduleResume` 每分钟检查，进入集合竞价/盘中自动恢复轮询
+- **日期选择器联动交易日**：`loadTradeCalendar` 拉当年交易日，选非交易日给橙色提示
+- **集合竞价阶段（9:15-9:25）自动启动轮询**：`session_phase=auction` 时 checkSession 启动轮询，配合后端集合竞价计算逻辑
+
 ### 重构（实时链路改用分时数据）
 - **实时数据源切换**：盘中实时链路从 iFinD 接口4（1min K 线）改用 **kline-fetcher 的分时数据**（`TrendFetcher`，中焯行情 API）
   - 每只股票返回完整分时序列：集合竞价 `pre_market`（09:15~09:25，每3秒）+ 盘中 `trading`（09:30~15:00，每分钟 241 点）

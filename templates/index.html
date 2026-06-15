@@ -323,6 +323,19 @@ let availableTimes = [];      // 当日可用时间点（分时分钟刻度）
 let autoFollow = true;        // 是否自动跟随最新（拖动滑块时暂停）
 let refreshSeq = 0;           // refresh 请求序号：仅最新一次的响应才允许渲染，防止播放/轮询乱序覆盖
 
+// ========== 表头排序状态（跨 3s 刷新保持）==========
+// rankSort: { top: {key,order}|null, bottom: {key,order}|null }，order: '↓'|'↑'，null=默认（后端顺序）
+let rankSort = { top: null, bottom: null };
+// cardSort: { [concept_code]: {key,order} }（每张成分股卡片独立）
+let cardSort = {};
+
+// ========== 交易时段状态（盘前停止轮询，到点自动恢复）==========
+let sessionStatus = null;     // 最近一次 /api/session_status 返回
+let sessionCheckTimer = null; // 周期性会话检查定时器
+let resumeTimer = null;       // 到点恢复轮询的定时器
+// tradeDays: 从 /api/trade_calendar 拉取的当年交易日集合（YYYYMMDD），供日期选择器过滤
+let tradeDays = new Set();
+
 // ========== 工具 ==========
 function setStatus(text, cls) {
   document.getElementById('statusBar').innerHTML = `<span class="${cls||''}">${text}</span>`;
@@ -350,13 +363,22 @@ function onModeChange() {
 
   stopPolling();
   stopPlay();              // 切模式 → 停止播放
-  if (isRT) { startPolling(); autoFollow = true; updateAutoUI(); }
+  if (isRT) {
+    autoFollow = true; updateAutoUI();
+    // 实时模式：是否启动轮询由 checkSession 决定（盘前/非交易日停轮询）
+    checkSession();
+  }
   if (isWL) loadWatchlist();
   refresh();
 }
 function onDateChange() {
   // 实时模式切日期后，重置滑块、强制刷新
   stopPlay();              // 切日期 → 停止播放（时间轴变了）
+  // 交易日历已加载时，校验所选日期是否交易日（非交易日给提示，但仍允许刷新由后端兜底）
+  const dv = getDateVal();
+  if (dv && tradeDays.size > 0 && !tradeDays.has(dv)) {
+    setStatus('⚠ ' + dv + ' 非交易日（周末/节假日），可能无数据', 'warn');
+  }
   if (document.getElementById('modeSel').value === 'realtime') {
     autoFollow = true; updateAutoUI();
   }
@@ -368,6 +390,85 @@ function startPolling() {
 }
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// ========== 交易时段判断（盘前停止轮询，到点自动恢复）==========
+/**
+ * 查询服务器交易时段状态，决定是否启动轮询。
+ * - 非交易日 / 盘前(pre_open) → 停止轮询，显示友好提示，定时到 09:15 自动恢复
+ * - 集合竞价及盘中 → 启动轮询（9:15 起 pre_market 有数据）
+ * 仅在 realtime 模式生效；history/watchlist 模式不依赖实时接口，跳过。
+ */
+async function checkSession() {
+  const mode = document.getElementById('modeSel').value;
+  if (mode !== 'realtime') return;  // 仅实时模式需要判断
+  const s = await fetchJson('/api/session_status');
+  if (s.error) {  // 接口异常 → 保守起见启动轮询（让原有 error 文案兜底）
+    clearPreOpen();
+    startPolling();
+    return;
+  }
+  sessionStatus = s;
+  // 非交易日：停轮询 + 提示
+  if (!s.is_trading_day) {
+    stopPolling();
+    showPreOpen(`今日非交易日${s.next_trade_day ? '（下一交易日 ' + s.next_trade_day + '）' : ''}`);
+    scheduleResume();   // 仍安排到下一交易日 09:15 检查
+    return;
+  }
+  // 盘前（< 09:15）：停轮询 + 提示，到 09:15 自动恢复
+  if (s.phase === 'pre_open' || s.phase === 'closed') {
+    stopPolling();
+    const tip = s.phase === 'pre_open'
+      ? `⏰ 盘前 · ${s.next_open_time || '09:15'} 后自动开始监控`
+      : `💤 已收盘${s.next_trade_day ? ' · 下一交易日 ' + s.next_trade_day : ''}`;
+    showPreOpen(tip);
+    scheduleResume();
+    return;
+  }
+  // 集合竞价 / 盘中：清提示 + 启动轮询
+  clearPreOpen();
+  startPolling();
+}
+
+/**
+ * 定时到下一个"有数据时刻"（09:15）自动重新检查会话状态、恢复轮询。
+ * 每分钟轮询一次 checkSession，避免 setTimeout 跨天/跨时区计算复杂。
+ */
+function scheduleResume() {
+  if (resumeTimer) return;  // 已安排
+  resumeTimer = setInterval(async () => {
+    const mode = document.getElementById('modeSel').value;
+    if (mode !== 'realtime') return;
+    const s = await fetchJson('/api/session_status');
+    if (s.error) return;
+    sessionStatus = s;
+    // 进入有数据阶段 → 停止本定时器，恢复轮询
+    if (s.is_trading_day && ['auction', 'pre_morning', 'morning', 'lunch', 'afternoon'].includes(s.phase)) {
+      clearInterval(resumeTimer);
+      resumeTimer = null;
+      clearPreOpen();
+      startPolling();
+      refresh();
+    }
+  }, 60000);  // 每分钟检查一次
+}
+
+/** 盘前/非交易日友好提示：状态栏 + 成分股区引导卡片 */
+function showPreOpen(tip) {
+  setStatus(tip, 'warn');
+  document.getElementById('statsBar').innerHTML = '';
+  document.getElementById('topTable').innerHTML = '<div class="empty-msg">' + tip + '</div>';
+  document.getElementById('bottomTable').innerHTML = '<div class="empty-msg">' + tip + '</div>';
+  document.getElementById('membersGrid').innerHTML =
+    '<div class="empty-msg">' + tip +
+    '<br><br><button class="primary" onclick="document.getElementById(\'modeSel\').value=\'watchlist\';onModeChange();">📋 查看 盘前筛选结果</button>' +
+    '</div>';
+}
+
+/** 清除盘前提示（进入交易时段后） */
+function clearPreOpen() {
+  // 仅清提示文案，具体数据由后续 refresh() 填充
 }
 function onAutoToggle() {
   autoFollow = document.getElementById('rtAuto').checked;
@@ -472,6 +573,22 @@ async function loadDates() {
   } catch(e) { console.error(e); }
 }
 
+/**
+ * 拉取当年交易日列表（YYYYMMDD），存入 tradeDays 集合。
+ * 供 onDateChange 判断所选日期是否交易日（非交易日给提示）。
+ * 不阻塞页面加载（失败则不启用过滤，退化为原有行为）。
+ */
+async function loadTradeCalendar() {
+  try {
+    const year = new Date().getFullYear();
+    const data = await fetchJson('/api/trade_calendar?year=' + year);
+    if (data && Array.isArray(data.trade_days)) {
+      tradeDays = new Set(data.trade_days);
+    }
+  } catch(e) { console.error('交易日历加载失败', e); }
+}
+
+/** 将 dateSel 的值（YYYY-MM-DD）转为 YYYYMMDD */
 function getDateVal() {
   const v = document.getElementById('dateSel').value;
   return v ? v.replace(/-/g, '') : '';
@@ -601,30 +718,45 @@ function renderRankTable(containerId, sectors, tab) {
     </tr>`;
   }).join('');
 
-  el.innerHTML = `<table class="rank-table">
+  // 默认视觉：仅 score 标 sorted（与后端默认 rank_1d 顺序一致），s1 不再标，避免"两列同时生效"的语义错误
+  el.innerHTML = `<table class="rank-table" data-tab="${tab}">
     <thead><tr>
       <th class="center">#</th>
       <th class="left">板块名称 / 代码</th>
-      <th class="sorted" data-order="↓" data-k="s1" onclick="sortRankTable(this)">涨幅<br><span style="font-weight:normal;color:#9ca3af;">成分股平均涨幅</span></th>
+      <th data-k="s1" onclick="sortRankTable(this)">涨幅<br><span style="font-weight:normal;color:#9ca3af;">成分股平均涨幅</span></th>
       <th data-k="s2" onclick="sortRankTable(this)">上涨家数<br><span style="font-weight:normal;color:#9ca3af;">上涨只数/总只数</span></th>
       <th data-k="cnt" onclick="sortRankTable(this)">成分<br><span style="font-weight:normal;color:#9ca3af;">股数</span></th>
       <th class="sorted" data-order="↓" data-k="score" onclick="sortRankTable(this)">评分<br><span style="font-weight:normal;color:#9ca3af;">综合分</span></th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
+
+  // 3s 刷新后恢复用户排序（若该表有保存的排序状态）
+  const saved = rankSort[tab];
+  if (saved) {
+    applyRankSort(el.querySelector('table'), saved.key, saved.order, /*updateHeadOnly*/false);
+  }
 }
 
-function sortRankTable(th) {
-  const table = th.closest('table');
+/**
+ * 按 key/order 重排 tbody（不 toggle 方向）。同时刷新表头视觉状态。
+ * 供 sortRankTable（点击时）与 renderRankTable（刷新后恢复）复用。
+ */
+function applyRankSort(table, key, order, updateHeadOnly) {
+  const thead = table.querySelector('thead');
+  const th = thead.querySelector(`th[data-k="${key}"]`);
+  if (!th) return;
+  // 清掉所有 th 的 sorted 标记，仅给当前 th
+  thead.querySelectorAll('th').forEach(t => { t.classList.remove('sorted'); t.dataset.order = ''; });
+  th.classList.add('sorted');
+  th.dataset.order = order;
+
+  if (updateHeadOnly) return;  // 仅刷新表头视觉（数据未变时）
+
   const tbody = table.querySelector('tbody');
   const rows = Array.from(tbody.querySelectorAll('tr'));
   if (rows.length === 0) return;
-  const key = th.dataset.k;
-  const newOrder = th.dataset.order === '↓' ? '↑' : '↓';
-  th.dataset.order = newOrder;
-  table.querySelectorAll('th').forEach(t => { if (t !== th) { t.classList.remove('sorted'); t.dataset.order=''; }});
-  th.classList.add('sorted');
-  const desc = newOrder === '↓';
+  const desc = order === '↓';
   rows.sort((a, b) => {
     let av, bv;
     if (key === 's1') { av = parseFloat(a.children[2].dataset.v); bv = parseFloat(b.children[2].dataset.v); }
@@ -639,6 +771,18 @@ function sortRankTable(th) {
     if (badge) { badge.textContent = i + 1; badge.className = 'rank-num ' + (i === 0 ? 'r1' : (i === 1 ? 'r2' : (i === 2 ? 'r3' : 'rN'))); }
   });
   rows.forEach(r => tbody.appendChild(r));
+}
+
+function sortRankTable(th) {
+  const table = th.closest('table');
+  const tbody = table.querySelector('tbody');
+  if (!tbody || tbody.querySelectorAll('tr').length === 0) return;
+  const key = th.dataset.k;
+  const newOrder = th.dataset.order === '↓' ? '↑' : '↓';
+  // 保存排序状态（供 3s 刷新后恢复）。tab 从 table 的 data-tab 属性取。
+  const tab = table.dataset.tab;
+  if (tab === 'top' || tab === 'bottom') rankSort[tab] = { key, order: newOrder };
+  applyRankSort(table, key, newOrder, false);
 }
 
 function onSectorRowClick(code, tr) {
@@ -668,6 +812,11 @@ function renderMembers() {
   const grid = document.getElementById('membersGrid');
   if (sectors.length === 0) { grid.innerHTML = '<div class="empty-msg">无数据</div>'; return; }
   grid.innerHTML = sectors.map((s, i) => { s._idx = i + 1; return sectorCardHtml(s, membersTab); }).join('');
+  // 3s 刷新后恢复各成分股卡片排序
+  grid.querySelectorAll('.sector-card').forEach(card => {
+    const saved = cardSort[card.dataset.code];
+    if (saved) applyCardSort(card.querySelector('table'), saved.key, saved.order, false);
+  });
 }
 
 // 涨速加速：>0 红色▲加速，<0 绿色▼减缓，≈0 灰色
@@ -714,20 +863,28 @@ function sectorCardHtml(s, tab) {
   </div>`;
 }
 
-function sortCard(th, key) {
-  const tbody = th.closest('table').querySelector('tbody');
+/**
+ * 按 key/order 重排成分股卡片 tbody（不 toggle 方向），同时刷新表头视觉。
+ * 供 sortCard（点击）与 sectorCardHtml 渲染后恢复复用。
+ */
+function applyCardSort(table, key, order, updateHeadOnly) {
+  const thead = table.querySelector('thead');
+  const th = thead.querySelector(`th[onclick*="'${key}'"]`);
+  if (!th) return;
+  thead.querySelectorAll('th').forEach(t => { t.classList.remove('sorted'); t.dataset.order = ''; });
+  th.classList.add('sorted');
+  th.dataset.order = order;
+
+  if (updateHeadOnly) return;
+
+  const tbody = table.querySelector('tbody');
   const rows = Array.from(tbody.querySelectorAll('tr'));
   if (rows.length === 0) return;
-  const cur = th.dataset.order === '↓' ? '↑' : '↓';
-  th.dataset.order = cur;
-  th.closest('thead').querySelectorAll('th').forEach(t => { if (t !== th) { t.classList.remove('sorted'); t.dataset.order=''; }});
-  th.classList.add('sorted');
-  const desc = cur === '↓';
+  const desc = order === '↓';
   rows.sort((a, b) => {
     let av, bv;
     const ca = a.querySelector(`[data-k="${key}"]`), cb = b.querySelector(`[data-k="${key}"]`);
     if (key === 'acceleration') {
-      // 加速列含 ▲/▼ 符号，需用原始数值（从 data-k 的子 span 提取，或用 acceleration 原始字段）
       av = parseFloat((ca.textContent||'').replace(/[▲▼+\-%]/g,'')) || 0;
       bv = parseFloat((cb.textContent||'').replace(/[▲▼+\-%]/g,'')) || 0;
     } else {
@@ -737,6 +894,17 @@ function sortCard(th, key) {
     return desc ? bv - av : av - bv;
   });
   rows.forEach(r => tbody.appendChild(r));
+}
+
+function sortCard(th, key) {
+  const table = th.closest('table');
+  const tbody = table.querySelector('tbody');
+  if (!tbody || tbody.querySelectorAll('tr').length === 0) return;
+  const cur = th.dataset.order === '↓' ? '↑' : '↓';
+  // 保存排序状态（每张卡片独立，按所属板块 code 区分）
+  const card = th.closest('.sector-card');
+  if (card && card.dataset.code) cardSort[card.dataset.code] = { key, order: cur };
+  applyCardSort(table, key, cur, false);
 }
 
 function highlightSector(code) {
@@ -841,7 +1009,11 @@ document.getElementById('prescreenModal').addEventListener('click', function(e) 
 // 初始化
 (async function init() {
   await loadDates();
+  await loadTradeCalendar();  // 拉当年交易日，供日期选择器过滤
   onModeChange();
+  checkSession();             // 启动时判断交易时段（盘前停止轮询）
+  // 每分钟刷新会话状态（应对页面长期挂着跨过开盘/收盘点）
+  sessionCheckTimer = setInterval(checkSession, 60000);
 })();
 </script>
 </body>

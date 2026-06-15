@@ -326,6 +326,56 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 
 > 注意：实时模式选历史日期（如 `trade_date=20260612`）走的是**分时数据链路**（拉该日全天分时），与历史看板（读 concept_strength 入库数据）是两条不同路径。
 
+### 集合竞价监控（09:15~09:25）
+
+集合竞价阶段虽无连续竞价（`trading` 为空），但 `pre_market` 的 `ref_price`（撮合参考价）不断更新，可用于算涨跌幅，让监控从 9:15 就开始。
+
+**两阶段计算逻辑**（`_build_indicator_df`，按 snapshot_time 严格判断归属）：
+
+| snapshot_time 归属 | 判断条件 | 计算方式 |
+|---|---|---|
+| 盘中 | `trading` 有 `<= snapshot_time` 的点 | 用连续竞价切片算全部指标（涨幅/body/涨速/加速） |
+| 集合竞价 | `trading` 切片为空，但 `pre_market` 有数据 | **仅用 pre_market 末点 ref_price 算涨幅**，`speed/body/acceleration` 置 0 |
+
+**关键细节**：
+- `trading` 切片**严格按 snapshot_time 过滤**，不兜底回退（否则 9:20 会误用 9:30 数据）
+- pre_market 时间点（09:15~09:25 每分钟一个，共 11 个）纳入 `available_times`，**进度条自动从 09:15 开始**
+- snapshot_time 回看：拖滑块到 9:20 即看当时撮合价的板块强弱
+- 集合竞价末点 ref_price（开盘价）→ 盘中首点 last_price 平滑衔接
+
+**实测**：6-15 9:20 集合竞价时，氟化工板块三美/巨化/中欣氟材均 +10% 涨停，正确反映开盘前抢筹信号。
+
+### 交易日历与盘前处理
+
+**交易日历模块**（`trade_calendar.py`，复用 kline-fetcher 的 `fetch_trade_calendar`）：
+
+`TradeCalendar` 单例，三级缓存：进程内存 → `data/trade_calendar.txt`（本地文件）→ 网络（拉上证指数日K反推交易日）。网络不可用时用 `daily_kline` 表兜底；未来日期超出范围时用工作日规则粗筛。
+
+`session_phase(now)` 区分七个时段：
+
+| phase | 时段 | 含义 |
+|---|---|---|
+| `pre_open` | < 09:15 | 盘前，无任何数据 |
+| `auction` | 09:15~09:25 | 集合竞价，pre_market 有 ref_price |
+| `pre_morning` | 09:25~09:30 | 开盘前空窗 |
+| `morning` | 09:30~11:30 | 上午连续竞价 |
+| `lunch` | 11:30~13:00 | 午休 |
+| `afternoon` | 13:00~15:00 | 下午连续竞价 |
+| `closed` | ≥ 15:00 或非交易日 | 收盘后 |
+
+**新增 API 端点**：
+- `GET /api/trade_calendar?year=2026` — 返回交易日列表（日期选择器过滤非交易日用）
+- `GET /api/session_status` — 返回 `{is_trading_day, phase, next_open_time, next_trade_day, now}`（前端盘前判断用）
+
+**前端盘前处理**（基于 `/api/session_status`）：
+
+| 时段 | 前端行为 |
+|---|---|
+| 非交易日 / `pre_open`(<9:15) / `closed`(收盘后) | **停止 3s 轮询**，显示友好提示（如"⏰ 盘前 · 09:15 后自动开始监控"），`scheduleResume` 每分钟检查 |
+| `auction`(9:15-9:25) / 盘中 | 启动轮询（集合竞价阶段配合后端 ref_price 计算逻辑） |
+
+设计要点：轮询启停完全由服务端 `session_phase` 决定（前端本地时间仅兜底），避免客户端时区偏差。集合竞价阶段数据可用后，前端无需特殊处理——后端返回的 `available_times` 含 9:15-9:25 点，进度条自然从 9:15 开始。
+
 ---
 
 ## 8. 盘前筛选与 watchlist

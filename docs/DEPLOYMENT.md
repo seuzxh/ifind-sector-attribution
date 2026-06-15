@@ -291,7 +291,8 @@ sudo systemctl restart ifind-monitor
 
 ### 实时模式无数据
 
-- **非交易时段**：接口4 在非交易时段（周末/夜间）返回空，属正常。实时模式仅 9:30~9:40 有效。
+- **非交易时段**：分时数据 API 在非交易时段（周末/夜间/< 9:15）返回空，属正常。前端会通过 `/api/session_status` 判断时段，盘前(`pre_open`)和收盘后(`closed`)自动停止轮询并显示友好提示，9:15 集合竞价开始自动恢复。
+- **集合竞价阶段（9:15~9:25）**：此阶段 `trading` 为空但 `pre_market` 有 ref_price，系统用末点 ref_price 算涨跌幅（speed/body/acceleration 置 0），监控从 9:15 就开始。进度条自动从 09:15 起。
 - **watchlist 为空**：若开 watchlist 聚焦但当日未跑 prescreen，会提示"请先盘前筛选"。
 
 ### 性能问题
