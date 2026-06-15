@@ -185,14 +185,16 @@ class Database:
 
     def get_a_share_concept_codes(self) -> List[str]:
         """
-        获取所有 A股相关概念代码（按前缀白名单过滤）。
+        获取所有 A股相关概念代码（按前缀白名单 + 板块池过滤）。
         排除海外行业指数（861xxx[US]/871xxx[HK] 等），用于板块强度与归因计算。
+        板块池启用时只返回池内代码（当前为 884 行业分类码）。
         """
         with self._connect() as conn:
             cursor = conn.execute("SELECT concept_code FROM ths_concept_dict")
             return [
                 row["concept_code"] for row in cursor.fetchall()
                 if config.is_a_share_concept(row["concept_code"])
+                and config.is_in_sector_pool(row["concept_code"])
             ]
 
     def get_all_member_stock_codes(self) -> List[str]:
@@ -275,6 +277,33 @@ class Database:
             return [
                 {"concept_code": row["concept_code"], "concept_name": row["concept_name"], "weight": row["weight"]}
                 for row in cursor.fetchall()
+            ]
+
+    def get_stock_concepts_from_members(self, stock_code: str) -> List[Dict]:
+        """
+        从 concept_members 反推个股所属板块（供 884 板块池归因用）。
+
+        背景：884 是行业分类码，个股从不被 API 打上 884 标签
+        （stock_concept_map 无 884），但 884 在 concept_members 有成分股数据。
+        故通过"个股出现在哪些 884 板块的成分股列表里"反推归属。
+        结果应用板块池过滤（is_in_sector_pool）。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("""
+                SELECT cm.concept_code, tcd.concept_name
+                FROM concept_members cm
+                JOIN ths_concept_dict tcd ON cm.concept_code = tcd.concept_code
+                WHERE cm.stock_code = ?
+                  AND cm.member_date = (
+                      SELECT MAX(member_date) FROM concept_members WHERE stock_code = ?
+                  )
+            """, (stock_code, stock_code))
+            return [
+                {"concept_code": row["concept_code"],
+                 "concept_name": row["concept_name"],
+                 "weight": 1.0}
+                for row in cursor.fetchall()
+                if config.is_in_sector_pool(row["concept_code"])
             ]
 
     def get_concept_stocks(self, concept_code: str, map_date: str = None) -> List[str]:

@@ -97,7 +97,13 @@ class SyncPipeline:
         而接口1 返回的个股概念是另一套编码（885xxx），两套交集为 0，
         导致 get_stock_concepts 的 JOIN 恒为空、归因无法工作。
         本方法增量补充概念板块码，让两套体系统一可用于归因。
+
+        注意：板块池启用（仅 884）时跳过此扫描——884 池不依赖 885/886，
+        且归因改从 concept_members 反推，无需补全概念标签码。
         """
+        if config.SECTOR_POOL_ENABLED and config.SECTOR_POOL_CODES:
+            print("[UNIVERSE] 板块池已启用（仅 884），跳过 885/886 概念扫描")
+            return
         print("=" * 60)
         print("  补全概念板块全集（扫描全市场股票）")
         print("=" * 60)
@@ -340,8 +346,11 @@ class SyncPipeline:
                 concept_returns[cc] = sum(member_returns) / len(member_returns)
 
         # 计算归因：默认只对有概念映射的个股计算（避免对全市场无映射股票空查）
+        # 板块池启用（884）时，用成分股表反推的股票池（884 不在 stock_concept_map）
+        pool_enabled = config.SECTOR_POOL_ENABLED and config.SECTOR_POOL_CODES
         if stock_codes is None:
-            stock_codes = self.db.get_all_mapped_stock_codes()
+            stock_codes = (self.db.get_all_member_stock_codes() if pool_enabled
+                           else self.db.get_all_mapped_stock_codes())
 
         records = []
         for stock_code in stock_codes:
@@ -349,7 +358,9 @@ class SyncPipeline:
             # 跳过当日停牌等导致涨幅为 nan 的股票
             if pd.isna(stock_return):
                 continue
-            concepts = self.db.get_stock_concepts(stock_code)  # 取最新缓存
+            # 板块池启用时从 concept_members 反推归属（884 无 stock_concept_map 标签）
+            concepts = (self.db.get_stock_concepts_from_members(stock_code) if pool_enabled
+                        else self.db.get_stock_concepts(stock_code))
 
             if not concepts:
                 continue
