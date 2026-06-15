@@ -53,8 +53,23 @@ class PrescreenRequest(BaseModel):
 
 # ========== API 接口 ==========
 @app.get("/", response_class=HTMLResponse)
-def root():
-    """返回可视化看板页面"""
+def root(board: str = None):
+    """
+    可视化看板入口，按 ?board 参数分发：
+    - 无参 / board=sector：原板块强度看板（index.html）
+    - board=custom：自选分组看板（index.html，前端据 board 参数切换数据源）
+    注：不带 board 参数直接访问 / 时，返回 Tab 容器（tabs.html），内嵌两个 iframe。
+    """
+    # Tab 容器模式：顶层访问 / （iframe 内部请求会带 ?board=sector/custom）
+    is_iframe_inner = board in ("sector", "custom")
+    if not is_iframe_inner:
+        tabs_path = os.path.join(_TEMPLATE_DIR, "tabs.html")
+        if os.path.exists(tabs_path):
+            with open(tabs_path, "r", encoding="utf-8") as f:
+                return f.read()
+        return "<h1>templates/tabs.html 未找到</h1>"
+
+    # iframe 内部：返回 index.html（前端 JS 据 ?board=custom 切换数据源与标题）
     index_path = os.path.join(_TEMPLATE_DIR, "index.html")
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
@@ -193,6 +208,29 @@ def clear_realtime_cache():
     return {"ok": True}
 
 
+@app.get("/api/custom/dashboard")
+def get_custom_dashboard(
+    trade_date: str = None,
+    snapshot_time: str = None,
+    top_n: int = 10,
+):
+    """
+    自选股分组看板：用 custom_group 表的自选分组替代概念板块，算分组强弱 + 成分股排名。
+    复用 realtime_engine 的分时序列缓存与切片逻辑，仅 members_map 来源不同。
+
+    :param trade_date: 交易日 YYYYMMDD，默认今天；传历史日期则拉该日全天分时
+    :param snapshot_time: 截止时刻 HH:MM（如 "09:50"），None 或 "latest" = 最新
+    :param top_n: 返回前/后 N 个分组
+    """
+    from realtime_engine import get_realtime_dashboard as _fetch
+    return _fetch(
+        trade_date=trade_date,
+        snapshot_time=snapshot_time,
+        top_n=top_n,
+        custom_mode=True,
+    )
+
+
 # ========== 交易日历 / 交易时段（服务前端盘前判断与日期选择器）==========
 @app.get("/api/trade_calendar")
 def get_trade_calendar(year: Optional[int] = None):
@@ -221,7 +259,16 @@ def get_session_status():
     now = datetime.now()
     phase = cal.session_phase(now)
     next_open = cal.next_open_time(now)
-    next_trade_day = cal.next_trade_day(now.strftime("%Y%m%d")) if next_open else None
+    # next_trade_day：仅在"需要等下一交易日"时返回（盘前/非交易日/收盘后）。
+    # 收盘后或非交易日，"下一交易日"应严格 > 今天（用明天作为查询起点），
+    # 否则 next_trade_day(今天) 会返回今天自己。
+    today = now.strftime("%Y%m%d")
+    if next_open and (phase in ("pre_open", "closed") or not cal.is_trading_day(today)):
+        from datetime import timedelta
+        tomorrow = (now + timedelta(days=1)).strftime("%Y%m%d")
+        next_trade_day = cal.next_trade_day(tomorrow)
+    else:
+        next_trade_day = None
     return {
         "is_trading_day": cal.is_trading_day(now.strftime("%Y%m%d")),
         "phase": phase,

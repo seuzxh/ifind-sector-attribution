@@ -28,9 +28,14 @@
 
 ### 改进：前端体验
 - **表头排序在 3s 刷新后保持**：新增 `rankSort`/`cardSort` 全局状态，`applyRankSort`/`applyCardSort` 内核函数供点击与重渲染复用；修正表头默认视觉 bug（s1/score 原双标 sorted，现仅 score）
-- **9:15 之前停止轮询 + 友好提示**：`checkSession` 查 `/api/session_status`，非交易日/盘前(`pre_open`)/收盘后停轮询并显示提示（如"⏰ 盘前 · 09:15 后自动开始监控"）；`scheduleResume` 每分钟检查，进入集合竞价/盘中自动恢复轮询
+- **9:15 之前停止轮询 + 友好提示**：`checkSession` 查 `/api/session_status`，仅**盘前(`pre_open`, <9:15)**和非交易日停轮询显示提示；`scheduleResume` 每分钟检查，进入集合竞价/盘中自动恢复轮询
+  - **收盘后(`closed`)正常轮询**：展示当日 15:00 全天数据供回看，不停轮询、不显示"已收盘"提示（收盘后分时 API 仍返回当日完整数据）
 - **日期选择器联动交易日**：`loadTradeCalendar` 拉当年交易日，选非交易日给橙色提示
 - **集合竞价阶段（9:15-9:25）自动启动轮询**：`session_phase=auction` 时 checkSession 启动轮询，配合后端集合竞价计算逻辑
+
+### 修复
+- **`next_trade_day` 语义**：收盘后/非交易日查"下一交易日"时返回**严格 > 今天**的值（之前 `>=` 含等号会返回今天自己）
+- **`next_trade_day` 未来日期推断**：日历不含未来交易日时（网络只拉到当前最后交易日），用工作日规则从查询日起推断，避免返回 None（如周一收盘后返回周二）
 
 ### 重构（实时链路改用分时数据）
 - **实时数据源切换**：盘中实时链路从 iFinD 接口4（1min K 线）改用 **kline-fetcher 的分时数据**（`TrendFetcher`，中焯行情 API）

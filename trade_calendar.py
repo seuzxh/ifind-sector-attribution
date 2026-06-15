@@ -289,6 +289,18 @@ class TradeCalendar:
         for d in self._days:
             if d >= on_or_after:
                 return d
+        # 日历不含该日期及之后的交易日（通常为未来日期）：
+        # 用工作日规则从 on_or_after 当天起推断（>= 含等号），避免返回 None。
+        # 节假日由实时接口无数据兜底，此处只做粗筛。
+        try:
+            dt = datetime.strptime(on_or_after, "%Y%m%d")
+            # 从 on_or_after 当天起最多往后扫 15 天找第一个工作日
+            for i in range(0, 15):
+                nxt = dt + timedelta(days=i)
+                if nxt.weekday() < 5:  # 周一~周五
+                    return nxt.strftime("%Y%m%d")
+        except ValueError:
+            pass
         return None
 
     # ---------- 交易时段判断 ----------

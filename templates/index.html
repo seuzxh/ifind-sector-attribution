@@ -228,7 +228,7 @@
 
 <!-- 顶部栏 -->
 <div class="header">
-  <h1>📊 板块强度监控</h1>
+  <h1 id="boardTitle">📊 板块强度监控</h1>
   <div class="controls">
     <label>模式</label>
     <select id="modeSel" onchange="onModeChange()">
@@ -323,6 +323,12 @@ let availableTimes = [];      // 当日可用时间点（分时分钟刻度）
 let autoFollow = true;        // 是否自动跟随最新（拖动滑块时暂停）
 let refreshSeq = 0;           // refresh 请求序号：仅最新一次的响应才允许渲染，防止播放/轮询乱序覆盖
 
+// 看板类型：从 URL ?board= 参数识别（custom=自选分组看板，其他=板块看板）
+const BOARD = new URLSearchParams(location.search).get('board') === 'custom' ? 'custom' : 'sector';
+const isCustomBoard = (BOARD === 'custom');
+const BOARD_TITLE = isCustomBoard ? '⭐ 自选分组监控' : '📊 板块强度监控';
+const BOARD_API = isCustomBoard ? '/api/custom/dashboard' : '/api/realtime/dashboard';
+
 // ========== 表头排序状态（跨 3s 刷新保持）==========
 // rankSort: { top: {key,order}|null, bottom: {key,order}|null }，order: '↓'|'↑'，null=默认（后端顺序）
 let rankSort = { top: null, bottom: null };
@@ -395,8 +401,9 @@ function stopPolling() {
 // ========== 交易时段判断（盘前停止轮询，到点自动恢复）==========
 /**
  * 查询服务器交易时段状态，决定是否启动轮询。
- * - 非交易日 / 盘前(pre_open) → 停止轮询，显示友好提示，定时到 09:15 自动恢复
- * - 集合竞价及盘中 → 启动轮询（9:15 起 pre_market 有数据）
+ * - 非交易日 / 盘前(pre_open, <09:15) → 停止轮询，显示友好提示，定时到 09:15 自动恢复
+ * - 集合竞价(auction) / 盘中(morning/afternoon) / 收盘后(closed) → 启动轮询
+ *   （收盘后拉到的是当日全天分时数据，可正常展示/回看当日行情）
  * 仅在 realtime 模式生效；history/watchlist 模式不依赖实时接口，跳过。
  */
 async function checkSession() {
@@ -409,24 +416,22 @@ async function checkSession() {
     return;
   }
   sessionStatus = s;
-  // 非交易日：停轮询 + 提示
+  // 非交易日：停轮询 + 提示，等下一交易日 09:15 自动恢复
   if (!s.is_trading_day) {
     stopPolling();
     showPreOpen(`今日非交易日${s.next_trade_day ? '（下一交易日 ' + s.next_trade_day + '）' : ''}`);
-    scheduleResume();   // 仍安排到下一交易日 09:15 检查
-    return;
-  }
-  // 盘前（< 09:15）：停轮询 + 提示，到 09:15 自动恢复
-  if (s.phase === 'pre_open' || s.phase === 'closed') {
-    stopPolling();
-    const tip = s.phase === 'pre_open'
-      ? `⏰ 盘前 · ${s.next_open_time || '09:15'} 后自动开始监控`
-      : `💤 已收盘${s.next_trade_day ? ' · 下一交易日 ' + s.next_trade_day : ''}`;
-    showPreOpen(tip);
     scheduleResume();
     return;
   }
-  // 集合竞价 / 盘中：清提示 + 启动轮询
+  // 盘前（< 09:15，尚无任何分时数据）：停轮询 + 提示，到 09:15 自动恢复
+  if (s.phase === 'pre_open') {
+    stopPolling();
+    showPreOpen(`⏰ 盘前 · ${s.next_open_time || '09:15'} 后自动开始监控`);
+    scheduleResume();
+    return;
+  }
+  // 集合竞价 / 盘中 / 收盘后(closed)：均有当日数据可展示，正常轮询
+  // 收盘后拉到的是当日 15:00 全天数据，用户可回看当日行情
   clearPreOpen();
   startPolling();
 }
@@ -603,14 +608,16 @@ async function refresh() {
   let payload;
   if (mode === 'realtime') {
     const date = getDateVal();
-    const params = new URLSearchParams({ watchlist_mode: 'true' });
+    // 自选看板走 /api/custom/dashboard（无需 watchlist_mode）；板块看板走 /api/realtime/dashboard
+    const params = new URLSearchParams();
+    if (!isCustomBoard) params.set('watchlist_mode', 'true');
     if (date) params.set('trade_date', date);
     // 非自动跟随时，传当前滑块时刻；自动跟随时不传（后端取最新）
     if (!autoFollow) {
       const idx = +document.getElementById('timeSlider').value;
       if (availableTimes[idx]) params.set('snapshot_time', availableTimes[idx]);
     }
-    payload = await fetchJson('/api/realtime/dashboard?' + params.toString());
+    payload = await fetchJson(BOARD_API + '?' + params.toString());
   } else {
     const date = getDateVal();
     if (!date) { setStatus('请选择日期', ''); return; }
@@ -1008,6 +1015,9 @@ document.getElementById('prescreenModal').addEventListener('click', function(e) 
 
 // 初始化
 (async function init() {
+  // 按看板类型设置标题（自选分组 / 板块强度）
+  document.getElementById('boardTitle').textContent = BOARD_TITLE;
+  document.title = isCustomBoard ? '自选分组监控' : '板块强度监控';
   await loadDates();
   await loadTradeCalendar();  // 拉当年交易日，供日期选择器过滤
   onModeChange();
