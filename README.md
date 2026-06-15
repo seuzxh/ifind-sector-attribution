@@ -8,7 +8,10 @@
 - **个股多概念归因**：L1 权重归因法（`weight × concept_return`），分解个股涨幅对各概念的贡献
 - **组合归因分析**：按持仓组合的市值暴露，匹配当前强势板块并预警
 - **A股范围限定**：全链路过滤海外代码，只处理沪深北交易所股票
-- **盘中实时监控**：基于分时数据（kline-fetcher）的可视化网站，3s 轮询刷新板块强度 + 成分股四维评分排名 + 可拖动时间条回看任意时刻
+- **盘中实时监控（双看板 Tab）**：基于分时数据（kline-fetcher）的可视化网站
+  - **板块强度看板**：3s 轮询刷新板块强度 + 成分股四维评分排名
+  - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
+  - 两看板顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
 
 ## 5 个 iFinD 接口
 
@@ -38,7 +41,8 @@ ifind_sector_attribution/
 ├── main.py                # 入口脚本
 ├── requirements.txt       # 依赖
 ├── templates/
-│   └── index.html         # 可视化看板单页（时间滑块 + 3s 轮询 + 加速列）
+│   ├── tabs.html          # 顶层 Tab 容器（板块强度/自选分组 双看板 iframe 隔离）
+│   └── index.html         # 看板单页（?board=sector/custom 复用；时间滑块+播放+3s轮询+加速列+持仓标注）
 ├── ifind-monitor.service  # systemd 服务配置（开机自启+自动重启）
 ├── install_service.sh     # 一键安装 systemd 服务脚本
 ├── data/                  # 数据库文件（已 gitignore）
@@ -134,19 +138,29 @@ python main.py server --host 0.0.0.0 --port 8000
 - **可视化看板**：浏览器打开 `http://localhost:8000`
 - **REST API**：见下方"API 接口"
 
-#### 可视化看板（盘中实时监控）
+#### 可视化看板（双 Tab，盘中实时监控）
 
-页面顶部可切换三种模式：
+访问 `http://localhost:8000` 进入**顶层 Tab 容器**，两个看板各自独立 iframe，状态完全隔离（模式/时间条/播放互不影响）：
 
-- **实时模式**（默认，盘中 + 历史日期均可）：基于 **kline-fetcher 分时数据**（中焯行情 API），拉取每只股票完整分时序列（集合竞价 + 盘中逐分钟 241 点）。前端每 **3s** 自动轮询，后端分时序列缓存（TTL 5s）挡住网络。Top10 板块成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 开盘至今涨幅 0.2 / 涨停 0.2），另有**涨速加速**指标（▲加速 / ▼减缓）展示。默认 **watchlist 聚焦**（盘前筛出的 ~279 只，1.5s 拉取）。
-  - **可拖动时间条**：拖到任意时刻（如 9:50）即可回看该时刻的板块排名，观察板块轮动。拖动后自动暂停跟随，点"回到最新"恢复。
-  - 选历史日期时，拉该日全天分时后缓存，拖时间条纯内存切片（毫秒级）。
-- **历史模式**：选日期读已入库的收盘数据，秒级响应。成分股按当日涨幅排序（无分时历史，标注"仅涨幅"）。
-- **盘前筛选模式**：展示当日 watchlist（20 板块 + 各 30 成分股的 5d 涨幅），开盘前观察用。
+**📊 Tab 1：板块强度监控**（默认）
+- 每个分组 = 同花顺概念板块（884 行业分类码）。三种模式可切：
+  - **实时模式**（默认）：基于 **kline-fetcher 分时数据**，拉每只股票完整分时序列（集合竞价 + 盘中逐分钟 241 点）。前端每 **3s** 自动轮询，后端分时序列缓存（TTL 5s）挡住网络。Top10 板块成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 开盘至今涨幅 0.2 / 涨停 0.2），另有**涨速加速**指标（▲加速 / ▼减缓）。默认 **watchlist 聚焦**（~279 只，1.5s 拉取）。
+  - **历史模式**：选日期读已入库的收盘数据，秒级响应，成分股按当日涨幅排序。
+  - **盘前筛选模式**：展示当日 watchlist（20 板块 + 各 30 成分股的 5d 涨幅）。
 
-页面布局：顶部统计栏（股票数/涨跌/涨停）+ 时间条 + Top10 强势板块 + Bottom10 弱势板块 + 下方各板块成分股卡片。点击板块行可高亮对应成分股卡片。顶部"盘前筛选"按钮可即时触发筛选。
+**⭐ Tab 2：自选分组监控**
+- 每个分组 = 你导入的**自选股分组**（同花顺 custom_block 导出）。复用板块看板的全部功能（实时分时 / 时间条 / 播放 / 历史回看 / 四维评分），仅分组来源不同。
+- **持仓金色标注**：持仓分组（默认 "CC"）的成分股作为持仓股，凡含持仓股的分组在排行表/卡片/成分股行**金色高亮**（持仓徽章 + 持仓标签），一眼看出哪些主题涉及持仓。持仓分组名可配置（`config.HOLDING_GROUP_NAME`）。
+- 导入分组：`python main.py import-groups`（读 `ths-custom-block-data/同花顺自选分组导出.json`，幂等覆盖，自动过滤指数/ETF/可转债等非 A 股）
 
-> 实时模式仅在交易时段有数据，非交易时段会显示最近交易日的全天数据（可拖时间条体验回看）。
+**两看板通用功能**：
+- **可拖动时间条**：拖到任意时刻（如 9:50）回看板块排名，观察轮动；拖动后自动暂停跟随，点"回到最新"恢复
+- **▶ 播放按钮**：自动逐分钟推进时间条（速度 1.5x/2x/4x/8x），像动画看板块强度演进；到末尾自动停
+- 选历史日期时拉该日全天分时后缓存，拖时间条/切片纯内存（毫秒级）
+
+页面布局：顶部统计栏（股票数/涨跌/涨停）+ 时间条（播放控件）+ Top10 强势板块 + Bottom10 弱势板块 + 下方各板块成分股卡片。点击板块行可高亮对应成分股卡片。顶部"盘前筛选"按钮可即时触发筛选。
+
+> 实时模式在交易时段拉当日数据；非交易时段/盘前会显示最近交易日的全天数据（可拖时间条体验回看）。
 
 ### 7. 盘前筛选（生成 watchlist）
 
@@ -175,6 +189,15 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 
 此命令幂等，可重复执行。建议执行前备份数据库。
 
+### 9. 导入自选股分组（自选看板用）
+
+```bash
+python main.py import-groups                      # 默认读 ths-custom-block-data/同花顺自选分组导出.json
+python main.py import-groups --json /path/to.json # 指定其他 JSON
+```
+
+从同花顺 custom_block 导出的自选分组 JSON 导入到 `custom_group` 表，供"自选分组看板"使用。**幂等**（清表重导，分组更新后重跑即可），自动按 `market_code` 过滤指数/ETF/可转债等非 A 股标的（只保留 17 沪/33 深/151 北交）。
+
 ## 命令一览
 
 | 命令 | 说明 |
@@ -182,6 +205,7 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 | `init [--stocks FILE]` | 首次部署：拉取字典+成分股+映射，补全概念板块全集 |
 | `daily --date DATE [--codes FILE]` | 每日：同步 K 线 + 板块强度 + 个股归因 |
 | `prescreen [--date DATE] [--top-sector N] [--top-stock M]` | 盘前筛选：5日涨幅选板块+成分股，存入 watchlist |
+| `import-groups [--json FILE]` | **导入自选股分组 JSON**（幂等覆盖），自选看板用 |
 | `server [--host H] [--port P]` | 启动 FastAPI 服务（API + 可视化页面） |
 | `test` | 测试 5 个 iFinD 接口连通性 |
 | `purge [--vacuum]` | 删除海外数据，仅保留 A 股 |
@@ -190,19 +214,22 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `GET /` | 可视化看板页面（HTML） |
-| `GET /api/sector/rankings` | 获取板块强度排名（含多周期融合分） |
-| `POST /api/attribution/stock` | 个股多概念归因 |
-| `POST /api/attribution/portfolio` | 组合归因 + 强势板块定位 |
-| `GET /api/realtime/sector` | 最新板块强度排名 |
-| `GET /api/realtime/dashboard` | **实时看板**（分时数据切片，支持 `trade_date`/`snapshot_time`/`watchlist_mode`） |
-| `POST /api/realtime/clear_cache` | 清空分时序列缓存（切日/调试用） |
-| `GET /api/history/dashboard` | **历史看板**（指定日期的板块 + 成分股） |
-| `POST /api/prescreen` | **盘前筛选**（5日涨幅选板块+成分股，存入 watchlist） |
-| `GET /api/watchlist` | 读取当日 watchlist |
-| `GET /api/dates` | 已入库的板块强度日期列表 |
-| `GET /api/concept/list` | 全部 A 股概念板块列表 |
-| `GET /api/concept/members` | 概念板块成分股（`date` 不传则取最新缓存） |
+| `GET /` | — | **顶层 Tab 容器**（`tabs.html`）；带 `?board=sector`/`=custom` 返回 iframe 内页 |
+| `GET /api/sector/rankings` | — | 获取板块强度排名（含多周期融合分） |
+| `POST /api/attribution/stock` | — | 个股多概念归因 |
+| `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
+| `GET /api/realtime/sector` | — | 最新板块强度排名 |
+| `GET /api/realtime/dashboard` | — | **板块实时看板**（分时切片，`trade_date`/`snapshot_time`/`watchlist_mode`） |
+| `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回持仓标注字段） |
+| `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
+| `GET /api/history/dashboard` | — | **历史看板**（指定日期的板块 + 成分股） |
+| `GET /api/trade_calendar` | — | 交易日列表（供日期选择器过滤非交易日） |
+| `GET /api/session_status` | — | 交易时段状态（盘前/盘中/盘后，前端据此控制轮询） |
+| `POST /api/prescreen` | — | **盘前筛选**（5日涨幅选板块+成分股，存入 watchlist） |
+| `GET /api/watchlist` | — | 读取当日 watchlist |
+| `GET /api/dates` | — | 已入库的板块强度日期列表 |
+| `GET /api/concept/list` | — | 全部 A 股概念板块列表 |
+| `GET /api/concept/members` | — | 概念板块成分股（`date` 不传则取最新缓存） |
 
 ## 配置项（config.py）
 
@@ -222,6 +249,8 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 | `PRESCREEN_TOP_STOCK` | 30 | 每个板块选出的成分股数 |
 | `INTRADAY_WORKERS` | 32 | 分时数据多线程拉取并发数 |
 | `INTRADAY_CACHE_TTL` | 5 | 分时序列缓存 TTL（秒） |
+| `SECTOR_POOL_ENABLED` / `SECTOR_POOL_CODES` | True / 884(259个) | 板块池白名单（限定观察的概念范围，当前 884 行业分类码） |
+| `HOLDING_GROUP_NAME` | "CC" | 持仓分组名（自选看板金色标注用，按 block_name 精确匹配） |
 
 ## 数据模型
 

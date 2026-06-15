@@ -4,6 +4,36 @@
 
 ## [Unreleased] - 2026-06-15
 
+### 新增：自选股分组强弱看板（双 Tab 隔离）
+- **顶层 Tab 容器**（`templates/tabs.html`）：[📊 板块强度] / [⭐ 自选分组] 两 iframe，状态完全隔离（模式/时间条/播放/autoFollow 互不影响）
+  - 根路由 `/` 改按 `?board` 参数分发：无参 → Tab 容器；`?board=sector`/`=custom` → iframe 内页
+  - `templates/index.html` 据 `?board` 切换数据源（`BOARD_API`）与标题，其余逻辑完全复用
+- **自选分组数据导入**（`main.py import-groups`）：读同花顺 custom_block 导出 JSON → `custom_group` 表（幂等覆盖）
+  - 按 `market_code` 过滤非 A 股（只留 17 沪/33 深/151 北交），自动剔除指数/ETF/可转债
+  - 代码转 A 股格式（`002585` + `33` → `002585.SZ`）；表 `custom_group(group_id, group_name, stock_code)`
+- **`/api/custom/dashboard` 路由**：复用 `realtime_engine.compute_dashboard(custom_mode=True)`，仅 `members_map` 来源不同（custom_group 表替代概念板块）
+  - 计算管线（分时切片/四维评分/Top-Bottom 排行）完全复用，独立缓存键 `custom_group`
+- **持仓金色标注**（自选看板专属）：`config.HOLDING_GROUP_NAME="CC"` 识别持仓分组
+  - 后端透传 `holding_stocks`（持仓清单）+ 每分组 `holding_in_group`（完整成分股 ∩ 持仓）
+  - 前端两层标注：含持仓的分组（排行表行金色高亮+徽章 / 卡片金色描边）+ 持仓个股（行金色底+持仓标签）
+  - 分组级标注基于全部成分股（不依赖持仓股是否进 top10）
+
+### 新增：时间条播放按钮 + 请求序号守卫
+- **▶ 播放/⏸ 暂停按钮**：定时器逐分钟推进滑块（速度 1.5x/2x/4x/8x），板块排名像动画演进
+  - 播放时自动暂停"自动跟随最新"；到末尾/切模式/拖滑块自动停
+- **请求序号守卫 `refreshSeq`**：修复播放时进度条时间来回跳变（异步竞态）——每次 refresh 前 `++seq`，过期响应丢弃
+
+### 重构：884 板块池白名单
+- `config.py` 新增 `SECTOR_POOL_CODES`（884 行业分类码 259 个）+ `is_in_sector_pool()`，`ALL_CONCEPT_CODES` 复用板块池
+- `database.get_a_share_concept_codes` 加板块池过滤；新增 `get_stock_concepts_from_members`（从成分股反推 884 归因）
+- `sync_pipeline`：板块池启用时跳过 885/886 概念扫描；归因股票池改用成分股表反查
+
+### 实测（2026-06-15）
+- 自选分组：53 分组 / 594 只 A 股（导入过滤 67 条指数/ETF），首次拉取 3.3s，缓存命中 0.15s
+- 持仓标注：CC 持仓 4 只，top+bottom 排行 5 个含持仓分组金色高亮（PCB铜箔/研报材料/XP材料/研报观察/关注）
+
+---
+
 ### 新增：集合竞价（9:15~9:25）强弱监控
 - **集合竞价阶段可用 ref_price 算涨跌幅**：实测 pre_market 在 9:15~9:25 有 201 个点（3秒采样），末点 ref_price = 开盘价，首点 ref_price = 昨收
   - 此阶段仅看涨跌幅，`speed/body/acceleration` 置 0（无连续价格序列）

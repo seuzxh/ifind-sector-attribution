@@ -12,6 +12,7 @@
 - [6. 数据流总览](#6-数据流总览)
 - [7. 盘中实时监控](#7-盘中实时监控)
 - [8. 盘前筛选与 watchlist](#8-盘前筛选与-watchlist)
+- [9. 自选股分组看板与持仓标注](#9-自选股分组看板与持仓标注)
 
 ---
 
@@ -435,3 +436,69 @@ cutoff = d(N - min_days + 1)   # 第6个交易日（含）
 ### 复用的关键函数
 
 `calc_period_return_df(db, calc_date, days)` —— 从 `calc_multi_period_score` 闭包提取的模块级函数，算任意天数的累计涨幅。prescreen 用它算 5d 涨幅，多周期融合用它算 5d/20d。
+
+---
+
+## 9. 自选股分组看板与持仓标注
+
+### 双看板 Tab 隔离架构
+
+可视化看板采用**顶层 Tab + iframe 隔离**，两套看板状态完全独立：
+
+```
+GET /  → tabs.html（顶层 Tab 容器）
+         ├── [📊 板块强度监控] → iframe /?board=sector  → /api/realtime/dashboard
+         └── [⭐ 自选分组监控] → iframe /?board=custom → /api/custom/dashboard
+```
+
+- 根路由 `/` 按 `?board` 参数分发：无参 → `tabs.html`（容器）；`?board=sector`/`=custom` → `index.html`（iframe 内页）
+- `index.html` 据 `?board` 切换数据源（`BOARD_API`）与标题，其余逻辑（模式/时间条/播放/渲染）完全复用
+- 两 iframe 各自独立 JS 环境，状态（模式/时间条/播放/autoFollow）互不影响，切 Tab 不丢状态
+
+### 自选分组链路（复用 realtime_engine）
+
+自选看板与板块看板的**唯一差异是 `members_map` 来源**：
+
+| 维度 | 板块看板（sector） | 自选看板（custom） |
+|---|---|---|
+| members_map | `self._members_map`（概念板块成分股） | `db.get_custom_members_map()`（custom_group 表） |
+| 分组名 | `self._concept_names`（概念字典） | `db.get_custom_group_names()`（导入的 block_name） |
+| 缓存键 | `watchlist:{date}` / `market` | `custom_group`（独立） |
+| 数据源 | 分时数据（kline-fetcher） | 同左（完全复用） |
+| 计算 | `calc_all_sectors_strength` + 切片 | 同左（完全复用） |
+
+`compute_dashboard(custom_mode=True)` 在 watchlist 分支之前注入自定义 `members_map`，其余流程（`_ensure_series` → `_build_indicator_df` → `calc_all_sectors_strength` → `_build_sector_entry`）原样复用。
+
+### 数据导入（import-groups）
+
+`main.py import-groups` 读同花顺 custom_block 导出的 JSON：
+
+- 按 `market_code` 过滤：只保留 `{17:沪, 33:深, 151:北交}`，过滤指数(48/49)/ETF(20)/可转债(35)/B股(22)等
+- 代码转 A 股格式：`002585` + `market_code=33` → `002585.SZ`
+- 幂等：清表重导，分组更新后重跑即可
+- 表结构：`custom_group(group_id, group_name, stock_code)`，PK(group_id, stock_code)
+
+### 持仓醒目标注（CC 分组）
+
+自选看板专属功能，识别持仓分组并对含持仓的分组金色标注：
+
+**识别**：`config.HOLDING_GROUP_NAME = "CC"`，按 `block_name` 精确匹配，其成分股作为持仓股。
+
+**后端透传**：
+- `holding_stocks`：持仓股清单（顶层返回）
+- `holding_in_group`：每个分组**完整成分股 ∩ 持仓股**的交集（基于全部成分股，非仅 top10）
+
+**前端两层标注**（仅 `isCustomBoard` 生效）：
+- 排行表行：含持仓的分组 → 金色渐变底 + 左金边 + "持仓N"徽章
+- 成分股卡片：含持仓的分组 → 金色描边 + 光晕
+- 成分股行：持仓个股 → 金色底 + "持仓"标签
+
+> 注意：分组级标注基于 `holding_in_group`（分组全部成分股），不依赖该持仓股是否进了 top10 成分股排名——因为持仓股当日涨幅可能靠后，不在 top10 里，但其所在分组仍需标注。
+
+### 时间条播放
+
+`togglePlay` 用 `setInterval` 逐分钟推进滑块（`stepPlay` → `refresh`）：
+- 速度档位 1.5x/2x/4x/8x（每步间隔 1500/800/400/150ms）
+- 播放时自动 `autoFollow=false`（否则 3s 轮询拉回最新）
+- 到末尾自动 `stopPlay`；切模式/切日期/拖滑块/点"回到最新"也自动停
+- **请求序号守卫 `refreshSeq`**：每次 refresh 前 `++seq` 记 `mySeq`，响应回来若 `mySeq !== refreshSeq` 则丢弃——防止播放快进时多个并发请求乱序覆盖界面（时刻跳变）

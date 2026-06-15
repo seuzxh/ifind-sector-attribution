@@ -51,7 +51,8 @@
 | `trade_calendar.py` | 交易日历模块（`TradeCalendar` 单例，三级缓存：内存→`data/trade_calendar.txt`→网络→DB 兜底；复用 `kline_fetcher.fetch_trade_calendar`） | 低 |
 | `probe_auction.py` | 集合竞价数据探针脚本（生产环境验证 `pre_market` 形态用，非业务链路） | 低 |
 | `api_server.py` | FastAPI 服务（REST API + 可视化页面） | 中（加接口看这） |
-| `templates/index.html` | 可视化看板单页（时间滑块 + 3s 轮询 + 加速列） | 低 |
+| `templates/tabs.html` | **顶层 Tab 容器**（[📊板块强度]/[⭐自选分组] 两 iframe，状态完全隔离） | 低 |
+| `templates/index.html` | 看板单页（`?board=sector`/`=custom` 复用同模板；时间滑块 + 播放 + 3s 轮询 + 加速列 + **持仓金色标注**） | 低 |
 | `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
 | `main.py` | 命令入口（argparse 子命令） | 低 |
 
@@ -94,6 +95,8 @@
 - **交易时段由服务端 `session_phase` 决定**（`trade_calendar.py`，7 个 phase：`pre_open`/`auction`/`pre_morning`/`morning`/`lunch`/`afternoon`/`closed`）。前端仅 `<9:15(pre_open)` 和非交易日停 3s 轮询，**收盘后 `closed` 仍轮询**展示全天数据供回看。
 - **历史日期回看 ≠ 历史看板**：实时接口传 `trade_date=YYYYMMDD` 走分时链路（拉该日全天分时 + 内存切片）；`/api/history/dashboard` 读已入库的 `concept_strength`（降级为纯涨幅排序）。两条路径别混。
 - **自选股分组看板**：`GET /api/custom/dashboard` 用 `custom_group` 表替代概念板块算分组强弱，复用 realtime_engine 的缓存/切片（仅 `members_map` 来源不同）。需先用 `import-groups` 导入分组。
+- **双看板 Tab 隔离**：根路由 `/` 返回 `tabs.html`（顶层 Tab 容器），内嵌两个 iframe：`/?board=sector`（板块强度）和 `/?board=custom`（自选分组）。两 iframe 各自独立 JS 环境，状态完全隔离（模式/时间条/播放/autoFollow 互不影响）。`index.html` 据 `?board` 参数切换数据源与标题。
+- **时间条播放**：`togglePlay` 用 `setInterval` 逐分钟推进滑块（`stepPlay` → `refresh`），速度 1.5x/2x/4x/8x。切模式/切日期/拖滑块/点"回到最新"自动 `stopPlay`。播放时 `autoFollow=false`（否则 3s 轮询拉回最新）。`refreshSeq` 序号守卫防异步乱序覆盖。
 
 ## 三套数据源（重要）
 
@@ -114,20 +117,25 @@
   - 涨幅=`(last-昨收)/昨收`；涨速=`(last[-1]-last[-2])/last[-2]`（1min 滚动）；开盘至今=`(last-开盘价)/开盘价`（开盘价=09:25 集合竞价价）
   - 涨速加速 `=speed[-1]-speed[-2]`：>0 加速 / <0 减缓，**仅展示不进综合分**
   - 时间条 `snapshot_time` 切片：截 `trading[:snapshot_time]` 用末点重算，纯内存毫秒级
+  - 时间条**播放**：`togglePlay` 定时器逐分钟推进滑块（速度 1.5x/2x/4x/8x），播放时自动暂停"自动跟随最新"
+  - **请求序号守卫** `refreshSeq`：每次 refresh 前 `++seq`，响应回来若过期则丢弃——防止播放/轮询异步乱序覆盖界面
+- **持仓醒目标注**（自选看板专属）：`HOLDING_GROUP_NAME="CC"` 识别持仓分组，其成分股作持仓股。含持仓的分组返回 `holding_in_group`，前端金色高亮（排行表行+卡片描边+持仓个股行+持仓标签）。仅 `isCustomBoard` 生效。
 - **最小成分股数** `MIN_MEMBER_COUNT=6`，低于此的概念不参与排名（样本过小 Z-score 失真）。
 
 ## REST API（`api_server.py`，默认 `0.0.0.0:8000`）
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `GET /` | — | 可视化看板页面（HTML） |
+| `GET /` | — | **顶层 Tab 容器**（`tabs.html`）；带 `?board=sector`/`=custom` 时返回 iframe 内页（`index.html`） |
 | `GET /api/sector/rankings` | — | 板块强度排名（含多周期融合分） |
 | `POST /api/attribution/stock` | — | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
-| `GET /api/realtime/dashboard` | — | **实时看板**（分时切片，支持 `trade_date`/`snapshot_time`/`watchlist_mode`） |
-| `GET /api/custom/dashboard` | — | **自选分组看板**（用 `custom_group` 替代概念板块，复用实时切片） |
+| `GET /api/realtime/dashboard` | — | **板块实时看板**（分时切片，`trade_date`/`snapshot_time`/`watchlist_mode`） |
+| `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回 `holding_stocks`/`holding_in_group`） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（指定日期，读入库 `concept_strength`，降级纯涨幅） |
+| `GET /api/trade_calendar` | — | 交易日列表（供前端日期选择器过滤非交易日） |
+| `GET /api/session_status` | — | 交易时段状态（盘前/盘中/盘后，前端据此控制轮询） |
 | `POST /api/prescreen` | — | 盘前筛选（5日涨幅选板块+成分股 → `watchlist`） |
 | `GET /api/watchlist` | — | 读当日 watchlist |
 | `GET /api/dates` | — | 已入库的板块强度日期列表 |
@@ -148,6 +156,9 @@
 | 盘中实时拉取失败 / `ImportError: kline_fetcher` | 检查 kline-fetcher 是否 `pip install -e` 装好 + `KLINE_API_BASE_URL` 是否配置 |
 | 接入自选股分组监控 | `main.py import-groups` 导入 JSON → 调 `GET /api/custom/dashboard` |
 | 改盘前筛选/时段判定 | `prescreen.py`（筛选）/ `trade_calendar.py`（`session_phase`、交易日历） |
+| 改持仓分组（自选看板金色标注） | `config.HOLDING_GROUP_NAME` 改分组名（默认 "CC"），无需改代码 |
+| 改双看板（Tab 隔离） | `templates/tabs.html`（容器）/ `templates/index.html`（`?board=sector`/`=custom` 复用同模板） |
+| 时间条播放异常（时刻跳变） | 检查 `refreshSeq` 请求序号守卫是否被破坏（防异步乱序覆盖） |
 
 ## 深入阅读
 
