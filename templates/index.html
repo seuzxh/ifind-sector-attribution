@@ -37,6 +37,8 @@
     background: #fff; padding: 12px 20px; border-radius: 10px; margin-bottom: 14px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     display: none; align-items: center; gap: 14px;
+    /* 吸顶：滚动到底部看成分股时，时间条始终可见 */
+    position: sticky; top: 0; z-index: 20;
   }
   .timebar.show { display: flex; }
   .timebar .tb-label { font-size: 12px; color: #6b7280; white-space: nowrap; }
@@ -63,6 +65,10 @@
     background: #fee2e2; color: #dc2626;
   }
   .timebar .tb-live.paused { background: #fef3c7; color: #d97706; }
+  /* 播放按钮：紧凑，播放中变红 + 抖动动画 */
+  .timebar #playBtn { padding: 5px 12px; font-size: 12px; flex-shrink: 0; }
+  .timebar #playBtn.playing { background: #dc2626; border-color: #dc2626; }
+  .timebar .speed-sel { padding: 4px 6px; font-size: 11px; flex-shrink: 0; }
   .timebar .tb-mark { font-size: 11px; color: #9ca3af; white-space: nowrap; }
 
   /* ===== 统计栏 ===== */
@@ -245,10 +251,17 @@
 <!-- 时间条（实时模式专用） -->
 <div class="timebar" id="timeBar">
   <span class="tb-label">⏱ 时刻</span>
+  <button id="playBtn" class="primary" onclick="togglePlay()" title="自动快进时间，逐分钟演进板块排名">▶ 播放</button>
   <input type="range" id="timeSlider" min="0" max="0" value="0" step="1"
          oninput="onSliderInput()" onchange="onSliderChange()">
   <span class="tb-cur" id="tbCur">--:--</span>
   <span class="tb-live" id="tbLive">LIVE</span>
+  <select id="playSpeed" class="speed-sel" onchange="onSpeedChange()" title="播放速度：每步间隔（毫秒）">
+    <option value="1500">1.5x</option>
+    <option value="800" selected>2x</option>
+    <option value="400">4x</option>
+    <option value="150">8x</option>
+  </select>
   <button onclick="jumpToLatest()">⏭ 回到最新</button>
   <span class="tb-mark" id="tbMark"></span>
 </div>
@@ -335,12 +348,14 @@ function onModeChange() {
   document.getElementById('membersSection').style.display = isWL ? 'none' : '';
 
   stopPolling();
+  stopPlay();              // 切模式 → 停止播放
   if (isRT) { startPolling(); autoFollow = true; updateAutoUI(); }
   if (isWL) loadWatchlist();
   refresh();
 }
 function onDateChange() {
   // 实时模式切日期后，重置滑块、强制刷新
+  stopPlay();              // 切日期 → 停止播放（时间轴变了）
   if (document.getElementById('modeSel').value === 'realtime') {
     autoFollow = true; updateAutoUI();
   }
@@ -382,15 +397,59 @@ function onSliderInput() {
 }
 function onSliderChange() {
   // 松手：视为手动选时刻，暂停自动跟随，触发一次切片请求
+  stopPlay();              // 手动拖动 → 停止播放
   autoFollow = false;
   updateAutoUI();
   refresh();
 }
 function jumpToLatest() {
+  stopPlay();              // 跳最新 → 停止播放
   autoFollow = true;
   updateAutoUI();
   document.getElementById('timeSlider').value = document.getElementById('timeSlider').max;
   refresh();
+}
+
+// ========== 时间条播放（自动快进）==========
+let playTimer = null;     // 播放定时器
+function getPlayInterval() { return parseInt(document.getElementById('playSpeed').value) || 800; }
+function isPlaying() { return playTimer !== null; }
+
+function togglePlay() {
+  if (isPlaying()) stopPlay();
+  else startPlay();
+}
+function startPlay() {
+  const slider = document.getElementById('timeSlider');
+  // 已到末尾 → 从头开始播放
+  if (+slider.value >= +slider.max) slider.value = 0;
+  // 播放时必须暂停自动跟随，否则 3s 轮询会把滑块拉回最新
+  autoFollow = false;
+  updateAutoUI();
+  const btn = document.getElementById('playBtn');
+  btn.textContent = '⏸ 暂停';
+  btn.classList.add('playing');
+  stepPlay();  // 立即播第一步
+  playTimer = setInterval(stepPlay, getPlayInterval());
+}
+function stepPlay() {
+  const slider = document.getElementById('timeSlider');
+  if (+slider.value >= +slider.max) { stopPlay(); return; }  // 到末尾自动停
+  slider.value = +slider.value + 1;
+  onSliderInput();   // 更新时刻显示
+  refresh();         // 触发切片请求（后端缓存命中，毫秒级）
+}
+function stopPlay() {
+  if (playTimer) { clearInterval(playTimer); playTimer = null; }
+  const btn = document.getElementById('playBtn');
+  if (btn) { btn.textContent = '▶ 播放'; btn.classList.remove('playing'); }
+}
+function onSpeedChange() {
+  // 播放中改速度 → 重启定时器用新间隔
+  if (isPlaying()) {
+    clearInterval(playTimer);
+    playTimer = setInterval(stepPlay, getPlayInterval());
+  }
 }
 
 // ========== 数据加载 ==========
