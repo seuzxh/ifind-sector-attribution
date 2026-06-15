@@ -321,6 +321,7 @@ let membersTab = 'top';       // 成分股当前 tab
 const POLL_INTERVAL = 3000;   // 3s 轮询
 let availableTimes = [];      // 当日可用时间点（分时分钟刻度）
 let autoFollow = true;        // 是否自动跟随最新（拖动滑块时暂停）
+let refreshSeq = 0;           // refresh 请求序号：仅最新一次的响应才允许渲染，防止播放/轮询乱序覆盖
 
 // ========== 工具 ==========
 function setStatus(text, cls) {
@@ -480,6 +481,7 @@ async function refresh() {
   const mode = document.getElementById('modeSel').value;
   if (mode === 'watchlist') { await loadWatchlist(); return; }
   setStatus('加载中...', 'warn');
+  const mySeq = ++refreshSeq;   // 本次请求的序号；只有最新一次响应才允许渲染
 
   let payload;
   if (mode === 'realtime') {
@@ -503,6 +505,9 @@ async function refresh() {
       }
     }
   }
+
+  // 守卫：若期间已发出更新的请求（播放快进/轮询），丢弃本次过期响应，避免乱序覆盖
+  if (mySeq !== refreshSeq) return;
 
   if (payload.error) {
     setStatus('⚠ ' + payload.error, 'warn');
