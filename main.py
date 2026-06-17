@@ -103,19 +103,42 @@ def cmd_prescreen(args):
 
 def cmd_import_groups(args):
     """导入同花顺自选股分组 JSON 到 custom_group 表（幂等，可重复导入更新）"""
+    result = import_groups_from_json(args.json)
+    if result is None:
+        return
+    print(f"[IMPORT-GROUPS] 导入完成：{result['group_count']} 个分组，{result['row_count']} 条成员（{result['stock_count']} 只独立股票）")
+    print(f"[IMPORT-GROUPS] 已过滤 {result['skipped']} 条非 A 股标的（指数/ETF/可转债等）")
+    print(f"[IMPORT-GROUPS] 来源: {args.json}")
+
+
+# 自选股分组 JSON 默认路径（cmd_import_groups 与 /api/custom/check_reload 共用）
+CUSTOM_GROUPS_JSON = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "ths-custom-block-data", "同花顺自选分组导出.json"
+)
+
+# market_code → A 股后缀（仅真正的 A 股个股，指数/ETF/可转债等过滤掉）
+_A_SHARE_MARKET = {"17": ".SH", "33": ".SZ", "151": ".BJ"}
+
+
+def import_groups_from_json(json_path: str):
+    """
+    从同花顺 custom_block 导出 JSON 全量导入 custom_group 表（幂等覆盖）。
+    供 cmd_import_groups（CLI）与 /api/custom/check_reload（API 自动重导）复用。
+
+    :return: {group_count, stock_count, row_count, skipped, json_path} 或 None（文件不存在/格式错）
+    """
     import json
-    import os
 
-    # market_code → A 股后缀（仅真正的 A 股个股，指数/ETF/可转债等过滤掉）
-    A_SHARE_MARKET = {"17": ".SH", "33": ".SZ", "151": ".BJ"}
-
-    json_path = args.json
     if not os.path.exists(json_path):
         print(f"[IMPORT-GROUPS] 文件不存在: {json_path}")
-        return
-
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        return None
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"[IMPORT-GROUPS] JSON 解析失败: {e}")
+        return None
 
     groups = data.get("groups", [])
     rows = []
@@ -125,24 +148,26 @@ def cmd_import_groups(args):
         gname = g.get("block_name", gid)
         for s in g.get("stocks", []):
             mc = s.get("market_code", "")
-            if mc not in A_SHARE_MARKET:
+            if mc not in _A_SHARE_MARKET:
                 skipped += 1
                 continue  # 过滤非 A 股（指数/ETF/可转债/B股等）
             code = s.get("code", "")
             rows.append({
                 "group_id": str(gid),
                 "group_name": gname,
-                "stock_code": f"{code}{A_SHARE_MARKET[mc]}",
+                "stock_code": f"{code}{_A_SHARE_MARKET[mc]}",
             })
 
     db = Database()
     db.save_custom_groups(rows)
 
-    group_count = len({r["group_id"] for r in rows})
-    stock_count = len({r["stock_code"] for r in rows})
-    print(f"[IMPORT-GROUPS] 导入完成：{group_count} 个分组，{len(rows)} 条成员（{stock_count} 只独立股票）")
-    print(f"[IMPORT-GROUPS] 已过滤 {skipped} 条非 A 股标的（指数/ETF/可转债等）")
-    print(f"[IMPORT-GROUPS] 来源: {json_path}")
+    return {
+        "group_count": len({r["group_id"] for r in rows}),
+        "stock_count": len({r["stock_code"] for r in rows}),
+        "row_count": len(rows),
+        "skipped": skipped,
+        "json_path": json_path,
+    }
 
 
 def main():
@@ -184,12 +209,8 @@ def main():
     prescreen_parser.set_defaults(func=cmd_prescreen)
 
     # import-groups
-    DEFAULT_JSON = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "ths-custom-block-data", "同花顺自选分组导出.json"
-    )
     ig_parser = subparsers.add_parser("import-groups", help="导入同花顺自选股分组 JSON（幂等，可重复导入更新）")
-    ig_parser.add_argument("--json", type=str, default=DEFAULT_JSON, help="自选分组 JSON 文件路径")
+    ig_parser.add_argument("--json", type=str, default=CUSTOM_GROUPS_JSON, help="自选分组 JSON 文件路径")
     ig_parser.set_defaults(func=cmd_import_groups)
 
     args = parser.parse_args()

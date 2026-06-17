@@ -231,17 +231,64 @@ def get_custom_dashboard(
     )
 
 
+# 记录上次导入自选分组时的 JSON mtime（None=服务启动后尚未导入过）
+_custom_groups_mtime = None
+
+
+@app.post("/api/custom/check_reload")
+def custom_check_reload():
+    """
+    检查自选股分组 JSON 是否变更，变了就全量重导（前端切到自选 Tab 时调用）。
+    判定依据：JSON 文件的 mtime 与上次导入时不同 → 重导。
+    首次（服务启动后未导入过）也会触发一次，确保表里有数据。
+
+    :return: {reloaded: bool, reason: str, ...stats（重导时）}
+    """
+    global _custom_groups_mtime
+    import os
+    from main import import_groups_from_json, CUSTOM_GROUPS_JSON
+
+    if not os.path.exists(CUSTOM_GROUPS_JSON):
+        return {"reloaded": False, "reason": "JSON 文件不存在", "json_path": CUSTOM_GROUPS_JSON}
+
+    cur_mtime = os.path.getmtime(CUSTOM_GROUPS_JSON)
+    if _custom_groups_mtime is not None and cur_mtime == _custom_groups_mtime:
+        return {"reloaded": False, "reason": "JSON 未变更", "json_path": CUSTOM_GROUPS_JSON}
+
+    # mtime 变了（或首次）→ 全量重导
+    result = import_groups_from_json(CUSTOM_GROUPS_JSON)
+    if result is None:
+        return {"reloaded": False, "reason": "导入失败（JSON 解析错误）", "json_path": CUSTOM_GROUPS_JSON}
+
+    _custom_groups_mtime = cur_mtime
+    print(f"[CUSTOM-RELOAD] 检测到 JSON 变更，已重导：{result['group_count']} 分组 / {result['stock_count']} 只股票")
+    # 重导后清掉旧的分时序列缓存（股票范围可能变了）
+    try:
+        from realtime_engine import clear_cache
+        clear_cache()
+    except Exception:
+        pass
+    return {"reloaded": True, "reason": "JSON 变更，已全量重导", **result}
+
+
 # ========== 交易日历 / 交易时段（服务前端盘前判断与日期选择器）==========
 @app.get("/api/trade_calendar")
 def get_trade_calendar(year: Optional[int] = None):
     """
     返回交易日列表（YYYYMMDD）。
     :param year: 指定年份；不传则返回近 3 年全部（供前端日期选择器过滤非交易日）
+    :return today: 服务端权威当前日期 YYYYMMDD（前端据此设默认日期，避免浏览器时区与服务器不一致）
     """
     from trade_calendar import TradeCalendar
     cal = TradeCalendar.instance()
     days = cal.get_trade_days(year=year)
-    return {"count": len(days), "trade_days": days}
+    return {
+        "count": len(days),
+        "trade_days": days,
+        # 服务端权威"今天"：前端用此（而非浏览器 new Date()）决定默认日期，
+        # 避免浏览器与服务端时区不一致（如 UTC 浏览器 vs 北京服务器）导致默认日期错成 T-1。
+        "today": datetime.now().strftime("%Y%m%d"),
+    }
 
 
 @app.get("/api/session_status")

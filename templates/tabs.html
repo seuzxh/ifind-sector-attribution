@@ -15,6 +15,7 @@
   .tabbar {
     display: flex; gap: 0; background: #fff; padding: 8px 16px 0 16px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.06); flex-shrink: 0; border-bottom: 1px solid #e5e7eb;
+    align-items: center;
   }
   .tabbar .tab {
     padding: 10px 22px; font-size: 14px; font-weight: 600; cursor: pointer;
@@ -38,6 +39,16 @@
     background: #f0f2f5; display: none;
   }
   .frames iframe.active { display: block; }
+  /* 重导提示 toast */
+  #toast {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    background: #1e40af; color: #fff; padding: 10px 18px; border-radius: 8px;
+    font-size: 13px; font-weight: 600; box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    z-index: 100; display: none; max-width: 80%; text-align: center;
+  }
+  #toast.show { display: block; animation: fadein .2s; }
+  #toast.warn { background: #d97706; }
+  @keyframes fadein { from { opacity: 0; transform: translateX(-50%) translateY(-8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
 </style>
 </head>
 <body>
@@ -52,6 +63,8 @@
   <iframe id="frame-custom" src="/?board=custom"></iframe>
 </div>
 
+<div id="toast"></div>
+
 <script>
 // Tab 切换：显隐对应 iframe，状态由浏览器各自保留（互不影响）
 function switchTab(board) {
@@ -61,8 +74,36 @@ function switchTab(board) {
   document.querySelectorAll('.frames iframe').forEach(f => {
     f.classList.toggle('active', f.id === 'frame-' + board);
   });
-  // 懒加载：custom iframe 默认有 src，首次切换时才真正加载（节省首屏开销）
-  // 这里所有 iframe 都设了 src，如要懒加载可改成切换时再赋 src
+  // 切到自选分组 Tab：检查 JSON 是否变更，变了就自动重导
+  if (board === 'custom') checkAndReload();
+}
+
+// 检查自选分组 JSON 是否需要重导（mtime 变了就全量重导）
+async function checkAndReload() {
+  const toast = document.getElementById('toast');
+  let reloaded = false;
+  try {
+    toast.className = 'show'; toast.textContent = '检查自选分组更新...';
+    const r = await fetch('/api/custom/check_reload', { method: 'POST' });
+    const d = await r.json();
+    reloaded = !!d.reloaded;
+    if (reloaded) {
+      // 重导成功：刷新自选看板 iframe（重新加载新数据），提示分组数
+      toast.className = 'show warn';
+      toast.textContent = `✅ 自选分组已更新：${d.group_count} 分组 / ${d.stock_count} 只股票，正在刷新...`;
+      // 重新加载 iframe（清掉旧分组状态）
+      const f = document.getElementById('frame-custom');
+      f.src = f.src;
+    } else {
+      toast.className = '';  // 未变更，不提示（静默）
+    }
+  } catch (e) {
+    reloaded = true;  // 出错也显示提示
+    toast.className = 'show warn';
+    toast.textContent = '⚠ 检查更新失败: ' + e.message;
+  }
+  // 提示自动消失（重导 3.5s，未变更不显示无需清）
+  if (reloaded) setTimeout(() => { toast.className = ''; }, 3500);
 }
 </script>
 </body>

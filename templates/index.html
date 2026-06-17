@@ -360,6 +360,9 @@ let sessionCheckTimer = null; // 周期性会话检查定时器
 let resumeTimer = null;       // 到点恢复轮询的定时器
 // tradeDays: 从 /api/trade_calendar 拉取的当年交易日集合（YYYYMMDD），供日期选择器过滤
 let tradeDays = new Set();
+// serverToday: 服务端权威"今天"（YYYYMMDD）。前端默认日期以此为准，避免浏览器时区与服务端
+// 不一致（如 UTC 浏览器 vs 北京服务器）导致默认日期错成 T-1。
+let serverToday = null;
 
 // ========== 工具 ==========
 function setStatus(text, cls) {
@@ -594,23 +597,33 @@ async function loadDates() {
     } else {
       hint.textContent = '暂无入库数据';
     }
-    // 默认日期 = 今天（实时模式拉分时数据，不依赖日K入库）
-    // 若今天非交易日（周末/节假日），回退到最近一个交易日
-    const today = new Date();
-    let defaultDate = today;
-    if (tradeDays.size > 0) {
-      const fmt = d => d.getFullYear() + '' + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
-      if (!tradeDays.has(fmt(today))) {
-        for (let i = 1; i <= 7; i++) {
-          const prev = new Date(today);
-          prev.setDate(prev.getDate() - i);
-          if (tradeDays.has(fmt(prev))) { defaultDate = prev; break; }
-        }
+    // 默认日期 = 服务端权威"今天"（避免浏览器时区与服务端不一致导致默认成 T-1）；
+    // 服务端日期缺失时退化到浏览器本地日期。若今天非交易日（周末/节假日），回退到最近交易日。
+    // serverToday 形如 '20260617'；todayStr 同格式，供后续回退比较。
+    const browserToday = new Date();
+    const browserTodayStr = browserToday.getFullYear() + ''
+      + String(browserToday.getMonth()+1).padStart(2,'0')
+      + String(browserToday.getDate()).padStart(2,'0');
+    const todayStr = serverToday || browserTodayStr;  // 服务端权威 > 浏览器本地
+    // 把 YYYYMMDD 拆回 YYYY-MM-DD 写入 <input type="date">
+    const setInput = (yyyymmdd) => {
+      input.value = yyyymmdd.slice(0,4) + '-' + yyyymmdd.slice(4,6) + '-' + yyyymmdd.slice(6,8);
+    };
+    let defaultStr = todayStr;
+    if (tradeDays.size > 0 && !tradeDays.has(todayStr)) {
+      // 今天非交易日 → 向前找最近一个交易日（最多回看 7 天）
+      let found = null;
+      for (let i = 1; i <= 7; i++) {
+        const prev = new Date(browserToday);
+        prev.setDate(prev.getDate() - i);
+        const prevStr = prev.getFullYear() + ''
+          + String(prev.getMonth()+1).padStart(2,'0')
+          + String(prev.getDate()).padStart(2,'0');
+        if (tradeDays.has(prevStr)) { found = prevStr; break; }
       }
+      if (found) defaultStr = found;
     }
-    input.value = defaultDate.getFullYear() + '-'
-      + String(defaultDate.getMonth()+1).padStart(2,'0') + '-'
-      + String(defaultDate.getDate()).padStart(2,'0');
+    setInput(defaultStr);
   } catch(e) { console.error(e); }
 }
 
@@ -626,6 +639,8 @@ async function loadTradeCalendar() {
     if (data && Array.isArray(data.trade_days)) {
       tradeDays = new Set(data.trade_days);
     }
+    // 记录服务端权威"今天"（YYYYMMDD）；缺失时退化为浏览器本地日期，保证可用。
+    serverToday = (data && data.today) || null;
   } catch(e) { console.error('交易日历加载失败', e); }
 }
 
