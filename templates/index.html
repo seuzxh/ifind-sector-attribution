@@ -951,13 +951,10 @@ function applyCardSort(table, key, order, updateHeadOnly) {
   rows.sort((a, b) => {
     let av, bv;
     const ca = a.querySelector(`[data-k="${key}"]`), cb = b.querySelector(`[data-k="${key}"]`);
-    if (key === 'acceleration') {
-      av = parseFloat((ca.textContent||'').replace(/[▲▼+\-%]/g,'')) || 0;
-      bv = parseFloat((cb.textContent||'').replace(/[▲▼+\-%]/g,'')) || 0;
-    } else {
-      av = parseFloat((ca.textContent||'').replace(/[+\-%]/g,'')) || 0;
-      bv = parseFloat((cb.textContent||'').replace(/[+\-%]/g,'')) || 0;
-    }
+    // 提取数值：保留负号，去掉 %、+、▲、▼ 等非数字字符
+    // （旧实现 replace(/[+\-%]/g,'') 会误删负号，导致 -2.5% 被当 +2.5，排序错乱）
+    av = parseFloat((ca.textContent||'').replace(/[^0-9.\-]/g,'')) || 0;
+    bv = parseFloat((cb.textContent||'').replace(/[^0-9.\-]/g,'')) || 0;
     return desc ? bv - av : av - bv;
   });
   rows.forEach(r => tbody.appendChild(r));
