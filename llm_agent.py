@@ -35,6 +35,11 @@ _NON_CHAT_KEYWORDS = (
     "embedding", "vision", "seedance", "seedream", "seed3d",
     "hitem3d", "hyper3d", "translation", "character",
 )
+# coding plan 探测：ARK /coding/v3/models 返回账户全部模型，但只有部分支持 coding plan。
+# 列表接口不标注此能力（features 为空），唯一可靠判断方式是实际发一次极简 chat 请求。
+# 不支持的会返回 HTTP 404 + "does not support the coding plan feature"。
+_PROBE_CONCURRENCY = 8   # 探测并发数，避免逐个串行太慢
+_PROBE_TIMEOUT = 25      # 单次探测超时（秒）
 
 # 运行时模型状态（进程内，可被前端切换；重启回 config 默认）
 _runtime_lock = threading.Lock()
@@ -227,6 +232,35 @@ def reset_current_model() -> str:
     return getattr(config, "LLM_MODEL", "deepseek-chat")
 
 
+def _probe_coding_models(base_url: str, api_key: str, candidate_ids: List[str]) -> set:
+    """
+    并发探测哪些模型真正支持 coding plan。
+    ARK /coding/v3 列表接口返回账户全部模型，但其中部分不支持 coding plan（调用即 404），
+    列表又不标注此能力，故只能逐个发极简 chat 请求实测。
+    :return: 支持的模型 id 集合
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    chat_url = base_url.rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload_tmpl = {"messages": [{"role": "user", "content": "ok"}], "max_tokens": 5, "stream": False}
+    supported = set()
+
+    def _probe(mid: str) -> bool:
+        try:
+            r = requests.post(chat_url, headers=headers,
+                              json={**payload_tmpl, "model": mid}, timeout=_PROBE_TIMEOUT)
+            return r.status_code == 200
+        except requests.RequestException:
+            return False
+
+    with ThreadPoolExecutor(max_workers=_PROBE_CONCURRENCY) as ex:
+        futs = {ex.submit(_probe, mid): mid for mid in candidate_ids}
+        for fut in as_completed(futs):
+            if fut.result():
+                supported.add(futs[fut])
+    return supported
+
+
 def list_chat_models(use_cache: bool = True) -> Dict[str, Any]:
     """
     从 ARK /models 拉取并过滤出适合「文本对话问答」的可用模型列表。
@@ -266,7 +300,7 @@ def list_chat_models(use_cache: bool = True) -> Dict[str, Any]:
                     "default": getattr(config, "LLM_MODEL", ""),
                     "error": f"拉取模型列表失败: {e}"}
 
-        models = []
+        candidates = []
         for m in raw:
             mid = (m.get("id") or "").strip()
             mid_low = mid.lower()
@@ -276,10 +310,35 @@ def list_chat_models(use_cache: bool = True) -> Dict[str, Any]:
                 continue  # 已下线
             if any(kw in mid_low for kw in _NON_CHAT_KEYWORDS):
                 continue  # 非文本对话类
-            models.append({"id": mid, "name": m.get("name") or mid, "status": m.get("status")})
+            candidates.append({"id": mid, "name": m.get("name") or mid, "status": m.get("status")})
+
+        # 关键：ARK /coding/v3/models 返回账户全部模型，但只有部分支持 coding plan。
+        # 实测探测，剔除调用会 404 的（如 doubao 老代、qwen 全系等）。
+        # 探测失败（网络等）时不剔除，保守保留全部候选，避免误删可用模型。
+        try:
+            supported = _probe_coding_models(base_url, api_key, [c["id"] for c in candidates])
+            models = [c for c in candidates if c["id"] in supported]
+            # 探测被全部剔除（异常情况）：保留候选全集 + 标注，避免下拉变空
+            if not models:
+                models = candidates
+                probe_warn = "（coding plan 探测结果为空，已保留全部候选，部分可能不可用）"
+            else:
+                probe_warn = None
+        except Exception as e:
+            models = candidates
+            probe_warn = f"（coding plan 探测失败：{e}，已保留全部候选）"
+
         models.sort(key=lambda x: x["id"])
         with _runtime_lock:
-            _model_list_cache = {"models": models, "fetched_at": now}
+            _model_list_cache = {"models": models, "fetched_at": now, "warn": probe_warn}
+
+    return {
+        "models": models,
+        "current": get_current_model(),
+        "default": getattr(config, "LLM_MODEL", ""),
+        "error": None,
+        "warn": _model_list_cache.get("warn") if _model_list_cache else None,
+    }
 
     return {
         "models": models,
