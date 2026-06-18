@@ -19,6 +19,19 @@ REFRESH_TOKEN = os.environ.get("IFIND_REFRESH_TOKEN", "")
 # 默认从环境变量读，config_local.py（已 gitignore）的 * 导入会覆盖此默认值。
 KLINE_API_BASE_URL = os.environ.get("KLINE_API_BASE_URL", "")
 
+# ========== iFinD MCP 配置（自然语言查询用）==========
+# MCP server 的 JWT 鉴权 token（敏感，放 config_local.py 或环境变量，勿入库）。
+# 用于网页「AI 问答」Tab 调用 hexin-ifind-ds-stock-mcp / -index-mcp。
+IFIND_MCP_TOKEN = os.environ.get("IFIND_MCP_TOKEN", "")
+
+# ========== LLM 配置（AI 问答的"大脑"，预留）==========
+# 配置后启用全自动模式（LLM 自动选 MCP 工具 + 整理自然语言回答）；
+# 留空则降级为「手动选工具查询」模式（页面可用、不报错）。
+# 默认 DeepSeek（OpenAI 兼容接口，支持 function calling）；可改通义/智谱等兼容接口。
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com/v1")
+LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
+
 # 本地配置文件覆盖（config_local.py 已加入 .gitignore）
 try:
     from config_local import *

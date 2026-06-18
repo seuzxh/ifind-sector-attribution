@@ -9,11 +9,12 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
+import json
 import pandas as pd
 
 from database import Database
@@ -56,12 +57,21 @@ class PrescreenRequest(BaseModel):
 def root(board: str = None):
     """
     可视化看板入口，按 ?board 参数分发：
-    - 无参 / board=sector：原板块强度看板（index.html）
+    - 无参：Tab 容器（tabs.html），内嵌三个 iframe
+    - board=sector：原板块强度看板（index.html）
     - board=custom：自选分组看板（index.html，前端据 board 参数切换数据源）
-    注：不带 board 参数直接访问 / 时，返回 Tab 容器（tabs.html），内嵌两个 iframe。
+    - board=chat：AI 问答页面（chat.html）
     """
-    # Tab 容器模式：顶层访问 / （iframe 内部请求会带 ?board=sector/custom）
-    is_iframe_inner = board in ("sector", "custom")
+    # AI 问答页：独立模板，不与看板复用
+    if board == "chat":
+        chat_path = os.path.join(_TEMPLATE_DIR, "chat.html")
+        if os.path.exists(chat_path):
+            with open(chat_path, "r", encoding="utf-8") as f:
+                return f.read()
+        return "<h1>templates/chat.html 未找到</h1>"
+
+    # Tab 容器模式：顶层访问 / （iframe 内部请求会带 ?board=sector/custom/scan）
+    is_iframe_inner = board in ("sector", "custom", "scan")
     if not is_iframe_inner:
         tabs_path = os.path.join(_TEMPLATE_DIR, "tabs.html")
         if os.path.exists(tabs_path):
@@ -228,6 +238,37 @@ def get_custom_dashboard(
         snapshot_time=snapshot_time,
         top_n=top_n,
         custom_mode=True,
+    )
+
+
+@app.get("/api/custom/scan")
+def get_custom_scan(
+    trade_date: str = None,
+    snapshot_time: str = None,
+    min_change: float = 7.0,
+    max_change: float = 12.0,
+    min_amount: float = None,
+    min_body: float = None,
+):
+    """
+    强势股归类扫描：按筛选条件过滤自选分组股票池，把命中股票按分组归类统计。
+
+    复用 realtime_engine 的分时序列缓存（custom_group 键），仅做内存筛选归类。
+
+    :param trade_date: 交易日 YYYYMMDD，默认今天
+    :param snapshot_time: 截止时刻 HH:MM，None=最新（支持时间条切片）
+    :param min_change / max_change: 涨幅区间 %（含两端），默认 7~12
+    :param min_amount: 成交额下限（万元），None=不限
+    :param min_body: 实体涨幅(开盘至今)下限 %，None=不限
+    """
+    from realtime_engine import scan_custom_groups as _scan
+    return _scan(
+        trade_date=trade_date,
+        snapshot_time=snapshot_time,
+        min_change=min_change,
+        max_change=max_change,
+        min_amount=min_amount,
+        min_body=min_body,
     )
 
 
@@ -536,3 +577,119 @@ def get_available_dates():
             "SELECT DISTINCT calc_date FROM concept_strength ORDER BY calc_date DESC"
         ).fetchall()
     return {"dates": [r[0] for r in rows]}
+
+
+# ========== MCP 自然语言查询（AI 问答）==========
+class MCPCallRequest(BaseModel):
+    """直接调一个 MCP 工具（手动查询模式）。"""
+    server: str                         # "stock" 或 "index"
+    tool: str                           # 工具名，如 "get_stock_summary"
+    arguments: Dict[str, Any] = {}      # 工具入参，如 {"query": "..."}
+
+
+class ChatRequest(BaseModel):
+    """AI 问答请求（自然语言 → LLM 自动选工具）。"""
+    message: str                                    # 用户本轮问题
+    history: Optional[List[Dict[str, str]]] = None  # 历史对话
+
+
+@app.get("/api/mcp/tools")
+def mcp_list_tools(server: Optional[str] = None):
+    """
+    列出所有可用的 MCP 工具（供前端展示 + LLM 选工具）。
+    :param server: 可选，过滤单个 server（stock/index）
+    :return: {count, tools: [{name, description, server, inputSchema}]}
+    """
+    from mcp_proxy import MCPClient, is_configured, MCPError
+    if not is_configured():
+        return {"count": 0, "tools": [], "error": "未配置 IFIND_MCP_TOKEN（请在 config_local.py 设置）"}
+    try:
+        tools = MCPClient.instance().list_tools(server=server)
+        return {"count": len(tools), "tools": tools}
+    except MCPError as e:
+        return {"count": 0, "tools": [], "error": str(e)}
+
+
+@app.post("/api/mcp/call")
+def mcp_call_tool(req: MCPCallRequest):
+    """
+    直接调用一个 MCP 工具（不经 LLM，手动查询模式）。
+    :return: {ok, server, tool, result} 或 {ok:false, error}
+    """
+    from mcp_proxy import MCPClient, MCPError
+    try:
+        result = MCPClient.instance().call_tool(req.server, req.tool, req.arguments)
+        return {"ok": True, "server": req.server, "tool": req.tool, "result": result}
+    except MCPError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/chat")
+def chat(req: ChatRequest):
+    """
+    AI 问答（自然语言 → LLM 自动选 MCP 工具 → 整理回答），SSE 流式返回。
+    未配置 LLM（LLM_API_KEY 空）时降级：返回工具列表 + 引导手动查询。
+
+    SSE 事件流（data: 开头，每条 JSON 一行，前端按 type 渲染）：
+      {type:"mode", mode:"llm"|"fallback"}            模式标识（开头）
+      {type:"tools", tools:[...]}                      工具列表（降级模式）
+      {type:"delta", text:"..."}                       回答文本片段（LLM 模式，可多次）
+      {type:"error", text:"..."}                       异常
+      {type:"done"}                                    结束
+    """
+    from mcp_proxy import MCPClient, MCPError
+    from llm_agent import get_agent
+
+    message = (req.message or "").strip()
+    if not message:
+        return {"error": "消息不能为空"}
+
+    def _sse(obj: dict) -> str:
+        return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+    def event_stream():
+        agent = get_agent()
+        # ---- 降级模式：无 LLM，列工具引导手动查询 ----
+        if agent is None:
+            yield _sse({"type": "mode", "mode": "fallback"})
+            try:
+                tools = MCPClient.instance().list_tools()
+                yield _sse({"type": "tools", "tools": tools})
+                tip = (
+                    "⚠ 当前未配置 LLM（LLM_API_KEY 为空），无法自动理解自然语言。\n\n"
+                    "已为你加载 **%d 个可用工具**，请在右侧工具列表中：\n"
+                    "1. 选择一个工具\n"
+                    "2. 在输入框填写查询内容（如「同花顺最新估值水平」）\n"
+                    "3. 点「查询」即可。\n\n"
+                    "配置 LLM_API_KEY 后将启用全自动问答模式。"
+                ) % len(tools)
+                for chunk in _split_stream(tip):
+                    yield _sse({"type": "delta", "text": chunk})
+            except MCPError as e:
+                yield _sse({"type": "error", "text": f"MCP 工具加载失败：{e}"})
+            yield _sse({"type": "done"})
+            return
+
+        # ---- LLM 模式：自动选工具 + 流式回答 ----
+        yield _sse({"type": "mode", "mode": "llm"})
+        try:
+            tools = MCPClient.instance().list_tools()
+        except MCPError as e:
+            yield _sse({"type": "error", "text": f"MCP 工具加载失败：{e}"})
+            yield _sse({"type": "done"})
+            return
+        try:
+            for chunk in agent.chat(message, req.history, tools):
+                yield _sse({"type": "delta", "text": chunk})
+        except Exception as e:
+            yield _sse({"type": "error", "text": f"LLM 调用异常：{e}"})
+        yield _sse({"type": "done"})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+def _split_stream(text: str, size: int = 40):
+    """把文本按定长切片 yield，制造流式打字机观感（降级模式用）。"""
+    for i in range(0, len(text), size):
+        yield text[i:i + size]
+
