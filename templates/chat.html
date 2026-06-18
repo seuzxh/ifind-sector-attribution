@@ -23,6 +23,21 @@
   }
   .topbar .mode-tag.fallback { background: #fef3c7; color: #b45309; }
   .topbar .mode-tag.llm { background: #dcfce7; color: #166534; }
+  /* 模型选择器 */
+  .topbar .model-group { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .topbar .model-group label { font-size: 12px; color: #6b7280; font-weight: 600; }
+  .topbar select#modelSel {
+    font-size: 12px; font-family: inherit; padding: 5px 28px 5px 10px; border-radius: 8px;
+    border: 1px solid #d1d5db; background: #fff; color: #1f2937; cursor: pointer; outline: none;
+    max-width: 260px; transition: border-color .15s;
+  }
+  .topbar select#modelSel:hover { border-color: #93c5fd; }
+  .topbar select#modelSel:focus { border-color: #1e40af; }
+  .topbar .model-group .reset-btn {
+    font-size: 11px; padding: 5px 10px; border-radius: 8px; border: 1px solid #d1d5db;
+    background: #fff; color: #6b7280; cursor: pointer; transition: all .15s;
+  }
+  .topbar .model-group .reset-btn:hover { color: #1e40af; border-color: #93c5fd; }
 
   /* 主区：左侧对话 + 右侧工具栏 */
   .main { flex: 1; display: flex; overflow: hidden; }
@@ -101,6 +116,13 @@
 <div class="topbar">
   <h1>🤖 AI 问答</h1>
   <span class="mode-tag" id="modeTag">加载中…</span>
+  <div class="model-group">
+    <label>模型</label>
+    <select id="modelSel" title="切换 LLM 模型（coding plan 支持的对话模型）" onchange="onModelChange()">
+      <option value="">加载中…</option>
+    </select>
+    <button class="reset-btn" onclick="resetModel()" title="重置为默认模型">↺ 默认</button>
+  </div>
 </div>
 
 <div class="main">
@@ -130,11 +152,99 @@
 let allTools = [];          // 全部 MCP 工具 [{name, description, server, inputSchema}]
 let selectedTool = null;    // 手动选中查询的工具（null=自由对话模式）
 let sending = false;        // 是否正在发送/接收
+let chatModels = [];        // 可用对话模型 [{id, name, status}]
+let currentModel = '';      // 当前生效模型 id
 
 const messagesEl = document.getElementById('messages');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
 const modeTag = document.getElementById('modeTag');
+const modelSel = document.getElementById('modelSel');
+
+// ========== 模型选择器 ==========
+// 模型 id 较长（含日期），显示时用简短名（去掉 -YYMMDD 后缀）便于阅读
+function shortName(id) {
+  return (id || '').replace(/-\d{6}$/, '');
+}
+
+// 加载可用模型列表并渲染下拉；选中当前生效模型
+async function loadModels() {
+  try {
+    const r = await fetch('/api/llm/models');
+    const d = await r.json();
+    if (d.error) {
+      modelSel.innerHTML = `<option value="">（拉取失败）</option>`;
+      modelSel.title = d.error;
+      return;
+    }
+    chatModels = d.models || [];
+    currentModel = d.current || '';
+    const defaultModel = d.default || '';
+    // 选项：每个模型 id；当前生效的标记选中；默认模型加 (默认) 后缀
+    modelSel.innerHTML = chatModels.map(m => {
+      const isCur = m.id === currentModel;
+      const isDef = m.id === defaultModel;
+      const label = shortName(m.id) + (isDef ? '（默认）' : '');
+      return `<option value="${escapeHtml(m.id)}"${isCur ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+    // 兜底：若当前模型不在列表里（如配置用了简短别名），追加一条选中项
+    if (currentModel && !chatModels.some(m => m.id === currentModel)) {
+      const opt = document.createElement('option');
+      opt.value = currentModel; opt.textContent = shortName(currentModel) + '（当前）';
+      opt.selected = true;
+      modelSel.appendChild(opt);
+    }
+    modelSel.title = `${chatModels.length} 个可用模型`;
+  } catch (e) {
+    modelSel.innerHTML = `<option value="">（加载失败）</option>`;
+    modelSel.title = String(e);
+  }
+}
+
+// 切换模型（下拉 change 触发）
+async function onModelChange() {
+  const modelId = modelSel.value;
+  if (!modelId || modelId === currentModel) return;
+  try {
+    const r = await fetch('/api/llm/model', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ model: modelId })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      currentModel = d.current;
+      flashModeTag(`✓ 已切换到 ${shortName(currentModel)}`);
+    } else {
+      flashModeTag('⚠ 切换失败');
+    }
+  } catch (e) {
+    flashModeTag('⚠ 切换失败: ' + e.message);
+  }
+}
+
+// 重置为默认模型
+async function resetModel() {
+  try {
+    const r = await fetch('/api/llm/model/reset', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      currentModel = d.current;
+      await loadModels();  // 重新渲染（恢复默认选中态）
+      flashModeTag(`✓ 已重置为 ${shortName(currentModel)}`);
+    }
+  } catch (e) {
+    flashModeTag('⚠ 重置失败: ' + e.message);
+  }
+}
+
+// 顶栏短暂提示（2s 后恢复 modeTag 原文案由 SSE 覆盖）
+let _modeFlashTimer = null;
+function flashModeTag(text) {
+  modeTag.textContent = text;
+  modeTag.className = 'mode-tag';
+  if (_modeFlashTimer) clearTimeout(_modeFlashTimer);
+  _modeFlashTimer = setTimeout(() => { modeTag.textContent = 'AI 模式'; modeTag.className = 'mode-tag llm'; }, 2000);
+}
 
 // ========== 工具：最小 Markdown 渲染（表格/代码/加粗/换行） ==========
 function escapeHtml(s) {
@@ -293,7 +403,10 @@ async function send() {
           if (obj.mode === 'fallback') {
             modeTag.textContent = '手动模式'; modeTag.className = 'mode-tag fallback';
           } else {
-            modeTag.textContent = 'AI 模式'; modeTag.className = 'mode-tag llm';
+            // AI 模式：显示当前所用模型（后端在 mode 事件里带 model 字段）
+            currentModel = obj.model || currentModel;
+            modeTag.textContent = 'AI · ' + shortName(currentModel);
+            modeTag.className = 'mode-tag llm';
           }
         } else if (obj.type === 'delta') {
           accText += obj.text;
@@ -344,6 +457,7 @@ inputEl.addEventListener('keydown', e => {
 
 // ========== 启动 ==========
 loadTools();
+loadModels();
 </script>
 </body>
 </html>

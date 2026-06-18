@@ -15,6 +15,7 @@ LLM Agent 模块（网页「AI 问答」的大脑）
 """
 
 import json
+import threading
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -26,6 +27,19 @@ from mcp_proxy import MCPClient, MCPError
 
 # Agent 循环最多调用工具的次数（防死循环）
 MAX_TOOL_ROUNDS = 6
+
+# 模型列表缓存有效期（秒）：ARK /models 接口较慢，缓存避免每次切换都重拉
+_MODEL_LIST_CACHE_TTL = 600
+# 不适合「文本对话问答」的模型类型关键字（embedding/视觉/视频/图片生成/3D/翻译/角色扮演等）
+_NON_CHAT_KEYWORDS = (
+    "embedding", "vision", "seedance", "seedream", "seed3d",
+    "hitem3d", "hyper3d", "translation", "character",
+)
+
+# 运行时模型状态（进程内，可被前端切换；重启回 config 默认）
+_runtime_lock = threading.Lock()
+_runtime_model: Optional[str] = None   # 运行时当前模型 id；None=用 config 默认
+_model_list_cache: Optional[Dict[str, Any]] = None  # {"models":[...], "fetched_at": ts}
 
 
 class LLMAgent:
@@ -180,11 +194,97 @@ def is_enabled() -> bool:
 def get_agent() -> Optional[LLMAgent]:
     """
     获取已配置的 LLM Agent 实例；未配置返回 None（调用方走降级模式）。
-    后续若要支持多 provider，在此按 config.LLM_PROVIDER 分发即可。
+    模型选择优先级：运行时切换的模型 > config.LLM_MODEL 默认。
     """
     api_key = getattr(config, "LLM_API_KEY", "")
     if not api_key:
         return None
     base_url = getattr(config, "LLM_BASE_URL", "https://api.deepseek.com/v1")
-    model = getattr(config, "LLM_MODEL", "deepseek-chat")
+    model = get_current_model()
     return OpenAICompatibleAgent(api_key, base_url, model)
+
+
+def get_current_model() -> str:
+    """当前生效的模型 id（运行时切换的 > config 默认）。"""
+    with _runtime_lock:
+        if _runtime_model:
+            return _runtime_model
+    return getattr(config, "LLM_MODEL", "deepseek-chat")
+
+
+def set_current_model(model_id: str) -> None:
+    """运行时切换模型（进程内，重启回 config 默认）。"""
+    global _runtime_model
+    with _runtime_lock:
+        _runtime_model = model_id
+
+
+def reset_current_model() -> str:
+    """重置为 config 默认模型，返回默认模型 id。"""
+    global _runtime_model
+    with _runtime_lock:
+        _runtime_model = None
+    return getattr(config, "LLM_MODEL", "deepseek-chat")
+
+
+def list_chat_models(use_cache: bool = True) -> Dict[str, Any]:
+    """
+    从 ARK /models 拉取并过滤出适合「文本对话问答」的可用模型列表。
+    过滤规则：排除 Shutdown 状态，排除 embedding/vision/视频/图片/3D/翻译等非对话模型。
+
+    :return: {"models": [{"id","name","status"}], "current": "当前模型id", "default": "config默认", "error": None|str}
+    """
+    global _model_list_cache
+    now = time.time()
+    with _runtime_lock:
+        if (use_cache and _model_list_cache
+                and (now - _model_list_cache["fetched_at"]) < _MODEL_LIST_CACHE_TTL):
+            models = _model_list_cache["models"]
+        else:
+            models = None
+
+    if models is None:
+        api_key = getattr(config, "LLM_API_KEY", "")
+        base_url = getattr(config, "LLM_BASE_URL", "")
+        if not api_key or not base_url:
+            return {"models": [], "current": get_current_model(),
+                    "default": getattr(config, "LLM_MODEL", ""),
+                    "error": "未配置 LLM_API_KEY / LLM_BASE_URL"}
+        try:
+            r = requests.get(
+                base_url.rstrip("/") + "/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=20,
+            )
+            if r.status_code != 200:
+                return {"models": [], "current": get_current_model(),
+                        "default": getattr(config, "LLM_MODEL", ""),
+                        "error": f"ARK /models 返回 {r.status_code}: {r.text[:200]}"}
+            raw = r.json().get("data", [])
+        except (requests.RequestException, ValueError) as e:
+            return {"models": [], "current": get_current_model(),
+                    "default": getattr(config, "LLM_MODEL", ""),
+                    "error": f"拉取模型列表失败: {e}"}
+
+        models = []
+        for m in raw:
+            mid = (m.get("id") or "").strip()
+            mid_low = mid.lower()
+            if not mid:
+                continue
+            if m.get("status") == "Shutdown":
+                continue  # 已下线
+            if any(kw in mid_low for kw in _NON_CHAT_KEYWORDS):
+                continue  # 非文本对话类
+            models.append({"id": mid, "name": m.get("name") or mid, "status": m.get("status")})
+        models.sort(key=lambda x: x["id"])
+        with _runtime_lock:
+            _model_list_cache = {"models": models, "fetched_at": now}
+
+    return {
+        "models": models,
+        "current": get_current_model(),
+        "default": getattr(config, "LLM_MODEL", ""),
+        "error": None,
+    }
+

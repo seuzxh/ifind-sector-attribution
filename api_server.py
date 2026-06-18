@@ -593,6 +593,49 @@ class ChatRequest(BaseModel):
     history: Optional[List[Dict[str, str]]] = None  # 历史对话
 
 
+class LLMModelRequest(BaseModel):
+    """切换当前 LLM 模型（运行时，进程内）。"""
+    model: str   # 模型 id，如 "doubao-seed-2-0-pro-260215"
+
+
+# ========== LLM 模型管理（前端模型选择器用）==========
+@app.get("/api/llm/models")
+def llm_list_models():
+    """
+    列出当前 coding plan 支持的、适合文本对话的可用模型。
+    从 ARK /models 动态拉取（带 10 分钟缓存），过滤掉 embedding/vision/视频/图片等非对话模型。
+    :return: {models:[{id,name,status}], current, default, error}
+    """
+    from llm_agent import list_chat_models
+    return list_chat_models()
+
+
+@app.get("/api/llm/model")
+def llm_get_current_model():
+    """获取当前生效的 LLM 模型 id。"""
+    from llm_agent import get_current_model
+    return {"current": get_current_model()}
+
+
+@app.post("/api/llm/model")
+def llm_set_model(req: LLMModelRequest):
+    """
+    运行时切换 LLM 模型（进程内，重启回 config 默认）。
+    :return: {ok, current, previous}
+    """
+    from llm_agent import get_current_model, set_current_model
+    previous = get_current_model()
+    set_current_model(req.model)
+    return {"ok": True, "current": req.model, "previous": previous}
+
+
+@app.post("/api/llm/model/reset")
+def llm_reset_model():
+    """重置为 config 默认模型。"""
+    from llm_agent import reset_current_model
+    return {"ok": True, "current": reset_current_model()}
+
+
 @app.get("/api/mcp/tools")
 def mcp_list_tools(server: Optional[str] = None):
     """
@@ -638,7 +681,7 @@ def chat(req: ChatRequest):
       {type:"done"}                                    结束
     """
     from mcp_proxy import MCPClient, MCPError
-    from llm_agent import get_agent
+    from llm_agent import get_agent, get_current_model
 
     message = (req.message or "").strip()
     if not message:
@@ -671,7 +714,7 @@ def chat(req: ChatRequest):
             return
 
         # ---- LLM 模式：自动选工具 + 流式回答 ----
-        yield _sse({"type": "mode", "mode": "llm"})
+        yield _sse({"type": "mode", "mode": "llm", "model": get_current_model()})
         try:
             tools = MCPClient.instance().list_tools()
         except MCPError as e:
