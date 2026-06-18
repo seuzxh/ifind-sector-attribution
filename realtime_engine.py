@@ -205,6 +205,7 @@ class RealtimeEngine:
                 speed = compute_speed(last_prices)
                 speed_series = compute_speed_series(last_prices)
                 acceleration = compute_acceleration(speed_series)
+                amount = float(sliced[-1].get("turnover", 0) or 0)  # 累计成交额（元）
             else:
                 # —— 集合竞价：仅用 pre_market 末点 ref_price 算涨跌幅 ——
                 pm = rec.get("pre_market") or []
@@ -217,6 +218,7 @@ class RealtimeEngine:
                 body = 0.0
                 speed = 0.0
                 acceleration = 0.0
+                amount = 0.0  # 集合竞价阶段不计成交额
 
             rows.append({
                 "code": code,
@@ -224,6 +226,7 @@ class RealtimeEngine:
                 "speed": float(speed),
                 "body": float(body),
                 "acceleration": float(acceleration),
+                "amount": float(amount),
             })
 
         return pd.DataFrame(rows)
@@ -411,6 +414,124 @@ class RealtimeEngine:
             )),
         }
 
+    # ========== 强势股归类扫描 ==========
+    def scan_custom_groups(
+        self,
+        trade_date: str = None,
+        snapshot_time: str = None,
+        min_change: float = 7.0,
+        max_change: float = 12.0,
+        min_amount: float = None,
+        min_body: float = None,
+    ) -> Dict:
+        """
+        按筛选条件扫描自选分组股票池，把命中股票按分组归类统计。
+
+        :param min_change / max_change: 涨幅区间 %（含两端），必填维度
+        :param min_amount: 成交额下限（万元），None=不限
+        :param min_body: 实体涨幅(开盘至今)下限 %，None=不限
+        :return: {trade_date, snapshot_time, available_times, pool_size, hit_total,
+                  group_hit_count, groups:[{group_id, group_name, hit_count, member_total,
+                                            coverage, hit_avg_change, hits:[...]}, ...]}
+        """
+        self._ensure_maps()
+
+        today_str = datetime.now().strftime("%Y%m%d")
+        if trade_date is None:
+            trade_date = today_str
+        trade_date = trade_date.replace("-", "")
+        is_today = (trade_date == today_str)
+
+        members_map = self.db.get_custom_members_map()
+        if not members_map:
+            return {"error": "自选股分组为空，请先 import-groups 导入", "trade_date": trade_date}
+        group_names = self.db.get_custom_group_names()
+        codes = self.db.get_custom_all_stock_codes()
+        mode_key = "custom_group"
+
+        # 1. 复用分时序列缓存（与 compute_dashboard 同一缓存）
+        cache_rec = self._ensure_series(trade_date, codes, mode_key, is_today)
+        if cache_rec is None:
+            return {"error": "无分时数据（可能非交易时段或 API 不可达）", "trade_date": trade_date}
+
+        available_times = cache_rec["available_times"]
+        latest_time = cache_rec["latest_time"]
+        if snapshot_time and snapshot_time != "latest":
+            if available_times and snapshot_time < available_times[0]:
+                snapshot_time = None
+        else:
+            snapshot_time = None
+
+        # 2. 算全部股票指标（含 amount）
+        rt_df = self._build_indicator_df(cache_rec["series"], snapshot_time)
+        if rt_df.empty:
+            return {"error": "指标计算为空", "trade_date": trade_date}
+
+        # 3. 筛选命中股票
+        amt_col = rt_df["amount"] if "amount" in rt_df.columns else 0.0
+        min_amount_yuan = (min_amount * 10000) if min_amount is not None else None
+        mask = (
+            (rt_df["change_ratio"] >= min_change)
+            & (rt_df["change_ratio"] <= max_change)
+        )
+        if min_amount_yuan is not None:
+            mask = mask & (amt_col >= min_amount_yuan)
+        if min_body is not None:
+            mask = mask & (rt_df["body"] >= min_body)
+        hit_df = rt_df[mask].copy()
+        hit_codes = set(hit_df["code"])
+
+        # 指标查询表（命中股的明细）
+        hit_lookup = hit_df.set_index("code").to_dict("index")
+
+        # 4. 按分组归类（一股属多组，各组各计）
+        stock_name_map = self._stock_names or {}
+        groups_out = []
+        for gid, g_codes in members_map.items():
+            g_hit_codes = [c for c in g_codes if c in hit_codes]
+            if not g_hit_codes:
+                continue  # 该分组无命中，不展示（或后续可加"显示空分组"开关）
+            hits = []
+            for c in g_hit_codes:
+                m = hit_lookup[c]
+                hits.append({
+                    "code": c,
+                    "name": stock_name_map.get(c, ""),
+                    "change_ratio": round(float(m["change_ratio"]), 2),
+                    "speed": round(float(m["speed"]), 2),
+                    "body": round(float(m["body"]), 2),
+                    "acceleration": round(float(m["acceleration"]), 2),
+                    "amount": round(float(m.get("amount", 0)), 0),  # 元
+                    "score": round(float(m["change_ratio"]), 4),     # 扫描场景按涨幅排
+                })
+            # 命中股按涨幅降序
+            hits.sort(key=lambda x: x["change_ratio"], reverse=True)
+            avg_chg = sum(h["change_ratio"] for h in hits) / len(hits)
+            groups_out.append({
+                "group_id": gid,
+                "group_name": group_names.get(gid, gid),
+                "hit_count": len(g_hit_codes),
+                "member_total": len(g_codes),
+                "coverage": round(len(g_hit_codes) / len(g_codes), 4) if g_codes else 0,
+                "hit_avg_change": round(avg_chg, 2),
+                "hits": hits,
+            })
+
+        # 按命中数降序，并列时按平均涨幅降序
+        groups_out.sort(key=lambda x: (x["hit_count"], x["hit_avg_change"]), reverse=True)
+
+        return {
+            "trade_date": trade_date,
+            "snapshot_time": snapshot_time or latest_time,
+            "latest_time": latest_time,
+            "available_times": available_times,
+            "is_today": is_today,
+            "pool_size": int(len(rt_df)),
+            "hit_total": int(len(hit_codes)),
+            "group_hit_count": len(groups_out),
+            "groups": groups_out,
+        }
+
 
 # ========== 全局入口（带缓存） ==========
 _engine_instance = None
@@ -435,6 +556,28 @@ def get_realtime_dashboard(
         watchlist_mode=watchlist_mode,
         watchlist_date=watchlist_date,
         custom_mode=custom_mode,
+    )
+
+
+def scan_custom_groups(
+    trade_date: str = None,
+    snapshot_time: str = None,
+    min_change: float = 7.0,
+    max_change: float = 12.0,
+    min_amount: float = None,
+    min_body: float = None,
+) -> Dict:
+    """强势股归类扫描（全局入口，复用 engine 单例）。"""
+    global _engine_instance
+    if _engine_instance is None:
+        _engine_instance = RealtimeEngine()
+    return _engine_instance.scan_custom_groups(
+        trade_date=trade_date,
+        snapshot_time=snapshot_time,
+        min_change=min_change,
+        max_change=max_change,
+        min_amount=min_amount,
+        min_body=min_body,
     )
 
 

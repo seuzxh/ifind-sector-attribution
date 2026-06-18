@@ -56,11 +56,15 @@
 <div class="tabbar">
   <div class="tab active" data-board="sector" onclick="switchTab('sector')">📊 板块强度监控</div>
   <div class="tab" data-board="custom" onclick="switchTab('custom')">⭐ 自选分组监控</div>
+  <div class="tab" data-board="scan" onclick="switchTab('scan')">🎯 强势股归类</div>
+  <div class="tab" data-board="chat" onclick="switchTab('chat')">🤖 AI 问答</div>
 </div>
 
 <div class="frames">
   <iframe id="frame-sector" src="/?board=sector" class="active"></iframe>
   <iframe id="frame-custom" src="/?board=custom"></iframe>
+  <iframe id="frame-scan" src="/?board=scan"></iframe>
+  <iframe id="frame-chat" src="/?board=chat"></iframe>
 </div>
 
 <div id="toast"></div>
@@ -74,8 +78,8 @@ function switchTab(board) {
   document.querySelectorAll('.frames iframe').forEach(f => {
     f.classList.toggle('active', f.id === 'frame-' + board);
   });
-  // 切到自选分组 Tab：检查 JSON 是否变更，变了就自动重导
-  if (board === 'custom') checkAndReload();
+  // 切到自选分组/强势归类 Tab：检查 JSON 是否变更，变了就自动重导（两者共用 custom_group 数据）
+  if (board === 'custom' || board === 'scan') checkAndReload();
 }
 
 // 检查自选分组 JSON 是否需要重导（mtime 变了就全量重导）

@@ -199,6 +199,39 @@
     background: #f59e0b; color: #fff; margin-left: 3px; font-weight: 600;
   }
 
+  /* ===== 强势股归类扫描 ===== */
+  .scan-filter { margin-bottom: 14px; }
+  .scan-filter h2 { font-size: 14px; margin-bottom: 10px; color: #111827; }
+  .scan-filter-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 13px; }
+  .scan-filter-row label { display: flex; align-items: center; gap: 4px; color: #374151; }
+  .scan-filter-row input[type=number] { padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+  .scan-hint { font-size: 12px; color: #9ca3af; margin-left: auto; }
+  /* 手风琴分组行 */
+  .scan-group { border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  .scan-group-head {
+    display: flex; align-items: center; gap: 12px; padding: 10px 14px; cursor: pointer;
+    background: #f9fafb; transition: background .12s; font-size: 13px;
+  }
+  .scan-group-head:hover { background: #f3f4f6; }
+  .scan-group-head .arrow { color: #9ca3af; width: 12px; transition: transform .15s; }
+  .scan-group.open .scan-group-head .arrow { transform: rotate(90deg); }
+  .scan-group-head .gname { font-weight: 600; color: #111827; min-width: 120px; }
+  .scan-group-head .gstat { color: #6b7280; }
+  .scan-group-head .gstat b { color: #dc2626; font-size: 14px; }
+  .scan-group-head .cov-bar {
+    display: inline-block; height: 6px; background: #fee2e2; border-radius: 3px; min-width: 40px;
+    vertical-align: middle; margin: 0 6px; position: relative; overflow: hidden;
+  }
+  .scan-group-head .cov-bar i { display: block; height: 100%; background: #ef4444; }
+  .scan-group-body { display: none; padding: 0 14px 10px; }
+  .scan-group.open .scan-group-body { display: block; }
+  .scan-group-body table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .scan-group-body th, .scan-group-body td { padding: 6px 8px; text-align: right; border-bottom: 1px solid #f3f4f6; white-space: nowrap; }
+  .scan-group-body th { color: #9ca3af; font-weight: 500; background: #fafafa; }
+  .scan-group-body th.left, .scan-group-body td.left { text-align: left; }
+  .scan-group-body td.up { color: #ef4444; }
+  .scan-group-body td.down { color: #10b981; }
+
   .empty-msg { color: #9ca3af; text-align: center; padding: 40px; font-size: 14px; }
 
   /* ===== 弹层 ===== */
@@ -320,6 +353,25 @@
   </div>
 </div>
 
+<!-- 强势股归类（scan 看板专用） -->
+<div class="members-section" id="scanSection" style="display:none;">
+  <!-- 筛选条件表单 -->
+  <div class="scan-filter">
+    <h2>🔍 筛选条件</h2>
+    <div class="scan-filter-row">
+      <label>涨幅 <input type="number" id="fMinChange" value="7" step="0.1" style="width:60px">% ~
+        <input type="number" id="fMaxChange" value="12" step="0.1" style="width:60px">%</label>
+      <label>成交额 ≥ <input type="number" id="fMinAmount" value="" placeholder="不限" step="100" style="width:90px">万</label>
+      <label>实体涨幅 ≥ <input type="number" id="fMinBody" value="" placeholder="不限" step="0.1" style="width:60px">%</label>
+      <button class="primary" onclick="applyScanFilter()">应用筛选</button>
+      <button onclick="resetScanFilter()">重置</button>
+      <span class="scan-hint" id="scanHint"></span>
+    </div>
+  </div>
+  <!-- 命中统计结果（手风琴） -->
+  <div id="scanResult"><div class="empty-msg">加载中...</div></div>
+</div>
+
 <!-- 筛选结果弹层 -->
 <div class="modal-mask" id="prescreenModal">
   <div class="modal">
@@ -342,11 +394,19 @@ let availableTimes = [];      // 当日可用时间点（分时分钟刻度）
 let autoFollow = true;        // 是否自动跟随最新（拖动滑块时暂停）
 let refreshSeq = 0;           // refresh 请求序号：仅最新一次的响应才允许渲染，防止播放/轮询乱序覆盖
 
-// 看板类型：从 URL ?board= 参数识别（custom=自选分组看板，其他=板块看板）
-const BOARD = new URLSearchParams(location.search).get('board') === 'custom' ? 'custom' : 'sector';
+// 看板类型：从 URL ?board= 参数识别（custom=自选分组，scan=强势归类，其他/默认=板块）
+const BOARD = (() => {
+  const b = new URLSearchParams(location.search).get('board');
+  return (b === 'custom' || b === 'scan') ? b : 'sector';
+})();
 const isCustomBoard = (BOARD === 'custom');
-const BOARD_TITLE = isCustomBoard ? '⭐ 自选分组监控' : '📊 板块强度监控';
-const BOARD_API = isCustomBoard ? '/api/custom/dashboard' : '/api/realtime/dashboard';
+const isScanBoard = (BOARD === 'scan');
+const BOARD_TITLE = isScanBoard ? '🎯 强势股归类'
+                   : isCustomBoard ? '⭐ 自选分组监控'
+                   : '📊 板块强度监控';
+const BOARD_API = isScanBoard ? '/api/custom/scan'
+                : isCustomBoard ? '/api/custom/dashboard'
+                : '/api/realtime/dashboard';
 
 // ========== 表头排序状态（跨 3s 刷新保持）==========
 // rankSort: { top: {key,order}|null, bottom: {key,order}|null }，order: '↓'|'↑'，null=默认（后端顺序）
@@ -381,13 +441,18 @@ function onModeChange() {
   const isWL = mode === 'watchlist';
   document.getElementById('timeBar').classList.toggle('show', isRT);
   document.getElementById('rtAutoLabel').style.display = isRT ? '' : 'none';
-  document.getElementById('modeHint').textContent = isRT
+  document.getElementById('modeHint').textContent = isScanBoard
+    ? '（强势股归类：按筛选条件扫描，按分组归类统计命中）'
+    : isRT
     ? '（实时分时：涨幅/涨速/开盘至今涨幅/涨停 加权 · 涨速加速仅展示）'
     : '（历史：按当日涨幅，点击表头排序）';
 
+  // 显隐：watchlist 模式独占；scan 看板独占 scanSection；其余显示 panels+membersSection
   document.getElementById('watchlistSection').style.display = isWL ? '' : 'none';
-  document.getElementById('panels').style.display = isWL ? 'none' : 'grid';
-  document.getElementById('membersSection').style.display = isWL ? 'none' : '';
+  document.getElementById('scanSection').style.display = isScanBoard ? '' : 'none';
+  const showPanels = !isWL && !isScanBoard;
+  document.getElementById('panels').style.display = showPanels ? 'grid' : 'none';
+  document.getElementById('membersSection').style.display = showPanels ? '' : 'none';
 
   stopPolling();
   stopPlay();              // 切模式 → 停止播放
@@ -659,9 +724,13 @@ async function refresh() {
   let payload;
   if (mode === 'realtime') {
     const date = getDateVal();
-    // 自选看板走 /api/custom/dashboard（无需 watchlist_mode）；板块看板走 /api/realtime/dashboard
     const params = new URLSearchParams();
-    if (!isCustomBoard) params.set('watchlist_mode', 'true');
+    // scan 看板带筛选条件；sector 看板带 watchlist_mode；custom 看板不带额外参数
+    if (isScanBoard) {
+      applyScanParams(params);
+    } else if (!isCustomBoard) {
+      params.set('watchlist_mode', 'true');
+    }
     if (date) params.set('trade_date', date);
     // 非自动跟随时，传当前滑块时刻；自动跟随时不传（后端取最新）
     if (!autoFollow) {
@@ -714,13 +783,18 @@ async function refresh() {
     }
   }
 
-  renderStats(payload);
-  renderRankTables(payload);
-  renderMembers();
+  // 渲染分支：scan 走独立路径，其他走通用板块渲染
+  if (isScanBoard) {
+    renderScan(payload);
+  } else {
+    renderStats(payload);
+    renderRankTables(payload);
+    renderMembers();
+  }
   if (mode === 'realtime') {
     const ts = payload.snapshot_time || payload.latest_time || '';
     const live = payload.is_today ? '实时' : '历史回看';
-    setStatus(`${live} · ${ts} · watchlist · 自动${POLL_INTERVAL/1000}s`, 'live');
+    setStatus(`${live} · ${ts} · ${isScanBoard ? '扫描' : 'watchlist'} · 自动${POLL_INTERVAL/1000}s`, 'live');
   } else {
     setStatus(`历史 · ${payload.date}`, 'live');
   }
@@ -879,6 +953,101 @@ function renderMembers() {
     const saved = cardSort[card.dataset.code];
     if (saved) applyCardSort(card.querySelector('table'), saved.key, saved.order, false);
   });
+}
+
+// ========== 强势股归类扫描（board=scan）==========
+let scanExpanded = new Set();   // 当前展开的分组 group_id（3s 刷新后保持展开）
+let scanFilterState = { min_change: 7, max_change: 12, min_amount: null, min_body: null };
+
+// 把筛选条件写进 URLSearchParams（供 refresh 拼到 API URL）
+function applyScanParams(params) {
+  params.set('min_change', scanFilterState.min_change);
+  params.set('max_change', scanFilterState.max_change);
+  if (scanFilterState.min_amount !== null) params.set('min_amount', scanFilterState.min_amount);
+  if (scanFilterState.min_body !== null) params.set('min_body', scanFilterState.min_body);
+}
+
+// 点"应用筛选"：从输入框读值，触发 refresh
+function applyScanFilter() {
+  scanFilterState.min_change = parseFloat(document.getElementById('fMinChange').value) || 0;
+  scanFilterState.max_change = parseFloat(document.getElementById('fMaxChange').value) || 100;
+  const a = document.getElementById('fMinAmount').value;
+  scanFilterState.min_amount = a === '' ? null : (parseFloat(a) || null);
+  const b = document.getElementById('fMinBody').value;
+  scanFilterState.min_body = b === '' ? null : (parseFloat(b) || null);
+  refresh();
+}
+function resetScanFilter() {
+  document.getElementById('fMinChange').value = 7;
+  document.getElementById('fMaxChange').value = 12;
+  document.getElementById('fMinAmount').value = '';
+  document.getElementById('fMinBody').value = '';
+  scanFilterState = { min_change: 7, max_change: 12, min_amount: null, min_body: null };
+  refresh();
+}
+
+function fmtAmount(yuan) {
+  // 元 → 亿/万 显示
+  if (yuan >= 1e8) return (yuan / 1e8).toFixed(2) + '亿';
+  if (yuan >= 1e4) return (yuan / 1e4).toFixed(0) + '万';
+  return Math.round(yuan) + '';
+}
+
+function renderScan(payload) {
+  const el = document.getElementById('scanResult');
+  if (!payload) { el.innerHTML = '<div class="empty-msg">无数据</div>'; return; }
+  const groups = payload.groups || [];
+  // 顶部统计 hint
+  const hint = document.getElementById('scanHint');
+  if (hint) {
+    hint.textContent = `池子 ${payload.pool_size} 只 · 命中 ${payload.hit_total} 只 · ${payload.group_hit_count} 个分组有命中`;
+  }
+  if (groups.length === 0) {
+    el.innerHTML = '<div class="empty-msg">当前条件下无命中股票，可放宽筛选条件</div>';
+    return;
+  }
+  el.innerHTML = groups.map((g, i) => {
+    const expanded = scanExpanded.has(g.group_id);
+    const covPct = (g.coverage * 100).toFixed(1);
+    const hitsRows = (g.hits || []).map(h => {
+      const chgCls = h.change_ratio > 0 ? 'up' : (h.change_ratio < 0 ? 'down' : '');
+      return `<tr>
+        <td class="left">${h.code}</td>
+        <td class="left">${h.name||''}</td>
+        <td class="${chgCls}">${fmt(h.change_ratio)}%</td>
+        <td>${h.speed ? fmt(h.speed)+'%' : '-'}</td>
+        <td>${h.body != null ? fmt(h.body)+'%' : '-'}</td>
+        <td>${fmtAmount(h.amount)}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="scan-group ${expanded?'open':''}" data-gid="${g.group_id}">
+      <div class="scan-group-head" onclick="toggleScanGroup('${g.group_id}')">
+        <span class="arrow">▶</span>
+        <span class="gname">#${i+1} ${g.group_name}</span>
+        <span class="gstat">命中 <b>${g.hit_count}</b>/${g.member_total}
+          <span class="cov-bar" title="覆盖率 ${covPct}%"><i style="width:${Math.min(100,g.coverage*100*2)}%"></i></span>
+          ${covPct}%
+        </span>
+        <span class="gstat">均涨 <b style="color:#ef4444;">${fmt(g.hit_avg_change)}%</b></span>
+      </div>
+      <div class="scan-group-body">
+        <table>
+          <thead><tr>
+            <th class="left">代码</th><th class="left">名称</th>
+            <th>涨幅</th><th>涨速</th><th>开盘至今</th><th>成交额</th>
+          </tr></thead>
+          <tbody>${hitsRows || '<tr><td colspan="6" style="text-align:center;color:#9ca3af;">无</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleScanGroup(gid) {
+  if (scanExpanded.has(gid)) scanExpanded.delete(gid);
+  else scanExpanded.add(gid);
+  const node = document.querySelector(`.scan-group[data-gid="${gid}"]`);
+  if (node) node.classList.toggle('open');
 }
 
 // 涨速加速：>0 红色▲加速，<0 绿色▼减缓，≈0 灰色
