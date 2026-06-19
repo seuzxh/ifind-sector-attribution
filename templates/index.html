@@ -1034,6 +1034,16 @@ function resetScanFilter() {
 // 自定义条件持久化（localStorage，单用户监控场景够用；key 跨标签页共享）
 // 结构：[{label: "短标签", query: "选股条件文本"}]，兼容旧格式（纯字符串数组）
 const CUSTOM_QUERY_KEY = 'market_scan_custom_queries';
+// 预置条件的标签覆盖：{0: "我的标签1", 2: "..."}，未覆盖则显示原文
+const PRESET_LABELS_KEY = 'market_scan_preset_labels';
+
+function loadPresetLabels() {
+  try { return JSON.parse(localStorage.getItem(PRESET_LABELS_KEY) || '{}'); }
+  catch(e) { return {}; }
+}
+function savePresetLabels(obj) {
+  localStorage.setItem(PRESET_LABELS_KEY, JSON.stringify(obj));
+}
 
 function loadCustomQueries() {
   try {
@@ -1050,10 +1060,12 @@ function saveCustomQueries(arr) {
 function rebuildPresetOptions(selectedValue) {
   const sel = document.getElementById('marketPreset');
   const customs = loadCustomQueries();
+  const presetLabels = loadPresetLabels();
   let html = '<option value="">— 选择条件 —</option>';
   html += '<optgroup label="预置">';
   MARKET_PRESETS.forEach((q, i) => {
-    html += `<option value="${i}">${q}</option>`;
+    const disp = presetLabels[i] || q;   // 有覆盖标签用覆盖，否则原文
+    html += `<option value="${i}">${disp}</option>`;
   });
   html += '</optgroup>';
   if (customs.length) {
@@ -1099,22 +1111,41 @@ function saveCustomQuery() {
   setStatus(`✅ 已保存「${label}」（共 ${customs.length} 个自定义）`, 'live');
 }
 
-// 重命名下拉里选中的自定义条件（改 label，query 不变）
+// 重命名下拉里选中的条件（预置/自定义均可，只改显示标签，不改选股条件）
 function renameCustomQuery() {
   const sel = document.getElementById('marketPreset');
   const v = sel.value;
-  if (!v.startsWith('custom:')) { setStatus('只能重命名自定义条件', 'warn'); return; }
-  const idx = parseInt(v.slice(7));
-  const customs = loadCustomQueries();
-  if (isNaN(idx) || idx >= customs.length) return;
-  const cur = customs[idx];
-  const newLabel = prompt('输入新标签名（仅用于下拉显示，不改选股条件）：', cur.label || '');
+  if (!v) { setStatus('请先在下拉里选中一个条件', 'warn'); return; }
+  let curLabel = '';
+  if (v.startsWith('custom:')) {
+    // 自定义条件
+    const idx = parseInt(v.slice(7));
+    const customs = loadCustomQueries();
+    if (isNaN(idx) || idx >= customs.length) return;
+    curLabel = customs[idx].label || customs[idx].query.slice(0, 20);
+  } else {
+    // 预置条件
+    const idx = parseInt(v);
+    if (isNaN(idx) || !MARKET_PRESETS[idx]) return;
+    const presetLabels = loadPresetLabels();
+    curLabel = presetLabels[idx] || MARKET_PRESETS[idx];
+  }
+  const newLabel = prompt('输入新标签名（仅用于下拉显示，不改选股条件）：', curLabel);
   if (newLabel === null) return;  // 用户取消
   const trimmed = newLabel.trim();
   if (!trimmed) { setStatus('标签名不能为空', 'warn'); return; }
-  customs[idx].label = trimmed;
-  saveCustomQueries(customs);
-  rebuildPresetOptions('custom:' + idx);
+  if (v.startsWith('custom:')) {
+    const idx = parseInt(v.slice(7));
+    const customs = loadCustomQueries();
+    customs[idx].label = trimmed;
+    saveCustomQueries(customs);
+  } else {
+    const idx = parseInt(v);
+    const presetLabels = loadPresetLabels();
+    presetLabels[idx] = trimmed;
+    savePresetLabels(presetLabels);
+  }
+  rebuildPresetOptions(v);
   setStatus(`✅ 已重命名为「${trimmed}」`, 'live');
 }
 
