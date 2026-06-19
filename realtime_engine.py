@@ -533,6 +533,139 @@ class RealtimeEngine:
         }
 
 
+    # ========== 全市场强势归类（MCP 选股 + 884 概念归类，不碰分时） ==========
+    def scan_market_groups(self, query: str) -> Dict:
+        """
+        全市场强势股概念板块归类：用 iFinD MCP search_stocks 自然语言选股，
+        把选出的股票按 884 概念板块归类统计。
+
+        与 scan_custom_groups 的差异：
+          - 命中股来自 MCP search_stocks（收盘数据），非分时筛选
+          - 归类维度是 884 概念板块（self._members_map），非自选分组
+          - 不依赖分时序列缓存，纯收盘 → 更轻量
+          - hits 指标只有 change_ratio（search_stocks 返回的涨跌幅）
+
+        :param query: 自然语言选股条件（如 "涨幅大于7%并且小于12.1%；未涨停；非ST"）
+        :return: {query, pool_size, hit_total, group_hit_count, groups:[...]}（与 scan 同 schema）
+        """
+        from mcp_proxy import MCPClient
+
+        self._ensure_maps()
+        if not query or not query.strip():
+            return {"error": "请输入选股条件（query）"}
+
+        # 1. 调 MCP search_stocks 选股（~4.5s，返回 markdown 表格）
+        try:
+            mcp = MCPClient.instance()
+            md_raw = mcp.call_tool("stock", "search_stocks", {"query": query})
+        except Exception as e:
+            return {"error": f"MCP 选股失败：{e}", "query": query}
+        if isinstance(md_raw, dict) and md_raw.get("error"):
+            return {"error": f"MCP 选股失败：{md_raw.get('error')}", "query": query}
+
+        # 2. 解析 markdown → {code: {name, change_ratio}}
+        hit_lookup = _parse_search_stocks_md(str(md_raw))
+        if not hit_lookup:
+            return {"error": "选股结果为空或解析失败（检查 query 表达）", "query": query,
+                    "raw_preview": str(md_raw)[:300]}
+        hit_codes = set(hit_lookup.keys())
+
+        # 3. 按 884 概念板块归类（一股属多板块，各板块各计）
+        members_map = self._members_map       # {884xxx.TI: [stock_codes]}
+        group_names = self._concept_names      # {884xxx.TI: concept_name}
+        groups_out = []
+        for gid, g_codes in members_map.items():
+            g_hit_codes = [c for c in g_codes if c in hit_codes]
+            if not g_hit_codes:
+                continue
+            hits = []
+            for c in g_hit_codes:
+                m = hit_lookup[c]
+                hits.append({
+                    "code": c,
+                    "name": m.get("name", ""),
+                    "change_ratio": round(float(m["change_ratio"]), 2),
+                })
+            hits.sort(key=lambda x: x["change_ratio"], reverse=True)
+            avg_chg = sum(h["change_ratio"] for h in hits) / len(hits)
+            groups_out.append({
+                "group_id": gid,
+                "group_name": group_names.get(gid, gid),
+                "hit_count": len(g_hit_codes),
+                "member_total": len(g_codes),
+                "coverage": round(len(g_hit_codes) / len(g_codes), 4) if g_codes else 0,
+                "hit_avg_change": round(avg_chg, 2),
+                "hits": hits,
+            })
+
+        groups_out.sort(key=lambda x: (x["hit_count"], x["hit_avg_change"]), reverse=True)
+
+        return {
+            "query": query,
+            "pool_size": int(len(hit_codes)),
+            "hit_total": int(len(hit_codes)),
+            "group_hit_count": len(groups_out),
+            "groups": groups_out,
+        }
+
+
+def _parse_search_stocks_md(md: str) -> Dict[str, dict]:
+    """
+    解析 MCP search_stocks 返回的 markdown 表格，提取 {股票代码: {name, change_ratio}}。
+
+    表格形如：
+        |股票代码|股票简称|涨跌幅:前复权[YYYYMMDD]|收盘价...|...
+        |---|---|---|...
+        |000955.SZ|欣龙控股|7.34341253|4.97|...
+
+    列顺序可能随 query 变化，故先解析表头定位"涨跌幅"列索引，再按索引取值。
+    :return: {code: {"name": str, "change_ratio": float}}
+    """
+    import json
+    # md 可能是 JSON 字符串（含 data.result），也可能是纯 markdown
+    try:
+        j = json.loads(md)
+        if isinstance(j, dict):
+            md = j.get("data", {}).get("result", "") or md
+    except (ValueError, TypeError):
+        pass
+
+    lines = [ln for ln in md.split("\n") if ln.strip().startswith("|")]
+    if len(lines) < 2:
+        return {}
+
+    # 表头：找"股票代码""股票简称""涨跌幅"的列索引
+    header = [c.strip() for c in lines[0].strip("|").split("|")]
+    idx_code = idx_name = idx_chg = -1
+    for i, h in enumerate(header):
+        if "股票代码" in h and idx_code < 0:
+            idx_code = i
+        elif "股票简称" in h and idx_name < 0:
+            idx_name = i
+        elif "涨跌幅" in h and idx_chg < 0:
+            idx_chg = i
+    if idx_code < 0:
+        return {}
+
+    result = {}
+    for ln in lines:
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        if len(cells) <= max(idx_code, idx_name, idx_chg):
+            continue
+        code = cells[idx_code]
+        if not config.is_a_share_code(code):
+            continue  # 只认 A 股代码
+        name = cells[idx_name] if idx_name >= 0 else ""
+        chg = 0.0
+        if idx_chg >= 0:
+            try:
+                chg = float(cells[idx_chg])
+            except (ValueError, IndexError):
+                chg = 0.0
+        result[code] = {"name": name, "change_ratio": chg}
+    return result
+
+
 # ========== 全局入口（带缓存） ==========
 _engine_instance = None
 
@@ -579,6 +712,14 @@ def scan_custom_groups(
         min_amount=min_amount,
         min_body=min_body,
     )
+
+
+def scan_market_groups(query: str) -> Dict:
+    """全市场强势归类扫描（全局入口，复用 engine 单例）。MCP 选股 + 884 概念归类。"""
+    global _engine_instance
+    if _engine_instance is None:
+        _engine_instance = RealtimeEngine()
+    return _engine_instance.scan_market_groups(query)
 
 
 def clear_cache():

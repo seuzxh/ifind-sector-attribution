@@ -12,6 +12,7 @@
   - **板块强度看板**：3s 轮询刷新板块强度 + 成分股四维评分排名
   - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
   - **强势股归类**：按筛选条件（涨幅/成交额/实体涨幅）扫描自选股池，按分组归类统计命中，发现哪个分组批量冒强势股
+  - **全市场强势归类**：自然语言选股（iFinD MCP `search_stocks`，4 组预置 + 自定义条件可存/重命名）→ 按 884 概念板块归类，发现全市场强势股集中在哪些行业
   - **AI 问答**：自然语言查行情（火山方舟 Coding Plan，10 模型可切，SSE 流式 + iFinD MCP 工具自动调用）
   - 顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
 
@@ -236,6 +237,8 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `GET /api/realtime/sector` | — | 最新板块强度排名 |
 | `GET /api/realtime/dashboard` | — | **板块实时看板**（分时切片，`trade_date`/`snapshot_time`/`watchlist_mode`） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回持仓标注字段） |
+| `GET /api/custom/scan` | — | **自选强势归类**（分时筛选命中 → 按自选分组归类） |
+| `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → 按 884 概念板块归类；入参 `query`） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（指定日期的板块 + 成分股） |
 | `GET /api/trade_calendar` | — | 交易日列表（供日期选择器过滤非交易日） |

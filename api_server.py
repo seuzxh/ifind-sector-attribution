@@ -71,7 +71,7 @@ def root(board: str = None):
         return "<h1>templates/chat.html 未找到</h1>"
 
     # Tab 容器模式：顶层访问 / （iframe 内部请求会带 ?board=sector/custom/scan）
-    is_iframe_inner = board in ("sector", "custom", "scan")
+    is_iframe_inner = board in ("sector", "custom", "scan", "market_scan")
     if not is_iframe_inner:
         tabs_path = os.path.join(_TEMPLATE_DIR, "tabs.html")
         if os.path.exists(tabs_path):
@@ -270,6 +270,21 @@ def get_custom_scan(
         min_amount=min_amount,
         min_body=min_body,
     )
+
+
+@app.get("/api/market/scan")
+def get_market_scan(query: str):
+    """
+    全市场强势股概念板块归类：用 iFinD MCP search_stocks 自然语言选股，
+    把选出的股票按 884 概念板块归类统计。
+
+    与 /api/custom/scan 的差异：命中股来自 MCP 选股（收盘数据），归类维度是
+    884 概念板块，不依赖分时序列。选股约 4.5s，归类纯内存。
+
+    :param query: 自然语言选股条件（如 "涨幅大于7%并且小于12.1%；未涨停；非ST"）
+    """
+    from realtime_engine import scan_market_groups as _scan
+    return _scan(query=query)
 
 
 # 记录上次导入自选分组时的 JSON mtime（None=服务启动后尚未导入过）

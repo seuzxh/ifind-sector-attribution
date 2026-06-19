@@ -156,8 +156,8 @@
 
 ## 八、未来扩展（不在本次范围）
 
-1. **股池扩展**：自选分组 → 全市场 A 股
-2. **归类维度扩展**：自选分组 → 概念板块（884 行业分类）
+1. ~~**股池扩展**：自选分组 → 全市场 A 股~~ **✅ 已实现（见第十章 market_scan）**
+2. ~~**归类维度扩展**：自选分组 → 概念板块（884 行业分类）~~ **✅ 已实现（见第十章 market_scan）**
 3. **筛选条件增强**：涨速、加速、涨停、换手率等维度
 4. **命中持久化**：记录历史命中曲线，看分组强度演进
 
@@ -169,3 +169,52 @@
 | `api_server.py` | 新增 `GET /api/custom/scan` 路由 |
 | `templates/tabs.html` | 加第三个 Tab `[🎯 强势股归类]` + iframe |
 | `templates/index.html` | 加 `BOARD='scan'` 分支：筛选表单 + 手风琴分组表 + 命中明细 |
+
+---
+
+## 十、全市场强势股概念板块归类（market_scan，已实现）
+
+> 第八章的未来扩展 1、2 已实现为独立的 `market_scan` 看板（第 5 个 Tab）。与第九章的 `scan`（自选股归类）结构一致，但数据来源不同。
+
+### 与 scan 的差异
+
+| 维度 | scan（自选股归类） | market_scan（全市场归类） |
+|---|---|---|
+| 命中股来源 | 分时筛选（涨幅区间） | **iFinD MCP `search_stocks` 自然语言选股** |
+| 归类维度 | 自选分组（custom_group 表） | **884 概念板块**（`self._members_map`） |
+| 指标来源 | 分时 `_build_indicator_df` | **search_stocks 返回的 markdown**（涨跌幅） |
+| 分时依赖 | 是 | **否**（纯收盘数据，不占分时缓存） |
+| 时间条/播放/轮询 | 有 | **无**（收盘选股，非实时） |
+
+### 链路
+
+```
+前端(预置条件/自定义输入) → GET /api/market/scan?query=...
+  → mcp_proxy.call_tool("stock", "search_stocks", {"query": query})  [~4.5s]
+  → _parse_search_stocks_md() 解析 markdown 表格 → {code: {name, change_ratio}}
+  → 按 884 概念板块归类（复用 _ensure_maps 的 members_map + concept_names）
+  → 统计命中数/覆盖率/平均涨幅 → 手风琴展示（复用 renderScan）
+```
+
+### 自然语言选股条件
+
+4 组预置 + 用户自定义（localStorage 持久化，可重命名/删除）：
+1. `实体涨幅大于3%或最大涨幅大于3%；成交额大于6亿`
+2. `实体涨幅大于3%或最大涨幅大于3%；成交金额大于10亿`
+3. `成交金额大于20亿；且实体涨幅大于4%或最大涨幅大于4%`
+4. `涨幅大于7%并且小于12.1%；未涨停；非ST`
+
+自定义条件结构 `{label, query}`：label 是下拉显示的短标签（可重命名），query 是选股条件文本（给 MCP 用，不可改）。向后兼容旧格式（纯字符串）。
+
+### 改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `realtime_engine.py` | 新增 `scan_market_groups(query)` + `_parse_search_stocks_md()` + 模块级包装 |
+| `api_server.py` | 新增 `GET /api/market/scan`；board 白名单加 `market_scan` |
+| `templates/tabs.html` | 加第 5 个 Tab `[🌐 全市场强势归类]` |
+| `templates/index.html` | `BOARD=market_scan` 分支：自然语言输入框 + 预置下拉 + 自定义管理（存/重命名/删除）+ 复用 renderScan；不启动轮询/时间条 |
+
+### 实测
+- search_stocks 选股 ~4.5s，解析 + 884 归类 <0.1s
+- 预置条件 4：命中 106 只 → 64 个概念板块，top1=消费电子零部件及组装(6只)

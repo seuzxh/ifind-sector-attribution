@@ -56,8 +56,8 @@
 | `api_server.py` | FastAPI 服务（REST API + 可视化页面 + AI 问答 SSE 路由） | 中（加接口看这） |
 | `llm_agent.py` | AI 问答的"大脑"（火山方舟 Coding Plan，OpenAI 兼容；静态 10 模型白名单 `_CODING_PLAN_MODELS`；运行时可切模型） | 低 |
 | `mcp_proxy.py` | iFinD MCP 客户端代理（hexin-ifind-ds-stock-mcp / -index-mcp，JWT 鉴权） | 低 |
-| `templates/tabs.html` | **顶层 Tab 容器**（[📊板块强度]/[⭐自选分组]/[🎯强势归类]/[💬AI问答] iframe，状态完全隔离） | 低 |
-| `templates/index.html` | 看板单页（`?board=sector`/`=custom`/`=scan` 复用同模板；时间滑块 + 播放 + 3s 轮询 + 加速列 + **持仓金色标注** + **强势归类手风琴**） | 低 |
+| `templates/tabs.html` | **顶层 Tab 容器**（[📊板块强度]/[⭐自选分组]/[🎯强势归类]/[🌐全市场强势归类]/[💬AI问答] iframe，状态完全隔离） | 低 |
+| `templates/index.html` | 看板单页（`?board=sector`/`=custom`/`=scan`/`=market_scan` 复用同模板；时间滑块 + 播放 + 3s 轮询 + 加速列 + **持仓金色标注** + **强势归类手风琴** + **全市场选股+自定义条件**） | 低 |
 | `templates/chat.html` | AI 问答页面（自然语言查行情，模型下拉框 + SSE 流式） | 低 |
 | `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
 | `main.py` | 命令入口（argparse 子命令） | 低 |
@@ -138,6 +138,8 @@
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
 | `GET /api/realtime/dashboard` | — | **板块实时看板**（分时切片，`trade_date`/`snapshot_time`/`watchlist_mode`） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回 `holding_stocks`/`holding_in_group`） |
+| `GET /api/custom/scan` | — | **自选强势归类**（分时筛选命中 → 按自选分组归类，手风琴） |
+| `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → 按 884 概念板块归类，不碰分时；入参 `query`） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（指定日期，读入库 `concept_strength`，降级纯涨幅） |
 | `GET /api/trade_calendar` | — | 交易日列表（供前端日期选择器过滤非交易日） |
@@ -167,6 +169,8 @@
 | 时间条播放异常（时刻跳变） | 检查 `refreshSeq` 请求序号守卫是否被破坏（防异步乱序覆盖） |
 | 改 AI 问答模型 / 加模型 | `llm_agent._CODING_PLAN_MODELS` 白名单（静态 10 个）；或 `config.LLM_MODEL` 改默认；页面下拉框运行时切。**base_url 必须用 `/api/coding/v3`** |
 | AI 问答报错 / 不调工具 | 检查 `LLM_API_KEY` + `IFIND_MCP_TOKEN` 是否配在 `config_local.py`；看 `/api/llm/models` 是否返回模型列表 |
+| 改全市场选股预置条件 | `templates/index.html` 的 `MARKET_PRESETS` 数组（4 组）；自定义条件存浏览器 localStorage（`market_scan_custom_queries`，结构 `{label,query}`），页面可存/重命名/删除 |
+| 全市场选股归类慢 / 报错 | `/api/market/scan` 调 MCP `search_stocks` 约 4.5s；报错看 `IFIND_MCP_TOKEN` 是否配置、query 表达是否被 MCP 理解 |
 
 ## 深入阅读
 

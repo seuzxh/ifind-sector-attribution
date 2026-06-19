@@ -353,10 +353,10 @@
   </div>
 </div>
 
-<!-- 强势股归类（scan 看板专用） -->
+<!-- 强势股归类（scan / market_scan 看板共用，表单按 board 切换） -->
 <div class="members-section" id="scanSection" style="display:none;">
-  <!-- 筛选条件表单 -->
-  <div class="scan-filter">
+  <!-- scan（自选）筛选表单：涨幅区间 -->
+  <div class="scan-filter" id="scanFilterForm">
     <h2>🔍 筛选条件</h2>
     <div class="scan-filter-row">
       <label>涨幅 <input type="number" id="fMinChange" value="7" step="0.1" style="width:60px">% ~
@@ -368,7 +368,22 @@
       <span class="scan-hint" id="scanHint"></span>
     </div>
   </div>
-  <!-- 命中统计结果（手风琴） -->
+  <!-- market_scan（全市场）筛选表单：自然语言选股 + 预置下拉 -->
+  <div class="scan-filter" id="marketFilterForm" style="display:none;">
+    <h2>🔍 选股条件（自然语言，调 iFinD MCP 选股）</h2>
+    <div class="scan-filter-row">
+      <select id="marketPreset" onchange="onMarketPresetChange()" style="min-width:200px;">
+        <!-- 动态填充：预置 4 组 + localStorage 自定义（由 rebuildPresetOptions 渲染） -->
+      </select>
+      <input type="text" id="marketQueryInput" value="" placeholder="选股条件（可编辑）" style="flex:1;min-width:300px;padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;">
+      <button class="primary" onclick="applyMarketScan()">🔍 选股归类</button>
+      <button class="success" onclick="saveCustomQuery()" title="把当前输入框内容存为自定义条件（持久化到浏览器）">💾 存为条件</button>
+      <button onclick="renameCustomQuery()" title="给下拉里选中的自定义条件改一个短标签名" style="background:#dbeafe;color:#1e40af;border-color:#bfdbfe;">✏️ 重命名</button>
+      <button onclick="deleteCustomQuery()" title="删除下拉里选中的自定义条件" style="background:#fee2e2;color:#dc2626;border-color:#fecaca;">🗑 删除</button>
+      <span class="scan-hint" id="marketHint"></span>
+    </div>
+  </div>
+  <!-- 命中统计结果（手风琴，scan/market_scan 共用） -->
   <div id="scanResult"><div class="empty-msg">加载中...</div></div>
 </div>
 
@@ -394,19 +409,34 @@ let availableTimes = [];      // 当日可用时间点（分时分钟刻度）
 let autoFollow = true;        // 是否自动跟随最新（拖动滑块时暂停）
 let refreshSeq = 0;           // refresh 请求序号：仅最新一次的响应才允许渲染，防止播放/轮询乱序覆盖
 
-// 看板类型：从 URL ?board= 参数识别（custom=自选分组，scan=强势归类，其他/默认=板块）
+// 看板类型：从 URL ?board= 参数识别（custom=自选分组，scan=自选强势归类，
+// market_scan=全市场强势归类，其他/默认=板块）
 const BOARD = (() => {
   const b = new URLSearchParams(location.search).get('board');
-  return (b === 'custom' || b === 'scan') ? b : 'sector';
+  return (b === 'custom' || b === 'scan' || b === 'market_scan') ? b : 'sector';
 })();
 const isCustomBoard = (BOARD === 'custom');
 const isScanBoard = (BOARD === 'scan');
-const BOARD_TITLE = isScanBoard ? '🎯 强势股归类'
+const isMarketScanBoard = (BOARD === 'market_scan');
+// scan 和 market_scan 都走手风琴渲染，统一标志
+const isAnyScanBoard = isScanBoard || isMarketScanBoard;
+const BOARD_TITLE = isMarketScanBoard ? '🌐 全市场强势归类'
+                   : isScanBoard ? '🎯 强势股归类'
                    : isCustomBoard ? '⭐ 自选分组监控'
                    : '📊 板块强度监控';
-const BOARD_API = isScanBoard ? '/api/custom/scan'
+const BOARD_API = isMarketScanBoard ? '/api/market/scan'
+                : isScanBoard ? '/api/custom/scan'
                 : isCustomBoard ? '/api/custom/dashboard'
                 : '/api/realtime/dashboard';
+
+// 全市场强势归类：4 组预置选股条件（点选填入输入框，也可手动编辑）
+const MARKET_PRESETS = [
+  '实体涨幅大于3%或最大涨幅大于3%；成交额大于6亿',
+  '实体涨幅大于3%或最大涨幅大于3%；成交金额大于10亿',
+  '成交金额大于20亿；且实体涨幅大于4%或最大涨幅大于4%',
+  '涨幅大于7%并且小于12.1%；未涨停；非ST',
+];
+let marketQuery = MARKET_PRESETS[3];   // 当前选股条件（默认第4组），供 refresh 拼 URL
 
 // ========== 表头排序状态（跨 3s 刷新保持）==========
 // rankSort: { top: {key,order}|null, bottom: {key,order}|null }，order: '↓'|'↑'，null=默认（后端顺序）
@@ -439,24 +469,31 @@ function onModeChange() {
   const mode = document.getElementById('modeSel').value;
   const isRT = mode === 'realtime';
   const isWL = mode === 'watchlist';
-  document.getElementById('timeBar').classList.toggle('show', isRT);
-  document.getElementById('rtAutoLabel').style.display = isRT ? '' : 'none';
-  document.getElementById('modeHint').textContent = isScanBoard
+  // market_scan 不需要时间条/轮询（收盘选股，非实时分时）
+  const useTimeBar = isRT && !isMarketScanBoard;
+  document.getElementById('timeBar').classList.toggle('show', useTimeBar);
+  document.getElementById('rtAutoLabel').style.display = useTimeBar ? '' : 'none';
+  document.getElementById('modeHint').textContent = isMarketScanBoard
+    ? '（全市场强势归类：自然语言选股 → 按 884 概念板块归类，点"选股归类"触发）'
+    : isScanBoard
     ? '（强势股归类：按筛选条件扫描，按分组归类统计命中）'
     : isRT
     ? '（实时分时：涨幅/涨速/开盘至今涨幅/涨停 加权 · 涨速加速仅展示）'
     : '（历史：按当日涨幅，点击表头排序）';
 
-  // 显隐：watchlist 模式独占；scan 看板独占 scanSection；其余显示 panels+membersSection
+  // 显隐：watchlist 模式独占；scan/market_scan 看板独占 scanSection；其余显示 panels+membersSection
   document.getElementById('watchlistSection').style.display = isWL ? '' : 'none';
-  document.getElementById('scanSection').style.display = isScanBoard ? '' : 'none';
-  const showPanels = !isWL && !isScanBoard;
+  document.getElementById('scanSection').style.display = isAnyScanBoard ? '' : 'none';
+  // scanSection 内部表单按 board 切换：scan 用涨幅区间表单，market_scan 用自然语言输入表单
+  document.getElementById('scanFilterForm').style.display = isScanBoard ? '' : 'none';
+  document.getElementById('marketFilterForm').style.display = isMarketScanBoard ? '' : 'none';
+  const showPanels = !isWL && !isAnyScanBoard;
   document.getElementById('panels').style.display = showPanels ? 'grid' : 'none';
   document.getElementById('membersSection').style.display = showPanels ? '' : 'none';
 
   stopPolling();
   stopPlay();              // 切模式 → 停止播放
-  if (isRT) {
+  if (isRT && !isMarketScanBoard) {
     autoFollow = true; updateAutoUI();
     // 实时模式：是否启动轮询由 checkSession 决定（盘前/非交易日停轮询）
     checkSession();
@@ -722,7 +759,12 @@ async function refresh() {
   const mySeq = ++refreshSeq;   // 本次请求的序号；只有最新一次响应才允许渲染
 
   let payload;
-  if (mode === 'realtime') {
+  // market_scan：纯 MCP 选股归类，不走分时/日期/时间条，只传 query
+  if (isMarketScanBoard) {
+    if (!marketQuery) { setStatus('请输入选股条件', ''); return; }
+    setStatus('🔍 正在调用 iFinD 选股（约5秒）...', 'warn');
+    payload = await fetchJson(BOARD_API + '?query=' + encodeURIComponent(marketQuery));
+  } else if (mode === 'realtime') {
     const date = getDateVal();
     const params = new URLSearchParams();
     // scan 看板带筛选条件；sector 看板带 watchlist_mode；custom 看板不带额外参数
@@ -763,8 +805,8 @@ async function refresh() {
   }
   lastPayload = payload;
 
-  // 实时模式：更新滑块刻度（首次或时刻列表变化时）
-  if (mode === 'realtime') {
+  // market_scan 无时间条，跳过滑块更新；其他实时模式更新滑块
+  if (mode === 'realtime' && !isMarketScanBoard) {
     const prevMax = +document.getElementById('timeSlider').max;
     const times = payload.available_times || [];
     if (times.length && times.length !== availableTimes.length) {
@@ -783,15 +825,17 @@ async function refresh() {
     }
   }
 
-  // 渲染分支：scan 走独立路径，其他走通用板块渲染
-  if (isScanBoard) {
+  // 渲染分支：scan/market_scan 走手风琴；其他走通用板块渲染
+  if (isAnyScanBoard) {
     renderScan(payload);
   } else {
     renderStats(payload);
     renderRankTables(payload);
     renderMembers();
   }
-  if (mode === 'realtime') {
+  if (isMarketScanBoard) {
+    setStatus(`MCP选股 · 命中 ${payload.hit_total} 只 · ${payload.group_hit_count} 个概念板块`, 'live');
+  } else if (mode === 'realtime') {
     const ts = payload.snapshot_time || payload.latest_time || '';
     const live = payload.is_today ? '实时' : '历史回看';
     setStatus(`${live} · ${ts} · ${isScanBoard ? '扫描' : 'watchlist'} · 自动${POLL_INTERVAL/1000}s`, 'live');
@@ -983,6 +1027,116 @@ function resetScanFilter() {
   document.getElementById('fMinAmount').value = '';
   document.getElementById('fMinBody').value = '';
   scanFilterState = { min_change: 7, max_change: 12, min_amount: null, min_body: null };
+  refresh();
+}
+
+// ========== 全市场强势归类（market_scan）交互 ==========
+// 自定义条件持久化（localStorage，单用户监控场景够用；key 跨标签页共享）
+// 结构：[{label: "短标签", query: "选股条件文本"}]，兼容旧格式（纯字符串数组）
+const CUSTOM_QUERY_KEY = 'market_scan_custom_queries';
+
+function loadCustomQueries() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CUSTOM_QUERY_KEY) || '[]');
+    // 兼容旧格式：纯字符串 → {label: 前20字, query: 原文}
+    return raw.map(item => typeof item === 'string' ? {label: item.slice(0, 20), query: item} : item);
+  } catch(e) { return []; }
+}
+function saveCustomQueries(arr) {
+  localStorage.setItem(CUSTOM_QUERY_KEY, JSON.stringify(arr));
+}
+
+// 重建下拉选项：预置 4 组 + 自定义条件（平级，自定义显示 label）
+function rebuildPresetOptions(selectedValue) {
+  const sel = document.getElementById('marketPreset');
+  const customs = loadCustomQueries();
+  let html = '<option value="">— 选择条件 —</option>';
+  html += '<optgroup label="预置">';
+  MARKET_PRESETS.forEach((q, i) => {
+    html += `<option value="${i}">${q}</option>`;
+  });
+  html += '</optgroup>';
+  if (customs.length) {
+    html += '<optgroup label="自定义">';
+    customs.forEach((c, i) => {
+      const disp = c.label || c.query.slice(0, 20);
+      html += `<option value="custom:${i}">${disp}</option>`;
+    });
+    html += '</optgroup>';
+  }
+  sel.innerHTML = html;
+  if (selectedValue != null) sel.value = selectedValue;
+}
+
+// 下拉变化 → 填入输入框（预置用 index，自定义用 custom: 前缀，取 query）
+function onMarketPresetChange() {
+  const sel = document.getElementById('marketPreset');
+  const v = sel.value;
+  let q = '';
+  if (v.startsWith('custom:')) {
+    const customs = loadCustomQueries();
+    const item = customs[parseInt(v.slice(7))];
+    q = item ? item.query : '';
+  } else if (v !== '') {
+    q = MARKET_PRESETS[parseInt(v)] || '';
+  }
+  if (q) document.getElementById('marketQueryInput').value = q;
+}
+
+// 存为自定义条件（输入框内容 → localStorage，追加到下拉）
+function saveCustomQuery() {
+  const input = document.getElementById('marketQueryInput');
+  const q = input.value.trim();
+  if (!q) { setStatus('输入框为空，无法保存', 'warn'); return; }
+  const customs = loadCustomQueries();
+  if (customs.some(c => c.query === q)) { setStatus('该条件已存在', 'warn'); return; }
+  // 默认标签：条件前 16 字
+  const label = q.slice(0, 16) + (q.length > 16 ? '...' : '');
+  customs.push({label, query: q});
+  saveCustomQueries(customs);
+  const newIdx = customs.length - 1;
+  rebuildPresetOptions('custom:' + newIdx);
+  setStatus(`✅ 已保存「${label}」（共 ${customs.length} 个自定义）`, 'live');
+}
+
+// 重命名下拉里选中的自定义条件（改 label，query 不变）
+function renameCustomQuery() {
+  const sel = document.getElementById('marketPreset');
+  const v = sel.value;
+  if (!v.startsWith('custom:')) { setStatus('只能重命名自定义条件', 'warn'); return; }
+  const idx = parseInt(v.slice(7));
+  const customs = loadCustomQueries();
+  if (isNaN(idx) || idx >= customs.length) return;
+  const cur = customs[idx];
+  const newLabel = prompt('输入新标签名（仅用于下拉显示，不改选股条件）：', cur.label || '');
+  if (newLabel === null) return;  // 用户取消
+  const trimmed = newLabel.trim();
+  if (!trimmed) { setStatus('标签名不能为空', 'warn'); return; }
+  customs[idx].label = trimmed;
+  saveCustomQueries(customs);
+  rebuildPresetOptions('custom:' + idx);
+  setStatus(`✅ 已重命名为「${trimmed}」`, 'live');
+}
+
+// 删除下拉里选中的自定义条件
+function deleteCustomQuery() {
+  const sel = document.getElementById('marketPreset');
+  const v = sel.value;
+  if (!v.startsWith('custom:')) { setStatus('只能删除自定义条件（预置不可删）', 'warn'); return; }
+  const idx = parseInt(v.slice(7));
+  const customs = loadCustomQueries();
+  if (isNaN(idx) || idx >= customs.length) return;
+  const removed = customs.splice(idx, 1)[0];
+  saveCustomQueries(customs);
+  rebuildPresetOptions('');
+  setStatus(`已删除：${(removed.label || removed.query).slice(0, 20)}（剩余 ${customs.length} 个自定义）`, 'live');
+}
+
+// 点"选股归类"：从输入框读 query，触发 refresh
+function applyMarketScan() {
+  const q = document.getElementById('marketQueryInput').value.trim();
+  if (!q) { setStatus('请输入选股条件', 'warn'); return; }
+  marketQuery = q;
   refresh();
 }
 
@@ -1241,15 +1395,23 @@ document.getElementById('prescreenModal').addEventListener('click', function(e) 
 
 // 初始化
 (async function init() {
-  // 按看板类型设置标题（自选分组 / 板块强度）
+  // 按看板类型设置标题
   document.getElementById('boardTitle').textContent = BOARD_TITLE;
-  document.title = isCustomBoard ? '自选分组监控' : '板块强度监控';
+  document.title = BOARD_TITLE.replace(/^[^\u4e00-\u9fa5a-zA-Z]+\s*/, '');
   await loadTradeCalendar();  // 先拉交易日历，供 loadDates 判断默认日期（今天是否交易日）
   await loadDates();
   onModeChange();
-  checkSession();             // 启动时判断交易时段（盘前停止轮询）
-  // 每分钟刷新会话状态（应对页面长期挂着跨过开盘/收盘点）
-  sessionCheckTimer = setInterval(checkSession, 60000);
+  // market_scan 不启动交易时段轮询（非实时分时，无需盘前判断）
+  if (!isMarketScanBoard) {
+    checkSession();             // 启动时判断交易时段（盘前停止轮询）
+    // 每分钟刷新会话状态（应对页面长期挂着跨过开盘/收盘点）
+    sessionCheckTimer = setInterval(checkSession, 60000);
+  }
+  // market_scan 初始化预置条件输入框 + 下拉（含自定义）
+  if (isMarketScanBoard) {
+    rebuildPresetOptions('3');   // 默认选中预置第4组
+    document.getElementById('marketQueryInput').value = marketQuery;
+  }
 })();
 </script>
 </body>
