@@ -8,10 +8,12 @@
 - **个股多概念归因**：L1 权重归因法（`weight × concept_return`），分解个股涨幅对各概念的贡献
 - **组合归因分析**：按持仓组合的市值暴露，匹配当前强势板块并预警
 - **A股范围限定**：全链路过滤海外代码，只处理沪深北交易所股票
-- **盘中实时监控（双看板 Tab）**：基于分时数据（kline-fetcher）的可视化网站
+- **盘中实时监控（多看板 Tab）**：基于分时数据（kline-fetcher）的可视化网站
   - **板块强度看板**：3s 轮询刷新板块强度 + 成分股四维评分排名
   - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
-  - 两看板顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
+  - **强势股归类**：按筛选条件（涨幅/成交额/实体涨幅）扫描自选股池，按分组归类统计命中，发现哪个分组批量冒强势股
+  - **AI 问答**：自然语言查行情（火山方舟 Coding Plan，10 模型可切，SSE 流式 + iFinD MCP 工具自动调用）
+  - 顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
 
 ## 5 个 iFinD 接口
 
@@ -73,7 +75,20 @@ REFRESH_TOKEN = "你的 refresh token"
 
 # 中焯行情 API 地址（盘中实时监控用，敏感不入库）
 KLINE_API_BASE_URL = "http://your-kline-api-host:port"
+
+# AI 问答 LLM（火山方舟 Coding Plan，敏感不入库）
+# 注意：base_url 必须用 /api/coding/v3（走 Plan 额度），
+#       切勿用 /api/v3（不消耗 Plan 额度会产生额外费用）。
+# 文档：https://www.volcengine.com/docs/82379/1928261
+LLM_API_KEY = "你的 ark api key"
+LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
+LLM_MODEL = "doubao-seed-2.0-pro"   # 可选 10 个模型，页面下拉框运行时也可切
+
+# iFinD MCP server 鉴权 JWT（AI 问答调 iFinD 工具用，敏感不入库）
+IFIND_MCP_TOKEN = "你的 mcp jwt token"
 ```
+
+AI 问答可用模型（`doubao-seed-2.0-pro`/`code`/`lite`、`doubao-seed-code`、`minimax-latest`、`glm-latest`、`deepseek-v4-flash`/`pro`、`kimi-k2.6`、`kimi-k2.7-code`）。`LLM_API_KEY` / `IFIND_MCP_TOKEN` 留空时 AI 问答降级为手动选工具模式（页面可用不报错）。
 
 ### 3. 运行接口测试
 
@@ -251,6 +266,8 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `INTRADAY_CACHE_TTL` | 5 | 分时序列缓存 TTL（秒） |
 | `SECTOR_POOL_ENABLED` / `SECTOR_POOL_CODES` | True / 884(259个) | 板块池白名单（限定观察的概念范围，当前 884 行业分类码） |
 | `HOLDING_GROUP_NAME` | "CC" | 持仓分组名（自选看板金色标注用，按 block_name 精确匹配） |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | （空）/ `.../api/coding/v3` / `doubao-seed-2.0-pro` | AI 问答 LLM（火山方舟 Coding Plan），用 `config_local.py` 覆盖 |
+| `IFIND_MCP_TOKEN` | （空） | iFinD MCP server JWT（AI 问答调工具用），用 `config_local.py` 覆盖 |
 
 ## 数据模型
 

@@ -24,13 +24,19 @@ KLINE_API_BASE_URL = os.environ.get("KLINE_API_BASE_URL", "")
 # 用于网页「AI 问答」Tab 调用 hexin-ifind-ds-stock-mcp / -index-mcp。
 IFIND_MCP_TOKEN = os.environ.get("IFIND_MCP_TOKEN", "")
 
-# ========== LLM 配置（AI 问答的"大脑"，预留）==========
+# ========== LLM 配置（AI 问答的"大脑"）==========
 # 配置后启用全自动模式（LLM 自动选 MCP 工具 + 整理自然语言回答）；
 # 留空则降级为「手动选工具查询」模式（页面可用、不报错）。
-# 默认 DeepSeek（OpenAI 兼容接口，支持 function calling）；可改通义/智谱等兼容接口。
+# 火山方舟 Coding Plan（OpenAI 兼容，走 Plan 额度）：
+#   - base_url 必须用 /api/coding/v3（切勿用 /api/v3，后者不消耗 Plan 额度会产生额外费用）
+#   - 文档：https://www.volcengine.com/docs/82379/1928261
+# 可用模型（改 LLM_MODEL 即可实时切换，全小写亦可；页面下拉框会动态拉取可用列表）：
+#   doubao-seed-2.0-pro / doubao-seed-2.0-code / doubao-seed-2.0-lite / doubao-seed-code
+#   minimax-latest / glm-latest / deepseek-v4-flash / deepseek-v4-pro
+#   kimi-k2.6 / kimi-k2.7-code
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com/v1")
-LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3")
+LLM_MODEL = os.environ.get("LLM_MODEL", "doubao-seed-2.0-pro")
 
 # 本地配置文件覆盖（config_local.py 已加入 .gitignore）
 try:

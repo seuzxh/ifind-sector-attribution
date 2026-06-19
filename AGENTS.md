@@ -19,6 +19,9 @@
 | 数据库 | `data/sector_attribution.db`（SQLite，~92MB，9 张表） |
 | 交易日历缓存 | `data/trade_calendar.txt`（`trade_calendar.py` 三级缓存的本地落盘，缺失会自动重建） |
 | 服务器 / 部署 | **115.191.14.82:8000**；systemd 服务 `ifind-monitor`，一键装 `sudo bash install_service.sh`（详见 `docs/DEPLOYMENT.md`） |
+| **AI 问答 LLM** | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`（火山方舟 Coding Plan）：base_url **必须用 `/api/coding/v3`**（`/api/v3` 不消耗 Plan 额度会产生额外费用）。配在 `config_local.py` 或环境变量，不配则 AI 问答降级为手动选工具模式。文档 `https://www.volcengine.com/docs/82379/1928261` |
+| **AI 问答 MCP** | `IFIND_MCP_TOKEN`（iFinD MCP server 的 JWT 鉴权）：配在 `config_local.py` 或环境变量，不配则 AI 问答无法调 iFinD 工具 |
+| **可用模型** | Coding Plan 白名单 10 个（`llm_agent._CODING_PLAN_MODELS`）：doubao-seed-2.0-pro/code/lite、doubao-seed-code、minimax-latest、glm-latest、deepseek-v4-flash/pro、kimi-k2.6/k2.7-code。页面下拉框运行时可切 |
 
 > ⚠️ 上述 `config_local.py` 已 gitignore，**勿提交、勿外传**（含真实 token）。跑命令前务必用上面的 conda python，否则缺 `fastapi`/`pandas`/`numpy`/`plotly` 等依赖；盘中实时链路还需 `kline-fetcher`。
 
@@ -50,9 +53,12 @@
 | `realtime_engine.py` | 盘中实时引擎（分时序列缓存 + 时刻切片 + 内存计算，**不入库**） | 低 |
 | `trade_calendar.py` | 交易日历模块（`TradeCalendar` 单例，三级缓存：内存→`data/trade_calendar.txt`→网络→DB 兜底；复用 `kline_fetcher.fetch_trade_calendar`） | 低 |
 | `probe_auction.py` | 集合竞价数据探针脚本（生产环境验证 `pre_market` 形态用，非业务链路） | 低 |
-| `api_server.py` | FastAPI 服务（REST API + 可视化页面） | 中（加接口看这） |
-| `templates/tabs.html` | **顶层 Tab 容器**（[📊板块强度]/[⭐自选分组] 两 iframe，状态完全隔离） | 低 |
-| `templates/index.html` | 看板单页（`?board=sector`/`=custom` 复用同模板；时间滑块 + 播放 + 3s 轮询 + 加速列 + **持仓金色标注**） | 低 |
+| `api_server.py` | FastAPI 服务（REST API + 可视化页面 + AI 问答 SSE 路由） | 中（加接口看这） |
+| `llm_agent.py` | AI 问答的"大脑"（火山方舟 Coding Plan，OpenAI 兼容；静态 10 模型白名单 `_CODING_PLAN_MODELS`；运行时可切模型） | 低 |
+| `mcp_proxy.py` | iFinD MCP 客户端代理（hexin-ifind-ds-stock-mcp / -index-mcp，JWT 鉴权） | 低 |
+| `templates/tabs.html` | **顶层 Tab 容器**（[📊板块强度]/[⭐自选分组]/[🎯强势归类]/[💬AI问答] iframe，状态完全隔离） | 低 |
+| `templates/index.html` | 看板单页（`?board=sector`/`=custom`/`=scan` 复用同模板；时间滑块 + 播放 + 3s 轮询 + 加速列 + **持仓金色标注** + **强势归类手风琴**） | 低 |
+| `templates/chat.html` | AI 问答页面（自然语言查行情，模型下拉框 + SSE 流式） | 低 |
 | `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
 | `main.py` | 命令入口（argparse 子命令） | 低 |
 
@@ -159,6 +165,8 @@
 | 改持仓分组（自选看板金色标注） | `config.HOLDING_GROUP_NAME` 改分组名（默认 "CC"），无需改代码 |
 | 改双看板（Tab 隔离） | `templates/tabs.html`（容器）/ `templates/index.html`（`?board=sector`/`=custom` 复用同模板） |
 | 时间条播放异常（时刻跳变） | 检查 `refreshSeq` 请求序号守卫是否被破坏（防异步乱序覆盖） |
+| 改 AI 问答模型 / 加模型 | `llm_agent._CODING_PLAN_MODELS` 白名单（静态 10 个）；或 `config.LLM_MODEL` 改默认；页面下拉框运行时切。**base_url 必须用 `/api/coding/v3`** |
+| AI 问答报错 / 不调工具 | 检查 `LLM_API_KEY` + `IFIND_MCP_TOKEN` 是否配在 `config_local.py`；看 `/api/llm/models` 是否返回模型列表 |
 
 ## 深入阅读
 
