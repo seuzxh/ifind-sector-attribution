@@ -223,14 +223,18 @@
     vertical-align: middle; margin: 0 6px; position: relative; overflow: hidden;
   }
   .scan-group-head .cov-bar i { display: block; height: 100%; background: #ef4444; }
-  .scan-group-body { display: none; padding: 0 14px 10px; }
+  .scan-group-body { display: none; padding: 8px 14px 12px; }
   .scan-group.open .scan-group-body { display: block; }
-  .scan-group-body table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  .scan-group-body th, .scan-group-body td { padding: 6px 8px; text-align: right; border-bottom: 1px solid #f3f4f6; white-space: nowrap; }
-  .scan-group-body th { color: #9ca3af; font-weight: 500; background: #fafafa; }
-  .scan-group-body th.left, .scan-group-body td.left { text-align: left; }
-  .scan-group-body td.up { color: #ef4444; }
-  .scan-group-body td.down { color: #10b981; }
+  /* 命中个股 chip 布局：紧凑卡片，自动换行，涨幅加粗有色 */
+  .hit-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .hit-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 10px; border-radius: 6px; font-size: 12px;
+    background: #f9fafb; border: 1px solid #e5e7eb; white-space: nowrap;
+    cursor: default;
+  }
+  .hit-chip b { color: #ef4444; font-size: 13px; }   /* 涨幅红色加粗 */
+  .hit-chip:hover { background: #fef9c3; border-color: #fde047; }
 
   .empty-msg { color: #9ca3af; text-align: center; padding: 40px; font-size: 14px; }
 
@@ -355,21 +359,8 @@
 
 <!-- 强势股归类（scan / market_scan 看板共用，表单按 board 切换） -->
 <div class="members-section" id="scanSection" style="display:none;">
-  <!-- scan（自选）筛选表单：涨幅区间 -->
-  <div class="scan-filter" id="scanFilterForm">
-    <h2>🔍 筛选条件</h2>
-    <div class="scan-filter-row">
-      <label>涨幅 <input type="number" id="fMinChange" value="7" step="0.1" style="width:60px">% ~
-        <input type="number" id="fMaxChange" value="12" step="0.1" style="width:60px">%</label>
-      <label>成交额 ≥ <input type="number" id="fMinAmount" value="" placeholder="不限" step="100" style="width:90px">万</label>
-      <label>实体涨幅 ≥ <input type="number" id="fMinBody" value="" placeholder="不限" step="0.1" style="width:60px">%</label>
-      <button class="primary" onclick="applyScanFilter()">应用筛选</button>
-      <button onclick="resetScanFilter()">重置</button>
-      <span class="scan-hint" id="scanHint"></span>
-    </div>
-  </div>
-  <!-- market_scan（全市场）筛选表单：自然语言选股 + 预置下拉 -->
-  <div class="scan-filter" id="marketFilterForm" style="display:none;">
+  <!-- scan/market_scan 共用筛选表单：自然语言选股 + 预置/自定义下拉 -->
+  <div class="scan-filter" id="marketFilterForm">
     <h2>🔍 选股条件（自然语言，调 iFinD MCP 选股）</h2>
     <div class="scan-filter-row">
       <select id="marketPreset" onchange="onMarketPresetChange()" style="min-width:200px;">
@@ -421,7 +412,7 @@ const isMarketScanBoard = (BOARD === 'market_scan');
 // scan 和 market_scan 都走手风琴渲染，统一标志
 const isAnyScanBoard = isScanBoard || isMarketScanBoard;
 const BOARD_TITLE = isMarketScanBoard ? '🌐 全市场强势归类'
-                   : isScanBoard ? '🎯 强势股归类'
+                   : isScanBoard ? '🎯 自选强势归类'
                    : isCustomBoard ? '⭐ 自选分组监控'
                    : '📊 板块强度监控';
 const BOARD_API = isMarketScanBoard ? '/api/market/scan'
@@ -469,14 +460,14 @@ function onModeChange() {
   const mode = document.getElementById('modeSel').value;
   const isRT = mode === 'realtime';
   const isWL = mode === 'watchlist';
-  // market_scan 不需要时间条/轮询（收盘选股，非实时分时）
-  const useTimeBar = isRT && !isMarketScanBoard;
+  // scan/market_scan 都走 MCP 选股（收盘数据），不需要时间条/轮询
+  const useTimeBar = isRT && !isAnyScanBoard;
   document.getElementById('timeBar').classList.toggle('show', useTimeBar);
   document.getElementById('rtAutoLabel').style.display = useTimeBar ? '' : 'none';
   document.getElementById('modeHint').textContent = isMarketScanBoard
     ? '（全市场强势归类：自然语言选股 → 按 884 概念板块归类，点"选股归类"触发）'
     : isScanBoard
-    ? '（强势股归类：按筛选条件扫描，按分组归类统计命中）'
+    ? '（自选强势归类：自然语言选股 → 取自选交集 → 按自选分组归类，点"选股归类"触发）'
     : isRT
     ? '（实时分时：涨幅/涨速/开盘至今涨幅/涨停 加权 · 涨速加速仅展示）'
     : '（历史：按当日涨幅，点击表头排序）';
@@ -484,16 +475,15 @@ function onModeChange() {
   // 显隐：watchlist 模式独占；scan/market_scan 看板独占 scanSection；其余显示 panels+membersSection
   document.getElementById('watchlistSection').style.display = isWL ? '' : 'none';
   document.getElementById('scanSection').style.display = isAnyScanBoard ? '' : 'none';
-  // scanSection 内部表单按 board 切换：scan 用涨幅区间表单，market_scan 用自然语言输入表单
-  document.getElementById('scanFilterForm').style.display = isScanBoard ? '' : 'none';
-  document.getElementById('marketFilterForm').style.display = isMarketScanBoard ? '' : 'none';
+  // scan/market_scan 共用 marketFilterForm（自然语言表单），两个 scan 都显示
+  document.getElementById('marketFilterForm').style.display = isAnyScanBoard ? '' : 'none';
   const showPanels = !isWL && !isAnyScanBoard;
   document.getElementById('panels').style.display = showPanels ? 'grid' : 'none';
   document.getElementById('membersSection').style.display = showPanels ? '' : 'none';
 
   stopPolling();
   stopPlay();              // 切模式 → 停止播放
-  if (isRT && !isMarketScanBoard) {
+  if (isRT && !isAnyScanBoard) {
     autoFollow = true; updateAutoUI();
     // 实时模式：是否启动轮询由 checkSession 决定（盘前/非交易日停轮询）
     checkSession();
@@ -759,18 +749,16 @@ async function refresh() {
   const mySeq = ++refreshSeq;   // 本次请求的序号；只有最新一次响应才允许渲染
 
   let payload;
-  // market_scan：纯 MCP 选股归类，不走分时/日期/时间条，只传 query
-  if (isMarketScanBoard) {
+  // scan/market_scan：纯 MCP 选股归类，不走分时/日期/时间条，只传 query
+  if (isAnyScanBoard) {
     if (!marketQuery) { setStatus('请输入选股条件', ''); return; }
     setStatus('🔍 正在调用 iFinD 选股（约5秒）...', 'warn');
     payload = await fetchJson(BOARD_API + '?query=' + encodeURIComponent(marketQuery));
   } else if (mode === 'realtime') {
     const date = getDateVal();
     const params = new URLSearchParams();
-    // scan 看板带筛选条件；sector 看板带 watchlist_mode；custom 看板不带额外参数
-    if (isScanBoard) {
-      applyScanParams(params);
-    } else if (!isCustomBoard) {
+    // sector 看板带 watchlist_mode；custom 看板不带额外参数
+    if (!isCustomBoard) {
       params.set('watchlist_mode', 'true');
     }
     if (date) params.set('trade_date', date);
@@ -805,8 +793,8 @@ async function refresh() {
   }
   lastPayload = payload;
 
-  // market_scan 无时间条，跳过滑块更新；其他实时模式更新滑块
-  if (mode === 'realtime' && !isMarketScanBoard) {
+  // scan/market_scan 无时间条，跳过滑块更新；其他实时模式更新滑块
+  if (mode === 'realtime' && !isAnyScanBoard) {
     const prevMax = +document.getElementById('timeSlider').max;
     const times = payload.available_times || [];
     if (times.length && times.length !== availableTimes.length) {
@@ -833,12 +821,13 @@ async function refresh() {
     renderRankTables(payload);
     renderMembers();
   }
-  if (isMarketScanBoard) {
-    setStatus(`MCP选股 · 命中 ${payload.hit_total} 只 · ${payload.group_hit_count} 个概念板块`, 'live');
+  if (isAnyScanBoard) {
+    const tag = isMarketScanBoard ? '全市场' : '自选';
+    setStatus(`MCP选股(${tag}) · 命中 ${payload.hit_total} 只 · ${payload.group_hit_count} 个板块`, 'live');
   } else if (mode === 'realtime') {
     const ts = payload.snapshot_time || payload.latest_time || '';
     const live = payload.is_today ? '实时' : '历史回看';
-    setStatus(`${live} · ${ts} · ${isScanBoard ? '扫描' : 'watchlist'} · 自动${POLL_INTERVAL/1000}s`, 'live');
+    setStatus(`${live} · ${ts} · watchlist · 自动${POLL_INTERVAL/1000}s`, 'live');
   } else {
     setStatus(`历史 · ${payload.date}`, 'live');
   }
@@ -999,38 +988,10 @@ function renderMembers() {
   });
 }
 
-// ========== 强势股归类扫描（board=scan）==========
-let scanExpanded = new Set();   // 当前展开的分组 group_id（3s 刷新后保持展开）
-let scanFilterState = { min_change: 7, max_change: 12, min_amount: null, min_body: null };
+// ========== 强势股归类扫描（board=scan / market_scan）==========
+let scanExpanded = new Set();   // 当前展开的分组 group_id（刷新后保持展开）
 
-// 把筛选条件写进 URLSearchParams（供 refresh 拼到 API URL）
-function applyScanParams(params) {
-  params.set('min_change', scanFilterState.min_change);
-  params.set('max_change', scanFilterState.max_change);
-  if (scanFilterState.min_amount !== null) params.set('min_amount', scanFilterState.min_amount);
-  if (scanFilterState.min_body !== null) params.set('min_body', scanFilterState.min_body);
-}
-
-// 点"应用筛选"：从输入框读值，触发 refresh
-function applyScanFilter() {
-  scanFilterState.min_change = parseFloat(document.getElementById('fMinChange').value) || 0;
-  scanFilterState.max_change = parseFloat(document.getElementById('fMaxChange').value) || 100;
-  const a = document.getElementById('fMinAmount').value;
-  scanFilterState.min_amount = a === '' ? null : (parseFloat(a) || null);
-  const b = document.getElementById('fMinBody').value;
-  scanFilterState.min_body = b === '' ? null : (parseFloat(b) || null);
-  refresh();
-}
-function resetScanFilter() {
-  document.getElementById('fMinChange').value = 7;
-  document.getElementById('fMaxChange').value = 12;
-  document.getElementById('fMinAmount').value = '';
-  document.getElementById('fMinBody').value = '';
-  scanFilterState = { min_change: 7, max_change: 12, min_amount: null, min_body: null };
-  refresh();
-}
-
-// ========== 全市场强势归类（market_scan）交互 ==========
+// ========== 选股条件交互（scan/market_scan 共用）==========
 // 自定义条件持久化（localStorage，单用户监控场景够用；key 跨标签页共享）
 // 结构：[{label: "短标签", query: "选股条件文本"}]，兼容旧格式（纯字符串数组）
 const CUSTOM_QUERY_KEY = 'market_scan_custom_queries';
@@ -1194,16 +1155,10 @@ function renderScan(payload) {
   el.innerHTML = groups.map((g, i) => {
     const expanded = scanExpanded.has(g.group_id);
     const covPct = (g.coverage * 100).toFixed(1);
-    const hitsRows = (g.hits || []).map(h => {
+    // 个股渲染：紧凑 chip 布局（代码 名称 涨幅），涨幅标色
+    const hitChips = (g.hits || []).map(h => {
       const chgCls = h.change_ratio > 0 ? 'up' : (h.change_ratio < 0 ? 'down' : '');
-      return `<tr>
-        <td class="left">${h.code}</td>
-        <td class="left">${h.name||''}</td>
-        <td class="${chgCls}">${fmt(h.change_ratio)}%</td>
-        <td>${h.speed ? fmt(h.speed)+'%' : '-'}</td>
-        <td>${h.body != null ? fmt(h.body)+'%' : '-'}</td>
-        <td>${fmtAmount(h.amount)}</td>
-      </tr>`;
+      return `<span class="hit-chip" title="${h.name||''} ${h.code}"><b>${fmt(h.change_ratio)}%</b> ${h.name||h.code}</span>`;
     }).join('');
     return `<div class="scan-group ${expanded?'open':''}" data-gid="${g.group_id}">
       <div class="scan-group-head" onclick="toggleScanGroup('${g.group_id}')">
@@ -1216,13 +1171,7 @@ function renderScan(payload) {
         <span class="gstat">均涨 <b style="color:#ef4444;">${fmt(g.hit_avg_change)}%</b></span>
       </div>
       <div class="scan-group-body">
-        <table>
-          <thead><tr>
-            <th class="left">代码</th><th class="left">名称</th>
-            <th>涨幅</th><th>涨速</th><th>开盘至今</th><th>成交额</th>
-          </tr></thead>
-          <tbody>${hitsRows || '<tr><td colspan="6" style="text-align:center;color:#9ca3af;">无</td></tr>'}</tbody>
-        </table>
+        <div class="hit-chips">${hitChips || '<span style="color:#9ca3af;">无</span>'}</div>
       </div>
     </div>`;
   }).join('');
@@ -1432,14 +1381,14 @@ document.getElementById('prescreenModal').addEventListener('click', function(e) 
   await loadTradeCalendar();  // 先拉交易日历，供 loadDates 判断默认日期（今天是否交易日）
   await loadDates();
   onModeChange();
-  // market_scan 不启动交易时段轮询（非实时分时，无需盘前判断）
-  if (!isMarketScanBoard) {
+  // scan/market_scan 不启动交易时段轮询（MCP选股非实时分时，无需盘前判断）
+  if (!isAnyScanBoard) {
     checkSession();             // 启动时判断交易时段（盘前停止轮询）
     // 每分钟刷新会话状态（应对页面长期挂着跨过开盘/收盘点）
     sessionCheckTimer = setInterval(checkSession, 60000);
   }
-  // market_scan 初始化预置条件输入框 + 下拉（含自定义）
-  if (isMarketScanBoard) {
+  // scan/market_scan 初始化预置条件输入框 + 下拉（含自定义）
+  if (isAnyScanBoard) {
     rebuildPresetOptions('3');   // 默认选中预置第4组
     document.getElementById('marketQueryInput').value = marketQuery;
   }

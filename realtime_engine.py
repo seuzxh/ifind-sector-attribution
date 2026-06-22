@@ -21,6 +21,7 @@
 import os
 import sys
 import time
+import threading
 from datetime import datetime
 from typing import List, Dict, Optional
 
@@ -91,6 +92,19 @@ class RealtimeEngine:
     #     "available_times": ["09:30", "09:31", ...],  # 时间轴（去重升序）
     # }
     _series_cache: Dict[str, dict] = {}
+    # singleflight：同一 cache_key 只允许一个拉取，其他复用（防缓存击穿）
+    _series_locks: Dict[str, "threading.Lock"] = {}
+    _series_locks_guard = threading.Lock()
+    # 后台刷新标志：标记某 cache_key 正在后台刷新，避免重复触发
+    _refreshing: Dict[str, bool] = {}
+    _refreshing_guard = threading.Lock()
+    # 看板结果缓存：compute_dashboard 的完整返回值，按 (mode, date, snapshot_time) 缓存
+    # 同一看板+同一时刻的多人请求，第一个算完缓存，其他直接读（0ms，不计算）
+    _result_cache: Dict[str, dict] = {}
+    _result_locks: Dict[str, "threading.Lock"] = {}
+    _result_locks_guard = threading.Lock()
+    _RESULT_TTL = 10            # 看板结果 TTL（秒），略小于 series TTL，保证新鲜
+    _RESULT_MAX_ENTRIES = 60    # result_cache 最大条数（LRU 防膨胀，拖滑块产生多个时刻）
 
     @classmethod
     def _cache_key(cls, trade_date: str, mode_key: str) -> str:
@@ -101,28 +115,18 @@ class RealtimeEngine:
         rec = cls._series_cache.get(cache_key)
         return bool(rec) and (time.time() - rec["fetched_at"]) < ttl
 
-    def _ensure_series(
-        self,
-        trade_date: str,
-        codes: List[str],
-        mode_key: str,
-        is_today: bool,
-    ) -> Optional[dict]:
-        """
-        确保序列缓存就绪。当日实时按 TTL 刷新；历史日期全天缓存（长有效）。
-        """
-        cache_key = self._cache_key(trade_date, mode_key)
-        # 历史日期：有缓存就用（全天数据不变），无则拉一次
-        if not is_today:
-            if cache_key in self._series_cache:
-                return self._series_cache[cache_key]
-        else:
-            # 当日实时：TTL 内复用
-            ttl = config.INTRADAY_CACHE_TTL
-            if self._is_cache_fresh(cache_key, ttl):
-                return self._series_cache[cache_key]
+    @classmethod
+    def _get_series_lock(cls, cache_key: str) -> "threading.Lock":
+        """获取 per-key 锁（不存在则创建，线程安全）"""
+        with cls._series_locks_guard:
+            lk = cls._series_locks.get(cache_key)
+            if lk is None:
+                lk = threading.Lock()
+                cls._series_locks[cache_key] = lk
+            return lk
 
-        # 拉取（date=None 表示当日实时；历史传 YYYYMMDD）
+    def _fetch_and_cache(self, trade_date: str, codes: List[str], mode_key: str, is_today: bool, cache_key: str) -> Optional[dict]:
+        """实际拉取分时序列并写入缓存（同步，需在锁内或后台线程调用）。"""
         date_arg = None if is_today else trade_date
         print(f"[REALTIME] 拉取分时序列：{len(codes)} 只股票（{mode_key}）"
               f"{' 当日实时' if is_today else f' 历史 {trade_date}'}")
@@ -133,7 +137,6 @@ class RealtimeEngine:
             return None
 
         # 构建时间轴（trading + pre_market 时间点的并集，去重升序）
-        # 集合竞价期间 trading 为空，需纳入 pre_market 时间点，否则时间轴为空
         times_set = set()
         for rec in series.values():
             for p in rec.get("trading", []):
@@ -155,6 +158,62 @@ class RealtimeEngine:
         print(f"[REALTIME] 序列就绪：{len(series)} 只，{len(available_times)} 个时间点，"
               f"最新 {latest_time}，耗时 {time.time()-t0:.1f}s")
         return rec
+
+    def _trigger_bg_refresh(self, trade_date: str, codes: List[str], mode_key: str, is_today: bool, cache_key: str):
+        """触发后台异步刷新（stale-while-revalidate）。已有刷新在跑则跳过。"""
+        with self._refreshing_guard:
+            if self._refreshing.get(cache_key):
+                return  # 已有后台刷新在跑
+            self._refreshing[cache_key] = True
+        # 后台线程拉取，完成后清标志
+        def _bg():
+            try:
+                lk = self._get_series_lock(cache_key)
+                with lk:
+                    self._fetch_and_cache(trade_date, codes, mode_key, is_today, cache_key)
+            finally:
+                with self._refreshing_guard:
+                    self._refreshing[cache_key] = False
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _ensure_series(
+        self,
+        trade_date: str,
+        codes: List[str],
+        mode_key: str,
+        is_today: bool,
+    ) -> Optional[dict]:
+        """
+        确保序列缓存就绪。stale-while-revalidate 策略（请求永不阻塞）：
+          - 缓存命中（TTL 内）→ 直接返回
+          - 缓存过期但有旧数据（仅当日实时）→ 立即返回旧数据 + 后台异步刷新
+          - 无缓存（冷启动）→ 同步拉取（singleflight，并发只一个拉）
+        历史日期全天缓存（不过期）。
+        """
+        cache_key = self._cache_key(trade_date, mode_key)
+        ttl = config.INTRADAY_CACHE_TTL
+
+        # 1. 快速路径：缓存命中直接返回（无锁）
+        if not is_today:
+            if cache_key in self._series_cache:
+                return self._series_cache[cache_key]
+        else:
+            if self._is_cache_fresh(cache_key, ttl):
+                return self._series_cache[cache_key]
+
+        # 2. 当日实时 + 缓存过期但有旧数据 → stale-while-revalidate
+        if is_today and cache_key in self._series_cache:
+            old = self._series_cache[cache_key]
+            self._trigger_bg_refresh(trade_date, codes, mode_key, is_today, cache_key)
+            return old   # 立即返回旧数据，不阻塞
+
+        # 3. 无缓存（冷启动）→ 同步拉取，singleflight 防并发击穿
+        lk = self._get_series_lock(cache_key)
+        with lk:
+            # double-check：等锁期间可能已有其他请求填入
+            if cache_key in self._series_cache:
+                return self._series_cache[cache_key]
+            return self._fetch_and_cache(trade_date, codes, mode_key, is_today, cache_key)
 
     # ========== 切片 → 指标 ==========
     @staticmethod
@@ -415,96 +474,63 @@ class RealtimeEngine:
         }
 
     # ========== 强势股归类扫描 ==========
-    def scan_custom_groups(
-        self,
-        trade_date: str = None,
-        snapshot_time: str = None,
-        min_change: float = 7.0,
-        max_change: float = 12.0,
-        min_amount: float = None,
-        min_body: float = None,
-    ) -> Dict:
+    def scan_custom_groups(self, query: str) -> Dict:
         """
-        按筛选条件扫描自选分组股票池，把命中股票按分组归类统计。
+        自选股强势归类：用 iFinD MCP search_stocks 自然语言选股，
+        把选出的股票与自选分组股票取交集，再按自选分组归类统计。
 
-        :param min_change / max_change: 涨幅区间 %（含两端），必填维度
-        :param min_amount: 成交额下限（万元），None=不限
-        :param min_body: 实体涨幅(开盘至今)下限 %，None=不限
-        :return: {trade_date, snapshot_time, available_times, pool_size, hit_total,
-                  group_hit_count, groups:[{group_id, group_name, hit_count, member_total,
-                                            coverage, hit_avg_change, hits:[...]}, ...]}
+        与 scan_market_groups 的差异：
+          - 归类维度是自选分组（custom_group 表），非 884 概念板块
+          - 命中股取 search_stocks 结果 ∩ 自选分组股票（只看自选范围内的强势股）
+
+        :param query: 自然语言选股条件
+        :return: {query, pool_size, hit_total, group_hit_count, groups:[...]}
         """
+        from mcp_proxy import MCPClient
+
         self._ensure_maps()
-
-        today_str = datetime.now().strftime("%Y%m%d")
-        if trade_date is None:
-            trade_date = today_str
-        trade_date = trade_date.replace("-", "")
-        is_today = (trade_date == today_str)
+        if not query or not query.strip():
+            return {"error": "请输入选股条件（query）"}
 
         members_map = self.db.get_custom_members_map()
         if not members_map:
-            return {"error": "自选股分组为空，请先 import-groups 导入", "trade_date": trade_date}
+            return {"error": "自选股分组为空，请先 import-groups 导入"}
         group_names = self.db.get_custom_group_names()
-        codes = self.db.get_custom_all_stock_codes()
-        mode_key = "custom_group"
+        custom_codes = set(self.db.get_custom_all_stock_codes())  # 自选股票全集（取交集用）
 
-        # 1. 复用分时序列缓存（与 compute_dashboard 同一缓存）
-        cache_rec = self._ensure_series(trade_date, codes, mode_key, is_today)
-        if cache_rec is None:
-            return {"error": "无分时数据（可能非交易时段或 API 不可达）", "trade_date": trade_date}
+        # 1. 调 MCP search_stocks 选股（~4.5s）
+        try:
+            mcp = MCPClient.instance()
+            md_raw = mcp.call_tool("stock", "search_stocks", {"query": query})
+        except Exception as e:
+            return {"error": f"MCP 选股失败：{e}", "query": query}
+        if isinstance(md_raw, dict) and md_raw.get("error"):
+            return {"error": f"MCP 选股失败：{md_raw.get('error')}", "query": query}
 
-        available_times = cache_rec["available_times"]
-        latest_time = cache_rec["latest_time"]
-        if snapshot_time and snapshot_time != "latest":
-            if available_times and snapshot_time < available_times[0]:
-                snapshot_time = None
-        else:
-            snapshot_time = None
+        # 2. 解析 markdown → {code: {name, change_ratio}}
+        all_hit_lookup = _parse_search_stocks_md(str(md_raw))
+        if not all_hit_lookup:
+            return {"error": "选股结果为空或解析失败（检查 query 表达）", "query": query,
+                    "raw_preview": str(md_raw)[:300]}
 
-        # 2. 算全部股票指标（含 amount）
-        rt_df = self._build_indicator_df(cache_rec["series"], snapshot_time)
-        if rt_df.empty:
-            return {"error": "指标计算为空", "trade_date": trade_date}
+        # 3. 取自选交集：只保留在自选分组里的命中股
+        hit_lookup = {c: v for c, v in all_hit_lookup.items() if c in custom_codes}
+        hit_codes = set(hit_lookup.keys())
 
-        # 3. 筛选命中股票
-        amt_col = rt_df["amount"] if "amount" in rt_df.columns else 0.0
-        min_amount_yuan = (min_amount * 10000) if min_amount is not None else None
-        mask = (
-            (rt_df["change_ratio"] >= min_change)
-            & (rt_df["change_ratio"] <= max_change)
-        )
-        if min_amount_yuan is not None:
-            mask = mask & (amt_col >= min_amount_yuan)
-        if min_body is not None:
-            mask = mask & (rt_df["body"] >= min_body)
-        hit_df = rt_df[mask].copy()
-        hit_codes = set(hit_df["code"])
-
-        # 指标查询表（命中股的明细）
-        hit_lookup = hit_df.set_index("code").to_dict("index")
-
-        # 4. 按分组归类（一股属多组，各组各计）
-        stock_name_map = self._stock_names or {}
+        # 4. 按自选分组归类（一股属多组，各组各计）
         groups_out = []
         for gid, g_codes in members_map.items():
             g_hit_codes = [c for c in g_codes if c in hit_codes]
             if not g_hit_codes:
-                continue  # 该分组无命中，不展示（或后续可加"显示空分组"开关）
+                continue
             hits = []
             for c in g_hit_codes:
                 m = hit_lookup[c]
                 hits.append({
                     "code": c,
-                    "name": stock_name_map.get(c, ""),
+                    "name": m.get("name", ""),
                     "change_ratio": round(float(m["change_ratio"]), 2),
-                    "speed": round(float(m["speed"]), 2),
-                    "body": round(float(m["body"]), 2),
-                    "acceleration": round(float(m["acceleration"]), 2),
-                    "amount": round(float(m.get("amount", 0)), 0),  # 元
-                    "score": round(float(m["change_ratio"]), 4),     # 扫描场景按涨幅排
                 })
-            # 命中股按涨幅降序
             hits.sort(key=lambda x: x["change_ratio"], reverse=True)
             avg_chg = sum(h["change_ratio"] for h in hits) / len(hits)
             groups_out.append({
@@ -517,17 +543,12 @@ class RealtimeEngine:
                 "hits": hits,
             })
 
-        # 按命中数降序，并列时按平均涨幅降序
         groups_out.sort(key=lambda x: (x["hit_count"], x["hit_avg_change"]), reverse=True)
 
         return {
-            "trade_date": trade_date,
-            "snapshot_time": snapshot_time or latest_time,
-            "latest_time": latest_time,
-            "available_times": available_times,
-            "is_today": is_today,
-            "pool_size": int(len(rt_df)),
-            "hit_total": int(len(hit_codes)),
+            "query": query,
+            "pool_size": int(len(all_hit_lookup)),   # 全市场选股总数（参考）
+            "hit_total": int(len(hit_codes)),         # 自选范围内的命中数
             "group_hit_count": len(groups_out),
             "groups": groups_out,
         }
@@ -670,6 +691,43 @@ def _parse_search_stocks_md(md: str) -> Dict[str, dict]:
 _engine_instance = None
 
 
+def _result_cache_key(trade_date, snapshot_time, watchlist_mode, watchlist_date, custom_mode):
+    """构造看板结果缓存的 key（同一看板+同一时刻的多人请求命中同一 key）"""
+    mode = "custom" if custom_mode else ("wl:" + (watchlist_date or "") if watchlist_mode else "market")
+    st = snapshot_time if snapshot_time else "latest"
+    return f"{mode}:{trade_date or 'today'}:{st}"
+
+
+def _get_result_lock(rk: str) -> "threading.Lock":
+    """获取 per-result-key 锁（singleflight，防并发重复计算）"""
+    with RealtimeEngine._result_locks_guard:
+        lk = RealtimeEngine._result_locks.get(rk)
+        if lk is None:
+            lk = threading.Lock()
+            RealtimeEngine._result_locks[rk] = lk
+        return lk
+
+
+def _result_cache_get(rk: str) -> Optional[dict]:
+    """查 result_cache（命中且未过期返回结果，否则 None）"""
+    rec = RealtimeEngine._result_cache.get(rk)
+    if rec and (time.time() - rec["fetched_at"]) < RealtimeEngine._RESULT_TTL:
+        return rec["data"]
+    return None
+
+
+def _result_cache_set(rk: str, data: dict):
+    """写 result_cache（LRU 淘汰）"""
+    cache = RealtimeEngine._result_cache
+    cache[rk] = {"data": data, "fetched_at": time.time()}
+    # LRU：超过上限删最早的（dict 保持插入序，删 first key）
+    while len(cache) > RealtimeEngine._RESULT_MAX_ENTRIES:
+        try:
+            del cache[next(iter(cache))]
+        except (StopIteration, KeyError):
+            break
+
+
 def get_realtime_dashboard(
     trade_date: str = None,
     snapshot_time: str = None,
@@ -678,40 +736,50 @@ def get_realtime_dashboard(
     top_n: int = 10,
     custom_mode: bool = False,
 ) -> Dict:
-    """获取实时看板（分时数据版）。序列缓存在 engine 内部按 TTL 管理。"""
+    """
+    获取实时看板。三层缓存（透明，前端无感）：
+      1. result_cache：同一看板+同一时刻的多人请求 → 直读结果（0ms）
+      2. series_cache：分时序列 stale-while-revalidate（不阻塞 + 后台刷新）
+      3. 中焯 API：singleflight 合并（多人只拉一次）
+    """
     global _engine_instance
     if _engine_instance is None:
         _engine_instance = RealtimeEngine()
-    return _engine_instance.compute_dashboard(
-        trade_date=trade_date,
-        snapshot_time=snapshot_time,
-        top_n=top_n,
-        watchlist_mode=watchlist_mode,
-        watchlist_date=watchlist_date,
-        custom_mode=custom_mode,
-    )
+
+    # —— 第1层：result_cache 快速路径 ——
+    rk = _result_cache_key(trade_date, snapshot_time, watchlist_mode, watchlist_date, custom_mode)
+    cached = _result_cache_get(rk)
+    if cached is not None:
+        return cached
+
+    # —— miss：singleflight 抢锁，只算一次 ——
+    lk = _get_result_lock(rk)
+    with lk:
+        # double-check：等锁期间可能已有其他请求填入
+        cached = _result_cache_get(rk)
+        if cached is not None:
+            return cached
+        # 实际计算（内部走 series_cache + 中焯 singleflight）
+        result = _engine_instance.compute_dashboard(
+            trade_date=trade_date,
+            snapshot_time=snapshot_time,
+            top_n=top_n,
+            watchlist_mode=watchlist_mode,
+            watchlist_date=watchlist_date,
+            custom_mode=custom_mode,
+        )
+        # 只缓存成功结果（不缓存 error）
+        if "error" not in result:
+            _result_cache_set(rk, result)
+        return result
 
 
-def scan_custom_groups(
-    trade_date: str = None,
-    snapshot_time: str = None,
-    min_change: float = 7.0,
-    max_change: float = 12.0,
-    min_amount: float = None,
-    min_body: float = None,
-) -> Dict:
-    """强势股归类扫描（全局入口，复用 engine 单例）。"""
+def scan_custom_groups(query: str) -> Dict:
+    """自选股强势归类扫描（全局入口，复用 engine 单例）。MCP 选股 + 自选交集 + 自选分组归类。"""
     global _engine_instance
     if _engine_instance is None:
         _engine_instance = RealtimeEngine()
-    return _engine_instance.scan_custom_groups(
-        trade_date=trade_date,
-        snapshot_time=snapshot_time,
-        min_change=min_change,
-        max_change=max_change,
-        min_amount=min_amount,
-        min_body=min_body,
-    )
+    return _engine_instance.scan_custom_groups(query=query)
 
 
 def scan_market_groups(query: str) -> Dict:
@@ -723,5 +791,12 @@ def scan_market_groups(query: str) -> Dict:
 
 
 def clear_cache():
-    """清空分时序列缓存（调试/切日用）"""
-    RealtimeEngine._series_cache.clear()
+    """清空全部缓存（分时序列 + 看板结果 + singleflight 锁 + 后台刷新标志，调试/切日用）"""
+    with RealtimeEngine._series_locks_guard:
+        RealtimeEngine._series_cache.clear()
+        RealtimeEngine._series_locks.clear()
+    with RealtimeEngine._refreshing_guard:
+        RealtimeEngine._refreshing.clear()
+    with RealtimeEngine._result_locks_guard:
+        RealtimeEngine._result_cache.clear()
+        RealtimeEngine._result_locks.clear()

@@ -242,34 +242,18 @@ def get_custom_dashboard(
 
 
 @app.get("/api/custom/scan")
-def get_custom_scan(
-    trade_date: str = None,
-    snapshot_time: str = None,
-    min_change: float = 7.0,
-    max_change: float = 12.0,
-    min_amount: float = None,
-    min_body: float = None,
-):
+def get_custom_scan(query: str):
     """
-    强势股归类扫描：按筛选条件过滤自选分组股票池，把命中股票按分组归类统计。
+    自选股强势归类：用 iFinD MCP search_stocks 自然语言选股，
+    取与自选分组股票的交集，再按自选分组归类统计。
 
-    复用 realtime_engine 的分时序列缓存（custom_group 键），仅做内存筛选归类。
+    与 /api/market/scan 的差异：命中股限定在自选分组范围内（取交集），
+    归类维度是自选分组（custom_group 表），非 884 概念板块。
 
-    :param trade_date: 交易日 YYYYMMDD，默认今天
-    :param snapshot_time: 截止时刻 HH:MM，None=最新（支持时间条切片）
-    :param min_change / max_change: 涨幅区间 %（含两端），默认 7~12
-    :param min_amount: 成交额下限（万元），None=不限
-    :param min_body: 实体涨幅(开盘至今)下限 %，None=不限
+    :param query: 自然语言选股条件（如 "涨幅大于7%并且小于12.1%；未涨停；非ST"）
     """
     from realtime_engine import scan_custom_groups as _scan
-    return _scan(
-        trade_date=trade_date,
-        snapshot_time=snapshot_time,
-        min_change=min_change,
-        max_change=max_change,
-        min_amount=min_amount,
-        min_body=min_body,
-    )
+    return _scan(query=query)
 
 
 @app.get("/api/market/scan")
