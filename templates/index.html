@@ -570,7 +570,7 @@ function scheduleResume() {
       startPolling();
       refresh();
     }
-  }, 60000);  // 每分钟检查一次
+  }, 10000);  // 每 10 秒检查一次（盘前→开盘切换及时，开盘后立即停此定时器）
 }
 
 /** 盘前/非交易日友好提示：状态栏 + 成分股区引导卡片 */
@@ -585,9 +585,11 @@ function showPreOpen(tip) {
     '</div>';
 }
 
-/** 清除盘前提示（进入交易时段后） */
+/** 清除盘前提示（进入交易时段后）—— 真正清空提示内容 + 触发 refresh 填充数据 */
 function clearPreOpen() {
-  // 仅清提示文案，具体数据由后续 refresh() 填充
+  // 提示已被 showPreOpen 写死到各区块，这里清掉 + 立即拉数据覆盖
+  setStatus('', '');
+  refresh();
 }
 function onAutoToggle() {
   autoFollow = document.getElementById('rtAuto').checked;
@@ -702,8 +704,10 @@ async function loadDates() {
       input.value = yyyymmdd.slice(0,4) + '-' + yyyymmdd.slice(4,6) + '-' + yyyymmdd.slice(6,8);
     };
     let defaultStr = todayStr;
-    if (tradeDays.size > 0 && !tradeDays.has(todayStr)) {
-      // 今天非交易日 → 向前找最近一个交易日（最多回看 7 天）
+    // 仅当 session_status 明确判定"今天非交易日"时才回退到最近交易日；
+    // 不用 tradeDays.has(today) 判断（日历数据可能滞后到昨天，误判今天为非交易日）
+    const isNonTradeDay = sessionStatus && sessionStatus.is_trading_day === false;
+    if (isNonTradeDay && tradeDays.size > 0) {
       let found = null;
       for (let i = 1; i <= 7; i++) {
         const prev = new Date(browserToday);
