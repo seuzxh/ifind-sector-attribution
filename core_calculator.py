@@ -55,12 +55,20 @@ def calc_sector_strength(
     # S4: 相对强度（vs 全市场）
     s4 = s1 - market_return
 
+    # 实体涨幅（开盘至今涨幅 body 的成分股均值）：仅实时分时数据有 body 列；
+    # history 模式 daily_df 无此列，缺失时记 None（前端展示为 -）。
+    if "body" in concept_df.columns:
+        s_body = float(concept_df["body"].mean())
+    else:
+        s_body = None
+
     return {
         "concept_code": concept_code,
         "s1_return": round(float(s1), 4),
         "s2_breadth": round(float(s2), 4),
         "s4_relative": round(float(s4), 4),
-        "member_count": len(concept_df)
+        "member_count": len(concept_df),
+        "s_body": round(s_body, 4) if s_body is not None else None,
     }
 
 

@@ -390,6 +390,17 @@ class RealtimeEngine:
             return {"error": "板块强度计算为空", "trade_date": trade_date}
 
         # 5. top / bottom 板块
+        # custom 模式：把分组名以 "ZT" 开头的涨停板分组单独拆出（不参与 top/bottom 排序），
+        # 其余非 ZT 分组才进 top/bottom。sector 看板无此概念，zt_df 始终为 None。
+        zt_df = None
+        if custom_mode:
+            def _is_zt(cc):
+                name = active_concept_names.get(cc, cc)
+                return name.strip().upper().startswith("ZT")
+            zt_mask = strength_df["concept_code"].apply(_is_zt)
+            zt_df = strength_df[zt_mask].sort_values("s1_return", ascending=False) if zt_mask.any() else None
+            strength_df = strength_df[~zt_mask].copy()
+
         strength_sorted = strength_df.sort_values("score", ascending=False)
         top_df = strength_sorted.head(top_n)
         bottom_df = strength_sorted.tail(top_n).iloc[::-1]
@@ -425,6 +436,7 @@ class RealtimeEngine:
                 "concept_name": active_concept_names.get(cc, cc),
                 "score": round(float(row["score"]), 4),
                 "s1_return": round(float(row["s1_return"]), 2),
+                "body": round(float(row["s_body"]), 2) if pd.notna(row.get("s_body")) else None,
                 "s2_breadth": round(float(row["s2_breadth"]), 4),
                 "member_count": int(row["member_count"]),
                 "holding_in_group": holding_in,   # 本分组包含的持仓股（供前端醒目标注）
@@ -433,6 +445,11 @@ class RealtimeEngine:
 
         top_sectors = [_build_sector_entry(row, asc=False) for _, row in top_df.iterrows()]
         bottom_sectors = [_build_sector_entry(row, asc=True) for _, row in bottom_df.iterrows()]
+
+        # ZT 涨停分组：custom 模式下，分组名以 "ZT" 开头的单独成区，不参与 top/bottom 排序
+        zt_sectors = []
+        if custom_mode and zt_df is not None and not zt_df.empty:
+            zt_sectors = [_build_sector_entry(row, asc=False) for _, row in zt_df.iterrows()]
 
         # 7. 市场统计（基于切片末点）
         market_stats = self._market_stats(rt_df)
@@ -448,6 +465,7 @@ class RealtimeEngine:
             "market_stats": market_stats,
             "top_sectors": top_sectors,
             "bottom_sectors": bottom_sectors,
+            "zt_sectors": zt_sectors,   # ZT 涨停分组（仅 custom 模式，独立统计不参与 top/bottom）
             "holding_stocks": holding_stocks,   # 持仓股清单（仅 custom 模式非空，供前端醒目标注）
         }
 

@@ -96,6 +96,7 @@
   .panel h2 .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: normal; }
   .badge-red { background: #fee2e2; color: #dc2626; }
   .badge-green { background: #d1fae5; color: #059669; }
+  .badge-orange { background: #ffedd5; color: #ea580c; }
   .panel h2 .hint { font-size: 11px; color: #9ca3af; font-weight: normal; margin-left: auto; }
 
   /* ===== 板块排行表 ===== */
@@ -335,6 +336,11 @@
     <h2><span class="badge badge-green">弱势</span> Bottom 10 板块 <span class="hint">点击行高亮下方成分股 · 表头可排序</span></h2>
     <div id="bottomTable"></div>
   </div>
+  <!-- 涨停板分组（仅 custom 看板：ZT 开头分组单独统计，不参与强势/弱势排序） -->
+  <div class="panel" id="ztPanel" style="display:none;">
+    <h2><span class="badge badge-orange">🔥 涨停板分组</span> ZT <span class="hint">涨停板股票单独归因 · 按涨幅排序 · 点击行高亮下方成分股</span></h2>
+    <div id="ztTable"></div>
+  </div>
 </div>
 
 <!-- 成分股区 -->
@@ -343,6 +349,7 @@
   <div class="members-tabs">
     <button class="active" onclick="switchMembersTab('top', this)">📈 强势板块成分股</button>
     <button onclick="switchMembersTab('bottom', this)">📉 弱势板块成分股</button>
+    <button id="ztMemberBtn" onclick="switchMembersTab('zt', this)" style="display:none;">🔥 涨停分组成分股</button>
   </div>
   <div class="members-grid" id="membersGrid">
     <div class="empty-msg">加载中...</div>
@@ -523,6 +530,19 @@ function stopPolling() {
 async function checkSession() {
   const mode = document.getElementById('modeSel').value;
   if (mode !== 'realtime') return;  // 仅实时模式需要判断
+  // 选了历史日期时不判断盘前（历史日期有全天数据，不该被盘前提示阻断）
+  const selectedDate = getDateVal();
+  if (selectedDate) {
+    const todayD = new Date();
+    const todayStr = todayD.getFullYear() + ''
+      + String(todayD.getMonth()+1).padStart(2,'0')
+      + String(todayD.getDate()).padStart(2,'0');
+    if (selectedDate !== todayStr) {
+      clearPreOpen();
+      startPolling();
+      return;
+    }
+  }
   const s = await fetchJson('/api/session_status');
   if (s.error) {  // 接口异常 → 保守起见启动轮询（让原有 error 文案兜底）
     clearPreOpen();
@@ -860,6 +880,14 @@ function renderStats(payload) {
 function renderRankTables(payload) {
   renderRankTable('topTable', payload.top_sectors || [], 'top');
   renderRankTable('bottomTable', payload.bottom_sectors || [], 'bottom');
+  // ZT 涨停分组（仅 custom 看板）：独立面板 + 成分股 tab 按钮
+  const ztSec = payload.zt_sectors || [];
+  const showZT = isCustomBoard && ztSec.length > 0;
+  document.getElementById('ztPanel').style.display = showZT ? '' : 'none';
+  document.getElementById('ztMemberBtn').style.display = showZT ? '' : 'none';
+  if (showZT) renderRankTable('ztTable', ztSec, 'zt');
+  // 切换到非 custom 看板或无 ZT 时，若当前停在 zt tab 应回退到 top
+  if (!showZT && membersTab === 'zt') { membersTab = 'top'; switchMembersTabBtn('top'); }
 }
 
 function renderRankTable(containerId, sectors, tab) {
@@ -877,6 +905,8 @@ function renderRankTable(containerId, sectors, tab) {
 
   const rows = sectors.map((s, i) => {
     const s1Cls = s.s1_return > 0 ? 'up' : (s.s1_return < 0 ? 'down' : '');
+    const bodyVal = (s.body === null || s.body === undefined) ? null : s.body;
+    const bodyCls = bodyVal === null ? '' : (bodyVal > 0 ? 'up' : (bodyVal < 0 ? 'down' : ''));
     // 含持仓的分组：行高亮 + 概念名后加持仓徽章（仅自选看板）
     const holdingIn = (isCustomBoard && s.holding_in_group && s.holding_in_group.length) ? s.holding_in_group : null;
     const holdCls = holdingIn ? ' has-holding' : '';
@@ -885,6 +915,7 @@ function renderRankTable(containerId, sectors, tab) {
       <td class="center">${rankBadge(i)}</td>
       <td class="left concept-name">${s.concept_name}${holdBadge}<div style="font-size:11px;color:#9ca3af;font-weight:normal;">${s.concept_code}</div></td>
       <td class="${s1Cls}" data-v="${s.s1_return}">${fmt(s.s1_return)}%</td>
+      <td class="${bodyCls}" data-v="${bodyVal === null ? '' : bodyVal}">${bodyVal === null ? '-' : fmt(bodyVal) + '%'}</td>
       <td data-v="${s.s2_breadth}">${Math.round(s.s2_breadth*(s.member_count||0))}/${s.member_count||0}</td>
       <td data-v="${s.member_count||0}">${s.member_count||'-'}</td>
       <td><span class="score-bar" style="background:${scoreClass(s.score)};">${fmt(s.score)}</span></td>
@@ -897,6 +928,7 @@ function renderRankTable(containerId, sectors, tab) {
       <th class="center">#</th>
       <th class="left">板块名称 / 代码</th>
       <th data-k="s1" onclick="sortRankTable(this)">涨幅<br><span style="font-weight:normal;color:#9ca3af;">成分股平均涨幅</span></th>
+      <th data-k="body" onclick="sortRankTable(this)">实体涨幅<br><span style="font-weight:normal;color:#9ca3af;">开盘至今均值</span></th>
       <th data-k="s2" onclick="sortRankTable(this)">上涨家数<br><span style="font-weight:normal;color:#9ca3af;">上涨只数/总只数</span></th>
       <th data-k="cnt" onclick="sortRankTable(this)">成分<br><span style="font-weight:normal;color:#9ca3af;">股数</span></th>
       <th class="sorted" data-order="↓" data-k="score" onclick="sortRankTable(this)">评分<br><span style="font-weight:normal;color:#9ca3af;">综合分</span></th>
@@ -933,8 +965,9 @@ function applyRankSort(table, key, order, updateHeadOnly) {
   rows.sort((a, b) => {
     let av, bv;
     if (key === 's1') { av = parseFloat(a.children[2].dataset.v); bv = parseFloat(b.children[2].dataset.v); }
-    else if (key === 's2') { av = parseFloat(a.children[3].dataset.v); bv = parseFloat(b.children[3].dataset.v); }
-    else if (key === 'cnt') { av = parseInt(a.children[4].dataset.v); bv = parseInt(b.children[4].dataset.v); }
+    else if (key === 'body') { av = parseFloat(a.children[3].dataset.v); bv = parseFloat(b.children[3].dataset.v); }
+    else if (key === 's2') { av = parseFloat(a.children[4].dataset.v); bv = parseFloat(b.children[4].dataset.v); }
+    else if (key === 'cnt') { av = parseInt(a.children[5].dataset.v); bv = parseInt(b.children[5].dataset.v); }
     else { av = parseFloat(a.querySelector('.score-bar').textContent); bv = parseFloat(b.querySelector('.score-bar').textContent); }
     if (isNaN(av)) av = 0; if (isNaN(bv)) bv = 0;
     return desc ? bv - av : av - bv;
@@ -954,16 +987,19 @@ function sortRankTable(th) {
   const newOrder = th.dataset.order === '↓' ? '↑' : '↓';
   // 保存排序状态（供 3s 刷新后恢复）。tab 从 table 的 data-tab 属性取。
   const tab = table.dataset.tab;
-  if (tab === 'top' || tab === 'bottom') rankSort[tab] = { key, order: newOrder };
+  if (tab === 'top' || tab === 'bottom' || tab === 'zt') rankSort[tab] = { key, order: newOrder };
   applyRankSort(table, key, newOrder, false);
 }
 
 function onSectorRowClick(code, tr) {
-  const tab = tr.closest('.panel').querySelector('h2 .badge').classList.contains('badge-red') ? 'top' : 'bottom';
+  // 判定行所属面板：badge-red→top, badge-green→bottom, badge-orange→zt
+  const badge = tr.closest('.panel').querySelector('h2 .badge');
+  let tab = 'bottom';
+  if (badge.classList.contains('badge-red')) tab = 'top';
+  else if (badge.classList.contains('badge-orange')) tab = 'zt';
   if (membersTab !== tab) {
     membersTab = tab;
-    document.querySelectorAll('.members-tabs button').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.members-tabs button')[tab === 'top' ? 0 : 1].classList.add('active');
+    switchMembersTabBtn(tab);
     renderMembers();
   }
   document.querySelectorAll('.rank-table tbody tr').forEach(r => r.classList.remove('active'));
@@ -974,14 +1010,22 @@ function onSectorRowClick(code, tr) {
 // ========== 渲染：成分股 ==========
 function switchMembersTab(tab, btn) {
   membersTab = tab;
-  document.querySelectorAll('.members-tabs button').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
+  switchMembersTabBtn(tab);
   renderMembers();
+}
+// 按 tab 名激活对应按钮（top=0/bottom=1/zt=2），供 onSectorRowClick 与 renderRankTables 复用
+function switchMembersTabBtn(tab) {
+  const btns = document.querySelectorAll('.members-tabs button');
+  btns.forEach(b => b.classList.remove('active'));
+  const idx = tab === 'top' ? 0 : (tab === 'zt' ? 2 : 1);
+  if (btns[idx]) btns[idx].classList.add('active');
 }
 
 function renderMembers() {
   if (!lastPayload) return;
-  const sectors = membersTab === 'top' ? (lastPayload.top_sectors || []) : (lastPayload.bottom_sectors || []);
+  const sectors = membersTab === 'top' ? (lastPayload.top_sectors || [])
+               : membersTab === 'zt' ? (lastPayload.zt_sectors || [])
+               : (lastPayload.bottom_sectors || []);
   const grid = document.getElementById('membersGrid');
   if (sectors.length === 0) { grid.innerHTML = '<div class="empty-msg">无数据</div>'; return; }
   grid.innerHTML = sectors.map((s, i) => { s._idx = i + 1; return sectorCardHtml(s, membersTab); }).join('');
