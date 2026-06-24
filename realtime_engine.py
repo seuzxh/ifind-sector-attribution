@@ -401,6 +401,20 @@ class RealtimeEngine:
             zt_df = strength_df[zt_mask].sort_values("s1_return", ascending=False) if zt_mask.any() else None
             strength_df = strength_df[~zt_mask].copy()
 
+            # ZT 涨停分组是手工整理的，成分股天然较少，不应被 MIN_MEMBER_COUNT 过滤。
+            # 上面 calc_all_sectors_strength 已把命中数不足的 ZT 分组丢弃了，这里补算：
+            # 对被过滤的 ZT 分组用 min_member_count=0 重新计算强度，再并入 zt_df。
+            zt_codes_all = {cc for cc in members_map if _is_zt(cc)}
+            zt_codes_have = set(zt_df["concept_code"]) if zt_df is not None else set()
+            zt_missing = zt_codes_all - zt_codes_have
+            if zt_missing:
+                zt_miss_map = {cc: members_map[cc] for cc in zt_missing}
+                zt_miss_df = calc_all_sectors_strength(rt_df, zt_miss_map, min_member_count=0)
+                if not zt_miss_df.empty:
+                    zt_miss_df = zt_miss_df.sort_values("s1_return", ascending=False)
+                    zt_df = zt_miss_df if zt_df is None else pd.concat([zt_df, zt_miss_df], ignore_index=True) \
+                                                                .sort_values("s1_return", ascending=False)
+
         strength_sorted = strength_df.sort_values("score", ascending=False)
         top_df = strength_sorted.head(top_n)
         bottom_df = strength_sorted.tail(top_n).iloc[::-1]
