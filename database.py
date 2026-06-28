@@ -197,6 +197,20 @@ class Database:
                 and config.is_in_sector_pool(row["concept_code"])
             ]
 
+    def get_observe_concept_codes(self) -> List[str]:
+        """
+        获取观察池概念代码全集（884 三级行业 + 885/886 概念板块）。
+        按前缀白名单过滤（排除海外），但【不过滤板块池】——这是与 get_a_share_concept_codes 的关键区别。
+        用于看板展示（realtime_engine），不参与 daily 归因。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT concept_code FROM ths_concept_dict")
+            return [
+                row["concept_code"] for row in cursor.fetchall()
+                if config.is_a_share_concept(row["concept_code"])
+                and config.is_in_observe_pool(row["concept_code"])
+            ]
+
     def get_all_member_stock_codes(self) -> List[str]:
         """
         从成分股表反查全部 A 股股票代码（全市场股票池）。

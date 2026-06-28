@@ -130,12 +130,31 @@ ALL_CONCEPT_CODES = list(SECTOR_POOL_CODES)
 
 def is_in_sector_pool(concept_code: str) -> bool:
     """
-    板块池过滤：池未启用或为空 → 返回 True（放行全部 A 股概念）；
-    否则只放行 SECTOR_POOL_CODES 内的代码。
+    板块池过滤（daily 归因/强度计算 + 看板共用）。
+    - 池未启用或为空 → 放行全部 A 股概念；
+    - 否则放行 SECTOR_POOL_CODES 内的代码，并额外放行观察池前缀（885/886 概念板块），
+      使 daily 归因覆盖 884 行业 + 885/886 概念全集。
     """
     if not SECTOR_POOL_ENABLED or not SECTOR_POOL_CODES:
         return True
-    return concept_code in SECTOR_POOL_CODES
+    if concept_code in SECTOR_POOL_CODES:
+        return True
+    # 扩展放行 885/886 概念板块（与归因池需求一致）
+    return concept_code is not None and concept_code[:3] in ("885", "886")
+
+
+# ========== 观察池（看板展示用，不进 daily 归因） ==========
+# 观察池 = 884 三级行业 + 885/886 概念板块，用于看板展示更全的板块强度排名。
+# 与"归因池"（SECTOR_POOL_CODES，仅 884）区别：
+#   - 归因池：daily 盘后归因/多周期强度计算用，受 is_in_sector_pool 过滤（get_a_share_concept_codes）。
+#   - 观察池：看板（realtime_engine）展示用，不参与归因，取 884+885/886 全集。
+# 两者隔离：改观察池不影响归因链路。
+OBSERVE_CONCEPT_PREFIXES = ("884", "885", "886")
+
+
+def is_in_observe_pool(concept_code: str) -> bool:
+    """观察池判定：884 三级行业 / 885 / 886 概念板块。用于看板展示，不参与归因。"""
+    return concept_code is not None and concept_code[:3] in OBSERVE_CONCEPT_PREFIXES
 
 
 # ========== 盘前筛选配置 ==========

@@ -6,6 +6,48 @@
 
 基于同花顺 iFinD API 的 **A股行业归因 + 板块强度检测** 系统。**仅处理沪深北交易所 A 股**（.SH/.SZ/.BJ），全链路过滤海外代码。输出：哪个板块最强、每只股票被哪个概念带涨。盘中实时监控基于 kline-fetcher 分时数据，**从 9:15 集合竞价即可开始**（ref_price 推算涨跌）。
 
+## ⏳ 待办（2026-06-29 更新）
+
+**目标**：扩展板块分类，从「仅 884 三级行业」扩展为「884 + 885/886 概念板块」全集观察；提供「更新指数成分」按钮，点击才刷新成分股。
+
+### 已完成 ✅
+- [x] **字典更新**：`ths_concept_dict` 表从 259 → **647 个**（884×259 + 885×293 + 886×95）。舍弃 864（非白名单且与885重名）、883（宽基样本股）。备份 `data/sector_attribution.db.bak.before_dict_update.20260628_195652`。
+- [x] **885/886 成分股拉取**：388 个概念全部成功，入库 **69499 条**（885→54813 / 886→14686），A股过滤后**0 条非A股残留**。备份 `data/sector_attribution.db.bak.before_members_fetch.20260629_004535`。
+- [x] **access_token 自动刷新**：`ifind_client.py` 加了 `refresh_access_token()` + `_post` 遇 401 自动刷新重试。**详见下方运维知识，access_token 过期不再是问题**。
+
+### 待做（按优先级）⬇️
+1. **🟡 新增「更新指数成分」按钮**（前端 + 后端）
+   - 前端：`templates/index.html` 顶部栏加按钮，仿 `runPrescreen()` 范式（POST + setStatus 反馈）
+   - 后端：`api_server.py` 加 `POST /api/observe/refresh`，仿 `/api/custom/check_reload` 模式（同步执行 + 返回 stats + 清 realtime 缓存）
+   - 同步 `sync_pipeline.py` 加 `refresh_observe_members()`（遍历 884+885/886 全集，复用 `_fetch_concept_members_batch`）
+
+2. **🟡 新增观察池，与归因池隔离**
+   - `config.py`：加 `OBSERVE_CONCEPT_PREFIXES = ("884","885","886")` + `is_in_observe_pool()`
+   - `database.py`：加 `get_observe_concept_codes()`（取全集，**不过滤板块池**）—— 不能改 `get_a_share_concept_codes()`（它被 daily 归因和看板共用，含 884 池过滤）
+   - `realtime_engine.py:62` `_ensure_maps` 板块列表来源改 `get_observe_concept_codes()`（仅此一处改动，让看板能看到 885/886）
+
+3. **🟡 member_date 不一致**：884 成分股是 20260614、885/886 是 20260629。`get_concept_members` 取 `MAX(member_date)`，会导致 884 在最新快照里"消失"。需在观察池改造时统一处理（或把 884 也刷到最新日期）。
+
+### 关键约束（避免踩坑）
+- **不动 daily 归因链路**：归因池 `SECTOR_POOL_CODES`（884×259）一字不改，`get_a_share_concept_codes()` 不改
+- **两个 token 别混**：拉成分股用 `ACCESS_TOKEN`（会过期，已自动刷新），MCP/自选股用 `IFIND_MCP_TOKEN`（JWT）
+- **更新机制**：只有点击按钮才更新，无定时无自动
+
+## 🔑 运维知识：access_token 过期自动刷新（重要，别再踩）
+
+**问题背景**：iFinD 数据接口的 `ACCESS_TOKEN` **7 天过期**（报 `errorcode:-1302` / HTTP 401），历史上多次卡住数据拉取。
+
+**已落地方案**（`ifind_client.py`）：
+- `refresh_access_token()`：用 `REFRESH_TOKEN` 调 `https://quantapi.51ifind.com/api/v1/get_access_token` 换新 token，同步更新 `config.ACCESS_TOKEN` + `config.HEADERS["access_token"]`（两处都要更新，否则已构造的 HEADERS 仍带旧值）。
+- `IFindClient._post()`：检测到 **HTTP 401 自动刷新并重试**（带进程锁防并发重复刷新）。
+- **REFRESH_TOKEN 长期有效**（与账号到期日一致），只要它不过期，ACCESS_TOKEN 就能自动刷新。
+
+**注意**：自动刷新只更新**进程内存**里的 token。若希望重启后也用新 token，需手动把刷新后的值同步回 `config_local.py`（或重启时让它自动刷新一次——`_post` 已覆盖此场景）。
+
+**手动刷新**（调试用）：`python -c "from ifind_client import refresh_access_token; print(refresh_access_token())"`
+
+## 运行环境（关键，别猜）
+
 ## 运行环境（关键，别猜）
 
 | 项 | 值 |

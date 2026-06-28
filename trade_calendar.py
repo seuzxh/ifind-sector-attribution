@@ -24,6 +24,8 @@ import threading
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+import config
+
 
 # ========== 交易时段规则（固定，A 股）==========
 # 集合竞价 09:15-09:25；连续竞价 09:30-11:30 / 13:00-15:00
@@ -129,6 +131,11 @@ class TradeCalendar:
         except ImportError as e:
             print(f"[CALENDAR] 无法导入 kline_fetcher: {e}")
             return False
+
+        # kline-fetcher 只读环境变量 KLINE_API_BASE_URL，不读项目 config。
+        # 把 config_local.py 注入到 config 的值同步到环境变量（与 IntradayFetcher 一致）。
+        if not os.environ.get("KLINE_API_BASE_URL") and getattr(config, "KLINE_API_BASE_URL", ""):
+            os.environ["KLINE_API_BASE_URL"] = config.KLINE_API_BASE_URL
 
         try:
             fetcher = TrendFetcher()

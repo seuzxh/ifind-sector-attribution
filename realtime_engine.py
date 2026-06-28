@@ -59,7 +59,9 @@ class RealtimeEngine:
             return
         print("[REALTIME] 构建成分股映射缓存...")
         import sqlite3
-        concept_codes = self.db.get_a_share_concept_codes()
+        # 用观察池全集（884 行业 + 885/886 概念），而非归因池（仅 884）。
+        # 这样看板能展示概念板块强度；归因链路仍用 get_a_share_concept_codes（不受影响）。
+        concept_codes = self.db.get_observe_concept_codes()
         members_map = {}
         for cc in concept_codes:
             members = self.db.get_concept_members(cc)
