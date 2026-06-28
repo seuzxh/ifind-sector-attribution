@@ -54,15 +54,27 @@ class PrescreenRequest(BaseModel):
 
 # ========== API 接口 ==========
 @app.get("/", response_class=HTMLResponse)
-def root(board: str = None):
+def root(board: str = None, legacy: str = None):
     """
-    可视化看板入口，按 ?board 参数分发：
-    - 无参：Tab 容器（tabs.html），内嵌各看板 iframe
-    - board=sector：原板块强度看板（index.html）
-    - board=custom：自选分组看板（index.html，前端据 board 参数切换数据源）
-    - board=auction：集合竞价选股看板（index.html）
-    - board=chat：AI 问答页面（chat.html）
+    可视化看板入口。
+    默认返回 Vue 3 SPA（static/index.html，Hash 路由），所有看板/Tab 在前端切换。
+    - legacy=1：回退到旧版原生 JS 看板（templates/tabs.html + iframe），用于回滚/对比。
+    - 旧 ?board= 参数仅在 legacy 模式下生效。
     """
+    # 默认：Vue SPA（优先 static/index.html，缺失时回退旧版）
+    spa_path = os.path.join(_STATIC_DIR, "index.html")
+    if legacy != "1":
+        if os.path.exists(spa_path):
+            with open(spa_path, "r", encoding="utf-8") as f:
+                return f.read()
+        # SPA 未构建：回退旧版并提示
+        tabs_path = os.path.join(_TEMPLATE_DIR, "tabs.html")
+        if os.path.exists(tabs_path):
+            with open(tabs_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return "<!-- 提示：Vue SPA (static/index.html) 未构建，已回退旧版。运行 cd frontend && npm run build 后生效。 -->\n" + content
+
+    # ===== 以下为旧版原生 JS 看板（legacy=1 或 SPA 未构建时）=====
     # AI 问答页：独立模板，不与看板复用
     if board == "chat":
         chat_path = os.path.join(_TEMPLATE_DIR, "chat.html")

@@ -22,11 +22,14 @@
 | 项目目录 | `/root/projects/2.monitor_940/ifind-sector-attribution` |
 | token 配置 | `config_local.py`（含 `ACCESS_TOKEN` / `REFRESH_TOKEN`，已 gitignore） |
 | 数据库 | `data/sector_attribution.db`（SQLite，首次 init 自动创建） |
+| **Node.js** | **>= 18**（前端 Vue 工程构建用；仅部署/改前端时需要，运行时不依赖） |
 | 操作系统 | Linux（systemd） |
 | 权限 | root（因 conda 环境在 /root 下） |
 | **服务器地址** | **115.191.14.82** |
 
 服务绑 `0.0.0.0:8000`，**支持两种访问方式**：公网直连（需安全组放行）和 SSH 隧道（无需开放端口）。
+
+> **前端架构**：看板前端已迁移为 **Vue 3 + Vite + TypeScript + Element Plus**（`frontend/` 子目录）。默认 `/` 返回 Vue SPA（`static/index.html`，构建产物）。访问 `/?legacy=1` 可回退旧版原生 JS 看板（`templates/`）。
 
 ---
 
@@ -72,6 +75,28 @@ sudo systemctl daemon-reload
 sudo systemctl enable ifind-monitor
 sudo systemctl start ifind-monitor
 ```
+
+---
+
+## 2.5 前端构建（Vue 3 SPA）
+
+看板前端是 `frontend/` 下的 Vue 3 + Vite 工程，构建产物输出到项目根 `static/`，由 FastAPI 的 `/` 直接 serve。**改前端代码后需重新构建并重启服务**。
+
+```bash
+cd /root/projects/2.monitor_940/ifind-sector-attribution/frontend
+npm install        # 首次或依赖变更时（需 Node.js >= 18）
+npm run build      # 类型检查 + 构建，输出到 ../static/
+cd ..
+sudo systemctl restart ifind-monitor   # 重启服务加载新产物
+```
+
+开发调试（热更新，不污染 static/）：
+
+```bash
+cd frontend && npm run dev    # 启 Vite dev server（5173），/api 自动代理到后端 8000
+```
+
+> 构建产物 `static/` 已 gitignore，不入库；`node_modules/` 同样不入库。`/?legacy=1` 可访问旧版看板用于对比/回滚。
 
 ---
 
