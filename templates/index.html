@@ -1567,6 +1567,16 @@ document.getElementById('prescreenModal').addEventListener('click', function(e) 
   // 按看板类型设置标题
   document.getElementById('boardTitle').textContent = BOARD_TITLE;
   document.title = BOARD_TITLE.replace(/^[^\u4e00-\u9fa5a-zA-Z]+\s*/, '');
+  // 集合竞价看板：隐藏无关控件（模式/日期/盘前筛选），它有自动轮询，无需手动控件
+  if (isAuctionBoard) {
+    document.querySelector('.controls').style.display = 'none';
+    document.getElementById('timeBar').classList.remove('show');
+    await loadTradeCalendar();  // 竞价仍需交易日历（虽不显示日期选择器）
+    document.getElementById('modeHint').textContent = '（集合竞价 9:20-9:25：高开/爆量/挂单失衡/价格趋势 加权选股选分组 · 不可撤单窗口真实意图 · 自动刷新）';
+    startPolling();  // 竞价看板直接轮询（9:20-9:25 数据逐渐变真，9:25 后后端 30s 缓存）
+    refresh();
+    return;  // auction 不走下方 realtime 的 onModeChange/checkSession
+  }
   await loadTradeCalendar();  // 先拉交易日历，供 loadDates 判断默认日期（今天是否交易日）
   await loadDates();
   onModeChange();

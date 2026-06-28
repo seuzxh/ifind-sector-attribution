@@ -57,9 +57,10 @@ class PrescreenRequest(BaseModel):
 def root(board: str = None):
     """
     可视化看板入口，按 ?board 参数分发：
-    - 无参：Tab 容器（tabs.html），内嵌三个 iframe
+    - 无参：Tab 容器（tabs.html），内嵌各看板 iframe
     - board=sector：原板块强度看板（index.html）
     - board=custom：自选分组看板（index.html，前端据 board 参数切换数据源）
+    - board=auction：集合竞价选股看板（index.html）
     - board=chat：AI 问答页面（chat.html）
     """
     # AI 问答页：独立模板，不与看板复用
@@ -70,8 +71,8 @@ def root(board: str = None):
                 return f.read()
         return "<h1>templates/chat.html 未找到</h1>"
 
-    # Tab 容器模式：顶层访问 / （iframe 内部请求会带 ?board=sector/custom/scan）
-    is_iframe_inner = board in ("sector", "custom", "scan", "market_scan")
+    # Tab 容器模式：顶层访问 / （iframe 内部请求会带 ?board=sector/custom/auction/scan）
+    is_iframe_inner = board in ("sector", "custom", "auction", "scan", "market_scan")
     if not is_iframe_inner:
         tabs_path = os.path.join(_TEMPLATE_DIR, "tabs.html")
         if os.path.exists(tabs_path):
