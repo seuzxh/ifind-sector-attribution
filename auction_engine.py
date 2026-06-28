@@ -227,11 +227,12 @@ class AuctionEngine:
         return result
 
     # ========== 主入口 ==========
-    def compute(self, snapshot_time: Optional[str] = None,
+    def compute(self, trade_date: Optional[str] = None, snapshot_time: Optional[str] = None,
                 top_stock: int = None, top_group: int = None) -> Dict:
         """
         计算竞价选股选分组看板。
 
+        :param trade_date: 交易日 YYYYMMDD，None=今天（当日实时）；传历史日期则拉该日全天分时
         :param snapshot_time: 截止时刻 HH:MM（如 "09:25"），None=取 pre_market 末点
         :param top_stock: 返回 top 个股数（默认 config.AUCTION_TOP_STOCK）
         :param top_group: 返回 top 分组数（默认 config.AUCTION_TOP_GROUP）
@@ -241,6 +242,15 @@ class AuctionEngine:
         top_group = top_group or config.AUCTION_TOP_GROUP
         holding = self._get_holding_stocks()
 
+        # 0. 日期处理：None=今天（当日实时），否则历史日期
+        today_str = datetime.now().strftime("%Y%m%d")
+        if trade_date:
+            trade_date = trade_date.replace("-", "")
+            is_today = (trade_date == today_str)
+        else:
+            trade_date = today_str
+            is_today = True
+
         # 1. 观察池 + 分组映射
         codes = self.db.get_custom_all_stock_codes()
         members_map = self.db.get_custom_members_map()
@@ -248,9 +258,15 @@ class AuctionEngine:
         if not codes:
             return {"error": "自选股分组为空，请先 import-groups 导入"}
 
-        # 2. 拉昨日成交量（算量比）
-        today = datetime.now().strftime("%Y%m%d")
-        yest_date = self.db.get_latest_trade_date(on_or_before=today)
+        # 2. 拉前一交易日成交量（算量比）：取严格 < trade_date 的最新交易日
+        # （get_latest_trade_date 用 <= 可能返回当日，竞价量比要用昨日的量）
+        import sqlite3 as _sqlite3
+        yest_date = None
+        with _sqlite3.connect(self.db.db_path) as _conn:
+            row = _conn.execute(
+                "SELECT MAX(trade_date) FROM daily_kline WHERE trade_date < ?", (trade_date,)
+            ).fetchone()
+            yest_date = row[0] if row else None
         yest_volumes = {}
         if yest_date:
             for r in self.db.get_daily_kline_by_date(yest_date):
@@ -258,15 +274,26 @@ class AuctionEngine:
                 if v and v > 0:
                     yest_volumes[r["code"]] = float(v)
 
-        # 3. 拉分时序列（复用 IntradayFetcher，带 series_cache）
-        series = self.fetcher.fetch_batch(codes, date=None)
+        # 3. 拉分时序列（当日实时 date=None；历史传 YYYYMMDD）
+        date_arg = None if is_today else trade_date
+        series = self.fetcher.fetch_batch(codes, date=date_arg)
         if not series:
-            return {"error": "无分时数据（可能非集合竞价时段）"}
+            return {"error": "无分时数据（可能非集合竞价时段或历史日期无数据）"}
+
+        # 历史日期无 pre_market（中焯 API 只对当日实时返回集合竞价），给出明确提示
+        if not is_today:
+            has_pm = any(rec.get("pre_market") for rec in series.values())
+            if not has_pm:
+                return {
+                    "error": f"{trade_date} 无集合竞价数据（历史日期中焯 API 不返回 pre_market，"
+                             f"集合竞价选股仅支持当日实时）",
+                    "trade_date": trade_date, "is_today": is_today,
+                }
 
         # 4. 算 4 因子 + 综合分
         factor_df = self._build_factor_df(series, yest_volumes, snapshot_time)
         if factor_df.empty:
-            return {"error": "竞价因子计算为空"}
+            return {"error": "竞价因子计算为空（可能非集合竞价时段）"}
 
         # 5. 分组聚合
         groups = self._aggregate_groups(factor_df, members_map, group_names)
@@ -307,7 +334,8 @@ class AuctionEngine:
         }
 
         return {
-            "trade_date": today,
+            "trade_date": trade_date,
+            "is_today": is_today,
             "snapshot_time": snapshot_time or "09:25",
             "yest_date": yest_date,
             "market_stats": market_stats,
@@ -319,27 +347,33 @@ class AuctionEngine:
 
 # ========== 全局入口（带缓存）==========
 _engine_instance = None
-_last_result = None
-_last_result_time = 0
+# 缓存按 trade_date 分别存（历史日期全天不变，可长缓存；当日实时短缓存）
+_last_result = {}  # {trade_date: result}
+_last_result_time = {}  # {trade_date: timestamp}
 
 
-def compute_auction_dashboard(snapshot_time: str = None, use_cache: bool = True) -> Dict:
-    """获取竞价看板（带内存缓存，TTL = config.AUCTION_CACHE_TTL）"""
-    global _engine_instance, _last_result, _last_result_time
+def compute_auction_dashboard(trade_date: str = None, snapshot_time: str = None,
+                              use_cache: bool = True) -> Dict:
+    """
+    获取竞价看板（带内存缓存）。
+    当日实时：TTL = config.AUCTION_CACHE_TTL（短缓存，9:25 后数据不变也很快过期无妨）。
+    历史日期：全天数据不变，长缓存。
+    """
+    global _engine_instance
+    td_key = (trade_date or "today").replace("-", "")
     now = time.time()
-    if use_cache and _last_result and (now - _last_result_time) < config.AUCTION_CACHE_TTL:
-        return _last_result
+    if use_cache and td_key in _last_result and (now - _last_result_time.get(td_key, 0)) < config.AUCTION_CACHE_TTL:
+        return _last_result[td_key]
     if _engine_instance is None:
         _engine_instance = AuctionEngine()
-    result = _engine_instance.compute(snapshot_time=snapshot_time)
+    result = _engine_instance.compute(trade_date=trade_date, snapshot_time=snapshot_time)
     if "error" not in result:
-        _last_result = result
-        _last_result_time = now
+        _last_result[td_key] = result
+        _last_result_time[td_key] = now
     return result
 
 
 def clear_cache():
     """清空竞价看板缓存"""
-    global _last_result, _last_result_time
-    _last_result = None
-    _last_result_time = 0
+    _last_result.clear()
+    _last_result_time.clear()

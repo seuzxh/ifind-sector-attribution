@@ -329,10 +329,10 @@
 <!-- 板块排行表格 -->
 <div class="panels" id="panels">
   <div class="panel">
-    <h2><span class="badge badge-red">强势</span> Top 10 板块 <span class="hint">点击行高亮下方成分股 · 表头可排序</span></h2>
+    <h2 id="topPanelTitle"><span class="badge badge-red">强势</span> Top 10 板块 <span class="hint">点击行高亮下方成分股 · 表头可排序</span></h2>
     <div id="topTable"></div>
   </div>
-  <div class="panel">
+  <div class="panel" id="bottomPanel">
     <h2><span class="badge badge-green">弱势</span> Bottom 10 板块 <span class="hint">点击行高亮下方成分股 · 表头可排序</span></h2>
     <div id="bottomTable"></div>
   </div>
@@ -345,8 +345,8 @@
 
 <!-- 成分股区 -->
 <div class="members-section" id="membersSection">
-  <h2>板块成分股 <span class="sub" id="modeHint"></span></h2>
-  <div class="members-tabs">
+  <h2 id="membersTitle">板块成分股 <span class="sub" id="modeHint"></span></h2>
+  <div class="members-tabs" id="membersTabs">
     <button class="active" onclick="switchMembersTab('top', this)">📈 强势板块成分股</button>
     <button onclick="switchMembersTab('bottom', this)">📉 弱势板块成分股</button>
     <button id="ztMemberBtn" onclick="switchMembersTab('zt', this)" style="display:none;">🔥 涨停分组成分股</button>
@@ -517,6 +517,16 @@ function onDateChange() {
   }
   if (document.getElementById('modeSel').value === 'realtime') {
     autoFollow = true; updateAutoUI();
+  }
+  // 集合竞价看板：选历史日期停轮询（历史不变），选回今天恢复轮询（实时）
+  if (isAuctionBoard) {
+    const todayStr = serverToday || new Date().getFullYear() + ''
+      + String(new Date().getMonth()+1).padStart(2,'0') + String(new Date().getDate()).padStart(2,'0');
+    if (dv && dv !== todayStr) {
+      stopPolling();
+    } else {
+      startPolling();
+    }
   }
   refresh();
 }
@@ -788,9 +798,12 @@ async function refresh() {
     setStatus('🔍 正在调用 iFinD 选股（约5秒）...', 'warn');
     payload = await fetchJson(BOARD_API + '?query=' + encodeURIComponent(marketQuery));
   } else if (isAuctionBoard) {
-    // 集合竞价选股：不走日期/时间条，直接拉竞价看板（带缓存，9:25 后数据不变）
+    // 集合竞价选股：带日期参数（支持历史回看），后端按日期区分缓存
     setStatus('⚡ 拉取集合竞价数据...', 'warn');
-    payload = await fetchJson(BOARD_API);
+    const aParams = new URLSearchParams();
+    const aDate = getDateVal();
+    if (aDate) aParams.set('trade_date', aDate);
+    payload = await fetchJson(BOARD_API + (aParams.toString() ? '?' + aParams.toString() : ''));
   } else if (mode === 'realtime') {
     const date = getDateVal();
     const params = new URLSearchParams();
@@ -865,7 +878,9 @@ async function refresh() {
     setStatus(`MCP选股(${tag}) · 命中 ${payload.hit_total} 只 · ${payload.group_hit_count} 个板块`, 'live');
   } else if (isAuctionBoard) {
     const ms = payload.market_stats || {};
-    setStatus(`⚡ 竞价 · ${payload.snapshot_time} · 监控${ms.stock_count||0}只 · 高开>2%:${ms.strong_gap_count||0} · 爆量:${ms.explode_count||0} · 自动${POLL_INTERVAL/1000}s`, 'live');
+    const live = payload.is_today ? '实时' : '历史回看';
+    const poll = payload.is_today ? ` · 自动${POLL_INTERVAL/1000}s` : '';
+    setStatus(`⚡ ${live} · ${payload.trade_date} ${payload.snapshot_time} · 监控${ms.stock_count||0}只 · 高开>2%:${ms.strong_gap_count||0} · 爆量:${ms.explode_count||0}${poll}`, 'live');
   } else if (mode === 'realtime') {
     const ts = payload.snapshot_time || payload.latest_time || '';
     const live = payload.is_today ? '实时' : '历史回看';
@@ -896,6 +911,13 @@ function renderStats(payload) {
 
 // ========== 渲染：集合竞价选股（auction 看板专用）==========
 function renderAuction(payload) {
+  // 竞价看板语义调整：top 面板显示"个股排行"，隐藏 bottom 面板，成分股区改为"分组详情"
+  document.getElementById('topPanelTitle').innerHTML = '<span class="badge badge-red">⚡</span> 竞价强势个股 <span class="hint">4 因子综合分（高开/爆量/失衡/趋势）· 表头可排序</span>';
+  document.getElementById('bottomPanel').style.display = 'none';
+  document.getElementById('ztPanel').style.display = 'none';
+  document.getElementById('membersTitle').innerHTML = '分组详情 <span class="sub" id="modeHint"></span>';
+  document.getElementById('membersTabs').style.display = 'none';
+
   // 统计栏
   const s = payload.market_stats || {};
   document.getElementById('statsBar').innerHTML = `
@@ -1567,13 +1589,17 @@ document.getElementById('prescreenModal').addEventListener('click', function(e) 
   // 按看板类型设置标题
   document.getElementById('boardTitle').textContent = BOARD_TITLE;
   document.title = BOARD_TITLE.replace(/^[^\u4e00-\u9fa5a-zA-Z]+\s*/, '');
-  // 集合竞价看板：隐藏无关控件（模式/日期/盘前筛选），它有自动轮询，无需手动控件
+  // 集合竞价看板：隐藏无关控件（模式/盘前筛选），保留日期选择器 + 刷新（支持历史回看）
   if (isAuctionBoard) {
-    document.querySelector('.controls').style.display = 'none';
+    // 隐藏模式选择、盘前筛选按钮、自动跟随；保留日期选择器 + 刷新按钮
+    document.querySelectorAll('.controls label, .controls select, .controls .success').forEach(el => el.style.display = 'none');
+    document.getElementById('rtAutoLabel').style.display = 'none';
     document.getElementById('timeBar').classList.remove('show');
-    await loadTradeCalendar();  // 竞价仍需交易日历（虽不显示日期选择器）
-    document.getElementById('modeHint').textContent = '（集合竞价 9:20-9:25：高开/爆量/挂单失衡/价格趋势 加权选股选分组 · 不可撤单窗口真实意图 · 自动刷新）';
-    startPolling();  // 竞价看板直接轮询（9:20-9:25 数据逐渐变真，9:25 后后端 30s 缓存）
+    await loadTradeCalendar();  // 交易日历供日期选择器过滤非交易日
+    // 默认日期 = 今天（非交易日回退最近交易日）
+    await loadDates();
+    document.getElementById('modeHint').textContent = '（集合竞价 9:20-9:25：高开/爆量/挂单失衡/价格趋势 加权选股选分组 · 不可撤单窗口真实意图 · 选历史日期回看）';
+    startPolling();  // 当日实时：竞价看板轮询（9:25 后后端 30s 缓存）
     refresh();
     return;  // auction 不走下方 realtime 的 onModeChange/checkSession
   }

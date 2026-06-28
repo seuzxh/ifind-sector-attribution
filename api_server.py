@@ -220,15 +220,16 @@ def clear_realtime_cache():
 
 
 @app.get("/api/auction/dashboard")
-def get_auction_dashboard(snapshot_time: str = None):
+def get_auction_dashboard(trade_date: str = None, snapshot_time: str = None):
     """
     集合竞价选股选分组看板（9:20~9:25 不可撤单窗口）。
 
     观察池：自选股分组全部去重个股。4 因子综合分：高开/爆量/挂单失衡/价格趋势。
-    9:25 末点数据最准（不可撤单窗口完整）。9:20 后即可访问，数据逐渐真实。
+    :param trade_date: 交易日 YYYYMMDD，None=今天（当日实时）；传历史日期回看该日竞价
+    :param snapshot_time: 截止时刻 HH:MM（如 "09:25"），None=取 pre_market 末点
     """
     from auction_engine import compute_auction_dashboard
-    return compute_auction_dashboard(snapshot_time=snapshot_time)
+    return compute_auction_dashboard(trade_date=trade_date, snapshot_time=snapshot_time)
 
 
 @app.post("/api/auction/clear_cache")
