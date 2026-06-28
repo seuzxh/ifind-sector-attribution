@@ -39,3 +39,10 @@ Thumbs.db
 # data 目录运行时产物（数据库结构快照等，需时重新生成）
 data/*.json
 data/*.txt
+
+# 前端工程（Vue 3 + Vite）
+node_modules/
+frontend/node_modules/
+# Vite 构建产物（npm run build 生成，不入库）
+static/
+

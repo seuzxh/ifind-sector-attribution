@@ -1,0 +1,51 @@
+/* ===== 全局样式：迁移自原 index.html 配色体系 ===== */
+:root {
+  /* 主色 */
+  --color-primary: #1e40af;
+  --color-primary-light: #3b82f6;
+  /* A 股惯例：涨红跌绿 */
+  --color-up: #ef4444;        /* 涨 */
+  --color-up-strong: #dc2626;
+  --color-down: #10b981;      /* 跌 */
+  --color-down-strong: #059669;
+  /* 中性 */
+  --color-bg: #f0f2f5;
+  --color-card: #ffffff;
+  --color-border: #e5e7eb;
+  --color-text: #1f2937;
+  --color-text-light: #6b7280;
+  --color-text-faint: #9ca3af;
+  /* 持仓金色 */
+  --color-holding: #f59e0b;
+  /* 排名徽章 */
+  --color-rank1: #dc2626;
+  --color-rank2: #ea580c;
+  --color-rank3: #d97706;
+  --font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #app { height: 100%; }
+body {
+  font-family: var(--font-family);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+/* 涨跌色（A 股惯例）—— 全局可用 class */
+.up { color: var(--color-up); }
+.down { color: var(--color-down); }
+
+/* Element Plus 主色覆盖为蓝 */
+:root {
+  --el-color-primary: #1e40af;
+  --el-color-primary-light-3: #3b82f6;
+  --el-color-primary-light-5: #60a5fa;
+  --el-color-primary-light-7: #93c5fd;
+  --el-color-primary-light-9: #dbeafe;
+}
+
+/* 通用工具 */
+.text-center { text-align: center; }
+.text-faint { color: var(--color-text-faint); font-size: 11px; }
