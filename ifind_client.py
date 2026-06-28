@@ -15,6 +15,50 @@ from typing import List, Dict, Optional, Any
 
 import config
 
+# access_token 刷新接口（用 refresh_token 换新 access_token，7天有效期）
+_GET_ACCESS_TOKEN_URL = "https://quantapi.51ifind.com/api/v1/get_access_token"
+
+# 进程级刷新锁：防止多线程并发请求同时撞 401 时重复刷新
+_refresh_lock = __import__("threading").Lock()
+
+
+def refresh_access_token() -> str:
+    """
+    用 refresh_token 换取新的 access_token 并同步更新 config（含 HEADERS）。
+
+    背景：access_token 7 天过期（报 errorcode:-1302 / HTTP 401），需定期刷新。
+    refresh_token 长期有效（与账号到期日一致），可用它换新 access_token。
+    刷新点：config.ACCESS_TOKEN + config.HEADERS["access_token"]（两处都要更新，
+    否则已构造的 HEADERS 仍带旧 token）。
+
+    :return: 新的 access_token
+    :raises RuntimeError: refresh_token 未配置或刷新失败
+    """
+    refresh_token = getattr(config, "REFRESH_TOKEN", "")
+    if not refresh_token:
+        raise RuntimeError("REFRESH_TOKEN 未配置，无法刷新 access_token")
+
+    try:
+        resp = requests.post(
+            _GET_ACCESS_TOKEN_URL,
+            json={"refresh_token": refresh_token},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise RuntimeError(f"刷新 access_token 网络失败: {e}") from e
+
+    if data.get("errorcode") not in (0, None) and not data.get("data"):
+        raise RuntimeError(f"刷新 access_token 失败: {data}")
+
+    new_token = data["data"]["access_token"]
+    # 同步更新 config 两处（ACCESS_TOKEN 值 + 已构造的 HEADERS）
+    config.ACCESS_TOKEN = new_token
+    config.HEADERS["access_token"] = new_token
+    print(f"[IFIND] access_token 已刷新，有效至 {data['data'].get('expired_time')}")
+    return new_token
+
 
 class IFindClient:
     """iFinD API 客户端"""
@@ -22,20 +66,29 @@ class IFindClient:
     def __init__(self):
         self.base_url_quant = config.BASE_URL_QUANT
         self.base_url_ft = config.BASE_URL_FT
-        self.headers = config.HEADERS.copy()
+        self.headers = config.HEADERS  # 引用 config.HEADERS，刷新时自动生效（勿 .copy()）
         self.timeout = config.REQUEST_TIMEOUT
         self.max_retries = config.MAX_RETRIES
 
     def _post(self, url: str, payload: dict) -> dict:
-        """带重试的 POST 请求"""
+        """
+        带重试的 POST 请求。遇到 access_token 过期（HTTP 401）自动刷新并重试一次。
+        """
         for attempt in range(self.max_retries):
             try:
                 resp = requests.post(
                     url,
-                    headers=self.headers,
+                    headers=self.headers,  # 引用，refresh_access_token 更新后立即生效
                     json=payload,
                     timeout=self.timeout
                 )
+                # access_token 过期：刷新一次后重试本轮（仅刷新一次，防死循环）
+                if resp.status_code == 401:
+                    with _refresh_lock:
+                        # 双检：可能别的线程刚刷新过，HEADERS 已是新 token
+                        if self.headers.get("access_token") == getattr(config, "ACCESS_TOKEN", ""):
+                            refresh_access_token()
+                    continue  # 用新 token 重试
                 resp.raise_for_status()
                 return resp.json()
             except requests.exceptions.RequestException as e:
