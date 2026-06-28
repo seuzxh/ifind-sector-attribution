@@ -16,7 +16,10 @@
             ...
         ],
         "pre_market": [               # 集合竞价逐点序列（09:15 ~ 09:25，3秒一个点）
-            {"time": "09:15", "ref_price": 1279.0},   # ref_price = 该时刻撮合参考价
+            {"time": "09:15", "ref_price": 1279.0,    # ref_price = 该时刻撮合参考价
+             "matched_vol": 0.0,                       # 已撮合量（股）
+             "non_matched_vol_buy": 100.0,             # 未撮合买单量
+             "non_matched_vol_sell": 50.0},            # 未撮合卖单量
             ...
         ],
     }
@@ -91,9 +94,15 @@ class IntradayFetcher:
             rp = p.get("ref_price")
             if rp is None:
                 continue
+            # 量能字段（kline-fetcher trend._parse_call_trend 已返回）：
+            # matched_vol 已撮合量、non_matched_vol_buy/sell 未撮合买卖挂单。
+            # 用 .get(field, 0) 防御：kline-fetcher 若改字段名也不崩。
             pre_market.append({
                 "time": _norm_time(p.get("time", "")),
                 "ref_price": float(rp),
+                "matched_vol": float(p.get("matched_vol", 0) or 0),
+                "non_matched_vol_buy": float(p.get("non_matched_vol_buy", 0) or 0),
+                "non_matched_vol_sell": float(p.get("non_matched_vol_sell", 0) or 0),
             })
 
         # 昨收 = pre_market 起始 ref_price；开盘价 = pre_market 末尾 ref_price

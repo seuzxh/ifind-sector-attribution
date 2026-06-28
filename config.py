@@ -161,6 +161,22 @@ INTRADAY_CACHE_TTL = 15
 # 其成分股作为持仓股，在含持仓的其他分组上做醒目标注）。按 block_name 精确匹配。
 HOLDING_GROUP_NAME = "CC"
 
+# ========== 集合竞价选股配置（9:20~9:25 不可撤单窗口）==========
+# 4 因子综合分权重。爆量(vol_ratio)和高开(gap_pct)权重最大，符合主流方法论。
+AUCTION_SCORE_WEIGHTS = {
+    "gap_pct": 0.35,          # 竞价高开幅度（资金做多意愿）
+    "vol_ratio": 0.30,        # 竞价量比 = 竞价成交量/昨日成交量（爆量 = 资金介入）
+    "order_imbalance": 0.20,  # 挂单失衡度 = (未撮合买-未撮合卖)/(买+卖)（抢筹）
+    "trend_score": 0.15,      # 9:20→9:25 价格趋势（弱转强 / 真假突破）
+}
+AUCTION_VOL_RATIO_MIN = 2.0   # 爆量阈值：量比 > 此值视为爆量（主流 2~5 倍）
+AUCTION_GAP_MIN = 2.0         # 高开阈值：高开 > 此值（%）视为强势高开
+# 竞价阶段数据缓存 TTL（秒）。9:25 后竞价数据不变，可放宽避免无谓请求。
+AUCTION_CACHE_TTL = 30
+# 竞价看板返回的 top 个股/分组数量
+AUCTION_TOP_STOCK = 30
+AUCTION_TOP_GROUP = 20
+
 
 # ========== 计算配置 ==========
 SCORE_WEIGHTS = {
