@@ -38,6 +38,7 @@ const tabs = [
   { name: 'auction', title: '集合竞价', icon: '⚡' },
   { name: 'scan', title: '自选强势归类', icon: '🎯' },
   { name: 'market_scan', title: '全市场强势归类', icon: '🌐' },
+  { name: 'rotation', title: '板块轮动分析', icon: '🔮' },
   { name: 'chat', title: 'AI 问答', icon: '🤖' },
 ] as const
 

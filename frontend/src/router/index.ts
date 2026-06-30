@@ -12,6 +12,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'auction', name: 'auction', component: () => import('@/views/AuctionPage.vue'), meta: { title: '集合竞价', icon: '⚡' } },
       { path: 'scan', name: 'scan', component: () => import('@/views/ScanPage.vue'), meta: { title: '自选强势归类', icon: '🎯' } },
       { path: 'market_scan', name: 'market_scan', component: () => import('@/views/ScanPage.vue'), meta: { title: '全市场强势归类', icon: '🌐' } },
+      { path: 'rotation', name: 'rotation', component: () => import('@/views/RotationPage.vue'), meta: { title: '板块轮动分析', icon: '🔮' } },
       { path: 'chat', name: 'chat', component: () => import('@/views/ChatPage.vue'), meta: { title: 'AI 问答', icon: '🤖' } },
     ],
   },

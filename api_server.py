@@ -769,3 +769,26 @@ def _split_stream(text: str, size: int = 40):
     for i in range(0, len(text), size):
         yield text[i:i + size]
 
+
+# ========== 板块轮动分析智能体 ==========
+@app.get("/api/rotation/analyze")
+def rotation_analyze():
+    """
+    板块轮动分析智能体（SSE 流式）。
+    三阶段 loop engine：数据采集 → 第一性原理分析 → 对抗审查 → 综合结论。
+    全程流式推送进度文本给前端。
+    """
+    from rotation_agent import get_rotation_agent
+
+    def event_stream():
+        try:
+            agent = get_rotation_agent()
+            for chunk in agent.analyze_rotation():
+                yield f"data: {json.dumps({'type': 'delta', 'text': chunk}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'text': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
