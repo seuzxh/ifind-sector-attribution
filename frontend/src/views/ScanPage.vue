@@ -64,7 +64,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { scanCustomGroups, scanMarketGroups, type ScanPayload, type ScanGroup } from '@/api/scan'
 import { fmt } from '@/utils/format'
 
@@ -159,21 +159,33 @@ function saveCustom() {
 }
 
 // ===== 重命名 =====
-async function renameItem() {
+// 用浏览器原生 prompt（比 ElMessageBox.prompt 更可靠，避免弹窗渲染/聚焦问题）
+function renameItem() {
   const v = selectedKey.value
   if (!v) { ElMessage.warning('请先选择一个条件'); return }
-  try {
-    const { value } = await ElMessageBox.prompt('输入新名称', '重命名', { inputValue: '' })
-    if (!value) return
-    if (v.startsWith('custom:')) {
-      customQueries.value[Number(v.slice(7))].label = value
+  // 取当前标签名作为默认值
+  let curLabel = ''
+  if (v.startsWith('custom:')) {
+    const c = customQueries.value[Number(v.slice(7))]
+    curLabel = c?.label || c?.query.slice(0, 20) || ''
+  } else {
+    curLabel = presetLabels.value[v] || presets[Number(v)] || ''
+  }
+  const newLabel = window.prompt('输入新标签名（仅用于下拉显示，不改选股条件）：', curLabel)
+  if (newLabel === null) return  // 用户取消
+  const trimmed = newLabel.trim()
+  if (!trimmed) { ElMessage.warning('标签名不能为空'); return }
+  if (v.startsWith('custom:')) {
+    const idx = Number(v.slice(7))
+    if (customQueries.value[idx]) {
+      customQueries.value[idx].label = trimmed
       persistCustom()
-    } else {
-      presetLabels.value[v] = value
-      savePresetLabels()
     }
-    ElMessage.success('已重命名')
-  } catch { /* 取消 */ }
+  } else {
+    presetLabels.value[v] = trimmed
+    savePresetLabels()
+  }
+  ElMessage.success(`已重命名为「${trimmed}」`)
 }
 
 // ===== 删除自定义 =====
