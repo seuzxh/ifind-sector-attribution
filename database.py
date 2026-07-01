@@ -693,3 +693,26 @@ class Database:
         with self._connect() as conn:
             cursor = conn.execute("SELECT DISTINCT stock_code FROM custom_group")
             return [row["stock_code"] for row in cursor]
+
+    def get_stock_to_groups_map(self) -> Dict[str, List[str]]:
+        """
+        返回反向映射 {stock_code: [group_name, ...]}，供展示个股所属自选分组用。
+        一只股票可属于多个分组（custom_group 是多对多）。group_name 去重保序。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT stock_code, group_name FROM custom_group "
+                "ORDER BY stock_code, group_id"
+            )
+            m: Dict[str, List[str]] = {}
+            seen: Dict[str, set] = {}
+            for row in cursor:
+                code = row["stock_code"]
+                name = row["group_name"]
+                if code not in m:
+                    m[code] = []
+                    seen[code] = set()
+                if name not in seen[code]:
+                    m[code].append(name)
+                    seen[code].add(name)
+            return m

@@ -5,6 +5,7 @@ import http from './client'
 export interface AuctionStock {
   code: string
   name: string
+  groups?: string[]     // 该股所属的全部自选分组名（多归属）
   gap_pct: number       // 竞价涨跌幅（高开）
   vol_ratio: number     // 量比 = 竞价量/昨日量
   order_imbalance: number  // 挂单失衡 [-1,1]
@@ -44,6 +45,7 @@ export interface AuctionPayload {
   is_today?: boolean
   snapshot_time?: string
   yest_date?: string | null
+  holding_group_name?: string  // 持仓分组名（如 "CC"），前端据此高亮该分组标签
   market_stats?: AuctionMarketStats
   top_stocks?: AuctionStock[]
   top_groups?: AuctionGroup[]

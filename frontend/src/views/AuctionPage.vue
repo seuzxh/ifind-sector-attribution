@@ -81,7 +81,12 @@
           <tbody>
             <tr v-for="m in sortedMembers" :key="m.code" :class="{ 'is-holding': m.holding }">
               <td class="left">{{ m.code }}</td>
-              <td class="left stock-name" :title="m.name">{{ m.name }}</td>
+              <td class="left stock-name" :title="m.name">
+                {{ m.name }}
+                <div v-if="m.groups && m.groups.length" class="group-tags">
+                  <span v-for="gn in m.groups" :key="gn" class="grp-tag" :class="{ 'grp-hold': gn === holdingGroupName }">{{ gn }}</span>
+                </div>
+              </td>
               <td :class="gapCls(m.gap_pct)">
                 {{ fmt(m.gap_pct) }}%
                 <span v-if="m.holding" class="hold-tag-sm">持</span>
@@ -114,6 +119,9 @@ const allGroups = computed<AuctionGroup[]>(() => [
   ...(payload.value?.top_groups || []),
   ...(payload.value?.zt_groups || []),
 ])
+
+// 持仓分组名（来自后端 config.HOLDING_GROUP_NAME，前端据此高亮该分组标签）
+const holdingGroupName = computed(() => payload.value?.holding_group_name || '')
 
 // ===== 分组表排序 =====
 const grpSortCols = [
@@ -269,6 +277,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .stock-name { color: #374151; max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
 .name-th { max-width: 90px; }
 .hold-tag-sm { padding: 0 5px; border-radius: 3px; font-size: 10px; background: #f59e0b; color: #fff; margin-left: 3px; }
+/* 个股所属自选分组标签 */
+.group-tags { margin-top: 2px; display: flex; flex-wrap: wrap; gap: 3px; }
+.grp-tag { display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px; background: #e0e7ff; color: #4338ca; line-height: 16px; white-space: nowrap; }
+.grp-tag.grp-hold { background: #f59e0b; color: #fff; font-weight: 600; }
 .card-table tbody tr.is-holding { background: #fef9c3 !important; }
 .empty { text-align: center; color: #9ca3af; padding: 16px; }
 .empty-msg { text-align: center; color: #9ca3af; padding: 24px; }

@@ -44,6 +44,7 @@ class AuctionEngine:
         self.db = Database()
         self.fetcher = IntradayFetcher()
         self._stock_names: Optional[Dict[str, str]] = None
+        self._stock_groups: Optional[Dict[str, List[str]]] = None  # stock_code → [group_name]
         self._holding_stocks: Optional[set] = None
 
     def _ensure_stock_names(self):
@@ -61,6 +62,17 @@ class AuctionEngine:
                 if row["stock_code"] not in names:
                     names[row["stock_code"]] = row["stock_name"]
         self._stock_names = names
+
+    def _ensure_stock_groups(self):
+        """懒加载 个股→所属自选分组名 反向映射（供展示个股分组归属）"""
+        if self._stock_groups is not None:
+            return
+        self._stock_groups = self.db.get_stock_to_groups_map()
+
+    def _stock_group_names(self, code: str) -> List[str]:
+        """取个股所属的自选分组名列表（无则空）"""
+        self._ensure_stock_groups()
+        return self._stock_groups.get(code, [])
 
     def _get_holding_stocks(self) -> set:
         """获取持仓分组（CC）的成分股代码集合"""
@@ -217,6 +229,7 @@ class AuctionEngine:
             result.append({
                 "code": r["code"],
                 "name": self._stock_names.get(r["code"], ""),
+                "groups": self._stock_group_names(r["code"]),  # 该股所属的全部自选分组
                 "gap_pct": round(float(r["gap_pct"]), 2),
                 "vol_ratio": round(float(r["vol_ratio"]), 2),
                 "order_imbalance": round(float(r["order_imbalance"]), 3),
@@ -305,6 +318,7 @@ class AuctionEngine:
             top_stocks.append({
                 "code": r["code"],
                 "name": self._stock_names.get(r["code"], ""),
+                "groups": self._stock_group_names(r["code"]),
                 "gap_pct": round(float(r["gap_pct"]), 2),
                 "vol_ratio": round(float(r["vol_ratio"]), 2),
                 "order_imbalance": round(float(r["order_imbalance"]), 3),
@@ -338,6 +352,7 @@ class AuctionEngine:
             "is_today": is_today,
             "snapshot_time": snapshot_time or "09:25",
             "yest_date": yest_date,
+            "holding_group_name": getattr(config, "HOLDING_GROUP_NAME", ""),
             "market_stats": market_stats,
             "top_stocks": top_stocks,
             "top_groups": main_groups,
