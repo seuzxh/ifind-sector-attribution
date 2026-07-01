@@ -56,8 +56,10 @@
     </div>
 
     <!-- 下方：选中分组的成分股详情 -->
-    <div class="members-section">
-      <h2>成分股详情 <span class="sub" v-if="selectedGroup">· {{ selectedGroup.group_name }}</span></h2>
+    <div class="members-section" ref="membersRef">
+      <h2>成分股详情 <span class="sub" v-if="selectedGroup">· {{ selectedGroup.group_name }}</span>
+        <span class="hint" v-if="!selectedGroup">点击上方分组查看成分股</span>
+      </h2>
       <div v-if="selectedGroup" class="sector-card detail-card">
         <div class="card-head" :style="{ background: headerColor(selectedGroup) }">
           <span class="head-title">
@@ -106,7 +108,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { getAuctionDashboard, type AuctionPayload, type AuctionGroup } from '@/api/auction'
 import { fmt, changeCls, rankClass } from '@/utils/format'
 
@@ -151,11 +153,16 @@ function onGrpSort(key: string) {
 
 // ===== 选中的分组（点击行）=====
 const selectedGroupId = ref<string | null>(null)
+const membersRef = ref<HTMLElement | null>(null)  // 成分股区 DOM，供点击后滚动
 const selectedGroup = computed<AuctionGroup | null>(() =>
   selectedGroupId.value ? allGroups.value.find(g => g.group_id === selectedGroupId.value) || null : null
 )
 function selectGroup(gid: string) {
   selectedGroupId.value = gid
+  // 点击后滚动到成分股详情区（nextTick 等 DOM 更新完）
+  nextTick(() => {
+    membersRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
 }
 
 // ===== 成分股排序（选中分组内）=====
