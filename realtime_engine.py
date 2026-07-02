@@ -544,8 +544,12 @@ class RealtimeEngine:
         # 2. 解析 markdown → {code: {name, change_ratio}}
         all_hit_lookup = _parse_search_stocks_md(str(md_raw))
         if not all_hit_lookup:
-            return {"error": "选股结果为空或解析失败（检查 query 表达）", "query": query,
+            err = all_hit_lookup.get("__error__", "选股结果为空或解析失败") if isinstance(all_hit_lookup, dict) else "选股结果为空或解析失败"
+            return {"error": err, "query": query,
                     "raw_preview": str(md_raw)[:300]}
+        # 如果 _parse 返回了 __error__ 键（MCP 未找到），也报错
+        if "__error__" in all_hit_lookup:
+            return {"error": all_hit_lookup["__error__"], "query": query}
 
         # 3. 取自选交集：只保留在自选分组里的命中股
         hit_lookup = {c: v for c, v in all_hit_lookup.items() if c in custom_codes}
@@ -620,8 +624,9 @@ class RealtimeEngine:
 
         # 2. 解析 markdown → {code: {name, change_ratio}}
         hit_lookup = _parse_search_stocks_md(str(md_raw))
-        if not hit_lookup:
-            return {"error": "选股结果为空或解析失败（检查 query 表达）", "query": query,
+        if not hit_lookup or "__error__" in hit_lookup:
+            err = hit_lookup.get("__error__", "选股结果为空或解析失败") if isinstance(hit_lookup, dict) and hit_lookup else "选股结果为空或解析失败"
+            return {"error": err, "query": query,
                     "raw_preview": str(md_raw)[:300]}
         hit_codes = set(hit_lookup.keys())
 
@@ -684,6 +689,10 @@ def _parse_search_stocks_md(md: str) -> Dict[str, dict]:
             md = j.get("data", {}).get("result", "") or md
     except (ValueError, TypeError):
         pass
+
+    # MCP 返回"未找到/无符合"时，明确提示（而非笼统的"解析失败"）
+    if "未找到" in md or "无符合" in md or "未能成功处理" in md:
+        return {"__error__": "MCP 未找到符合要求的股票（条件可能过严或表述不被理解，尝试用'涨幅'代替'实体涨幅'等术语）"}
 
     lines = [ln for ln in md.split("\n") if ln.strip().startswith("|")]
     if len(lines) < 2:

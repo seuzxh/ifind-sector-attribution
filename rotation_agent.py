@@ -34,7 +34,7 @@ if not os.environ.get("KLINE_API_BASE_URL") and getattr(config, "KLINE_API_BASE_
     os.environ["KLINE_API_BASE_URL"] = config.KLINE_API_BASE_URL
 
 # 轮动分析的工具调用最大轮数（比通用问答多，需多次拉数据）
-ROTATION_MAX_TOOL_ROUNDS = 20
+ROTATION_MAX_TOOL_ROUNDS = 40
 
 
 # ========== kline-fetcher 工具定义 ==========
@@ -303,82 +303,192 @@ class RotationAgent(OpenAICompatibleAgent):
         data = r.json()
         return (data.get("choices") or [{}])[0].get("message", {})
 
+    def _batch_collect(self) -> str:
+        """
+        后端批量采集数据（多线程，约10-20秒），返回汇总文本供 LLM 分析。
+        采集内容：
+          1. 列出自选分组（剔除ZT/CC），过滤成分股>6的分组
+          2. 多线程拉全部成分股的最近5日日K线
+          3. 按分组汇总：涨跌家数/平均涨幅/量能/与指数对比
+          4. 拉上证/创业板指数最近5日日K线
+        """
+        from database import Database
+        from kline_fetcher import KLineFetcher
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        db = Database()
+        members_map = db.get_custom_members_map()
+        group_names = db.get_custom_group_names()
+        holding_name = getattr(config, "HOLDING_GROUP_NAME", "CC")
+
+        # 筛选有效分组（剔除ZT/CC，成分股>6）
+        valid_groups = {}
+        all_codes = set()
+        for gid, codes in members_map.items():
+            gname = group_names.get(gid, gid)
+            if gname.strip().upper().startswith("ZT"):
+                continue
+            if gname == holding_name:
+                continue
+            if len(codes) < 6:
+                continue
+            valid_groups[gid] = {"name": gname, "codes": codes}
+            all_codes.update(codes)
+
+        print(f"[ROTATION] 有效分组 {len(valid_groups)} 个，总股票 {len(all_codes)} 只")
+
+        # 多线程拉日K线
+        fetcher = KLineFetcher()
+        kline_data = {}  # {code: [day_kline_dicts]}
+
+        def _fetch_one(code):
+            pure = code.split(".")[0] if "." in code else code
+            try:
+                return code, fetcher.fetch_day_kline(pure, count=-5) or []
+            except Exception:
+                return code, []
+
+        with ThreadPoolExecutor(max_workers=32) as ex:
+            futs = {ex.submit(_fetch_one, c): c for c in all_codes}
+            for fu in as_completed(futs):
+                code, data = fu.result()
+                kline_data[code] = data
+
+        # 拉指数
+        idx_sh = fetcher.fetch_day_kline("000001", count=-5) or []
+        idx_cyb = fetcher.fetch_day_kline("399006", count=-5) or []
+
+        # 汇总
+        lines = ["# 板块数据汇总\n"]
+        # 指数
+        lines.append("## 大盘指数")
+        if idx_sh:
+            sh_chg5 = (idx_sh[-1]["close"] / idx_sh[0]["close"] - 1) * 100
+            sh_last = (idx_sh[-1]["close"] / idx_sh[-2]["close"] - 1) * 100 if len(idx_sh) >= 2 else 0
+            lines.append(f"- 上证指数: 5日{sh_chg5:+.2f}% 最新{sh_last:+.2f}%")
+        if idx_cyb:
+            cyb_chg5 = (idx_cyb[-1]["close"] / idx_cyb[0]["close"] - 1) * 100
+            cyb_last = (idx_cyb[-1]["close"] / idx_cyb[-2]["close"] - 1) * 100 if len(idx_cyb) >= 2 else 0
+            lines.append(f"- 创业板指: 5日{cyb_chg5:+.2f}% 最新{cyb_last:+.2f}%")
+        idx_avg5 = (sh_chg5 + cyb_chg5) / 2 if idx_sh and idx_cyb else 0
+        idx_avg_last = (sh_last + cyb_last) / 2 if idx_sh and idx_cyb else 0
+
+        lines.append(f"\n## 自选分组数据（共{len(valid_groups)}个分组）\n")
+
+        # 按最近一日涨幅排序分组
+        group_stats = []
+        for gid, info in valid_groups.items():
+            codes = info["codes"]
+            changes_5d = []
+            changes_last = []
+            vol_ratios = []
+            up_count = 0
+
+            for code in codes:
+                kl = kline_data.get(code, [])
+                if len(kl) < 2:
+                    continue
+                closes = [d["close"] for d in kl]
+                vols = [d.get("volume", 0) for d in kl]
+                # 5日累计涨幅
+                chg5 = (closes[-1] / closes[0] - 1) * 100 if closes[0] else 0
+                # 最后一日涨幅
+                chg_last = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 else 0
+                # 量比
+                avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1) if len(vols) > 1 else vols[0] if vols else 1
+                vr = vols[-1] / avg_vol if avg_vol else 1
+
+                changes_5d.append(chg5)
+                changes_last.append(chg_last)
+                vol_ratios.append(vr)
+                if chg_last > 0:
+                    up_count += 1
+
+            valid_cnt = len(changes_5d)
+            if valid_cnt == 0:
+                continue
+
+            avg_5d = sum(changes_5d) / valid_cnt
+            avg_last = sum(changes_last) / valid_cnt
+            avg_vol_ratio = sum(vol_ratios) / valid_cnt
+            up_pct = up_count / valid_cnt * 100
+
+            # vs 指数
+            vs_idx = "强于大盘" if avg_5d > idx_avg5 + 1 else ("弱于大盘" if avg_5d < idx_avg5 - 1 else "同步")
+
+            group_stats.append({
+                "name": info["name"],
+                "members": len(codes),
+                "valid": valid_cnt,
+                "up_count": up_count,
+                "up_pct": round(up_pct, 1),
+                "avg_5d": round(avg_5d, 2),
+                "avg_last": round(avg_last, 2),
+                "vol_ratio": round(avg_vol_ratio, 2),
+                "vs_index": vs_idx,
+                # 找涨幅最大的3只
+                "top_stocks": sorted(
+                    [(codes[i], round(changes_last[i], 2)) for i in range(len(codes)) if i < len(changes_last)],
+                    key=lambda x: x[1], reverse=True
+                )[:3],
+            })
+
+        # 按最近日涨幅排序
+        group_stats.sort(key=lambda x: x["avg_last"], reverse=True)
+
+        for i, g in enumerate(group_stats):
+            lines.append(f"### {i+1}. {g['name']}（{g['valid']}/{g['members']}只有效）")
+            lines.append(f"   - 5日均涨: **{g['avg_5d']:+.2f}%** | 最新日: **{g['avg_last']:+.2f}%**")
+            lines.append(f"   - 上涨: {g['up_count']}/{g['valid']}({g['up_pct']:.0f}%) | 量比: {g['vol_ratio']:.2f} | vs指数: {g['vs_index']}")
+            top_str = ", ".join(f"{c.split('.')[0]}({v:+.1f}%)" for c, v in g["top_stocks"])
+            lines.append(f"   - 领涨: {top_str}")
+            lines.append("")
+
+        return "\n".join(lines)
+
     def analyze_rotation(self) -> Generator[str, None, None]:
         """
-        三阶段板块轮动分析（生成器，yield SSE 文本片段）。
+        板块轮动分析（生成器，yield SSE 文本片段）。
+        阶段1 后端批量采集 → 阶段2 LLM 情绪周期分析 → 阶段3 对抗审查 → 阶段4 结论
         """
         yield "\n📋 **板块轮动分析启动**\n\n"
 
-        # ========== 阶段1：数据采集（LLM 自主调工具）==========
-        yield "---\n📊 **阶段1：数据采集**\n\n"
-        stage1_system = (
-            "你是一个A股板块轮动数据分析助手。请自主调用工具采集以下数据：\n"
-            "1. 先用 custom__list_groups 列出所有自选分组\n"
-            "2. 对每个分组，用 custom__group_members 获取成分股，"
-            "然后对成分股中的代表性个股（选前3-5只）用 kline__day_kline 拉最近5日日K线\n"
-            "3. 对上证指数(000001)和创业板指(399006)用 kline__day_kline 拉最近5日日K线\n"
-            "4. 对重点分组用 kline__history_trend 拉最近交易日分时数据\n\n"
-            "数据采集完成后，请用以下JSON格式总结每个分组的特征：\n"
-            "```json\n{\n  \"groups\": [\n"
-            "    {\"name\": \"分组名\", \"members\": N, \"avg_5d_change\": X%, "
-            "\"last_day_change\": X%, \"vol_trend\": \"放量/缩量\", "
-            "\"index_correlation\": \"强共振/弱/逆势\", \"stage\": \"启动发酵/高潮/回落\"}\n  ]\n}\n```\n"
-            "只输出JSON，不要其他解释。"
-        )
-        messages = [
-            {"role": "system", "content": stage1_system},
-            {"role": "user", "content": "请开始采集数据并分析。"},
-        ]
-        tools_param = self._build_tools_param()
-
-        # 工具调用循环
+        # ========== 阶段1：后端批量数据采集（多线程，不依赖 LLM 调工具）==========
+        yield "---\n📊 **阶段1：数据采集**（后端批量拉取，约10-20秒）\n\n"
         raw_data = ""
-        for round_i in range(ROTATION_MAX_TOOL_ROUNDS + 1):
-            msg = self._llm_call(messages, use_tools=True)
-
-            tool_calls = msg.get("tool_calls") or []
-            if tool_calls:
-                messages.append(msg)
-                for tc in tool_calls:
-                    fn = tc.get("function", {})
-                    full_name = fn.get("name", "")
-                    try:
-                        args = json.loads(fn.get("arguments") or "{}")
-                    except json.JSONDecodeError:
-                        args = {}
-                    yield f"🔧 调用 `{full_name}`"
-                    if args:
-                        yield f"({json.dumps(args, ensure_ascii=False)[:80]})"
-                    yield "...\n"
-                    result_text = self._run_tool(full_name, args)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.get("id", ""),
-                        "content": result_text,
-                    })
-                continue
-
-            # 无 tool_calls → 阶段1完成
-            raw_data = msg.get("content") or ""
+        try:
+            raw_data = self._batch_collect()
             yield f"\n✅ 数据采集完成\n\n"
-            break
-        else:
-            yield "\n⚠ 数据采集超过最大轮数，使用已有数据继续\n\n"
+        except Exception as e:
+            yield f"\n⚠ 数据采集失败：{e}\n\n"
+            return
 
-        # ========== 阶段2：第一性原理分析 ==========
+        # ========== 阶段2：第一性原理 + 情绪周期分析 ==========
         yield "---\n📈 **阶段2：第一性原理分析**\n\n"
         stage2_system = (
-            "你是一位资深A股板块轮动分析师，请基于第一性原理分析以下数据：\n\n"
-            "分析维度：\n"
-            "1. **启动发酵**：哪些分组处于温和放量上涨初期（5日涨幅适中、量能温和放大、未到高潮）？\n"
-            "2. **轮动节奏**：哪些分组短期涨幅过大（可能资金流出轮动到其他板块）？\n"
-            "3. **指数共振**：哪些分组与指数走势共振（指数跌时抗跌、指数涨时领涨 = 强势）？\n"
-            "4. **冰点反转**：指数连续下跌至冰点后，率先企稳走强的板块可能是新主线。\n\n"
-            "请给出**明日强势板块排名（Top 5）**，每个写明：\n"
-            "- 排名理由（引用具体数据）\n"
-            "- 风险提示（可能的失败信号）\n"
-            "- 关注的领涨个股\n\n"
-            "用 Markdown 格式输出。"
+            "你是一位资深A股板块轮动分析师。请基于第一性原理，结合情绪周期理论分析以下数据。\n\n"
+            "## 情绪周期四阶段（核心分析框架）\n"
+            "每个概念题材分组都处于以下某个阶段：\n"
+            "1. **启动期**：少数龙头股率先异动（涨幅3-7%），量能温和放大，板块多数个股尚未跟涨。"
+            "→ 明日大概率继续走强（资金刚开始关注，上行空间大）\n"
+            "2. **发酵期**：板块内>60%个股上涨，涨幅扩散，量能明显放大，与指数同步偏强。"
+            "→ 明日可能继续强势（趋势确立，资金涌入）\n"
+            "3. **高潮期**：板块普涨且涨幅巨大（多只>10%），量能急剧放大（天量），龙头股涨停潮。"
+            "→ 明日可能分歧/回调（短期过热，获利盘抛压）\n"
+            "4. **退潮期**：涨幅收窄、冲高回落、涨跌分化，量能萎缩。"
+            "→ 明日大概率走弱（资金流出，寻找下一个题材）\n\n"
+            "## 分析要求\n"
+            "1. **情绪周期定位**：对每个分组，判断其处于哪个阶段，给出依据\n"
+            "2. **轮动预判**：高潮/退潮的板块资金可能流向哪些启动/发酵期的板块？\n"
+            "3. **指数共振**：哪些分组与指数走势强共振？（指数跌它抗跌→真强势；指数涨它不涨→弱势）\n"
+            "4. **冰点反转信号**：如果指数连续下跌，哪些板块率先企稳走强？（可能是新主线）\n\n"
+            "## 输出格式\n"
+            "给出**明日强势板块排名（Top 5）**，每个包含：\n"
+            "- 当前情绪周期阶段 + 判断依据（引用具体数据）\n"
+            "- 明日预判（继续走强/分歧/回调）+ 理由\n"
+            "- 风险提示（什么信号出现就应放弃）\n"
+            "- 重点关注个股（该分组内的领涨股）\n\n"
+            "用 Markdown 格式输出，分析要有数据支撑，不要空泛。"
         )
         messages2 = [
             {"role": "system", "content": stage2_system},

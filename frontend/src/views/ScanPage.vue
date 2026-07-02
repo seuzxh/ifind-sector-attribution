@@ -71,11 +71,12 @@ import { fmt } from '@/utils/format'
 const route = useRoute()
 const isMarket = computed(() => route.name === 'market_scan')
 
-// ===== 预置条件 =====
+// ===== 预置条件（MCP search_stocks 自然语言选股）=====
+// 注意：MCP 不理解"实体涨幅"，用"涨幅"或"日涨幅"替代
 const presets = [
-  '实体涨幅大于3%或最大涨幅大于3%；成交额大于6亿',
-  '实体涨幅大于3%或最大涨幅大于3%；成交金额大于10亿',
-  '成交金额大于20亿；且实体涨幅大于4%或最大涨幅大于4%',
+  '涨幅大于3%；成交额大于6亿',
+  '涨幅大于3%；成交金额大于10亿',
+  '成交金额大于20亿；且涨幅大于4%',
   '涨幅大于7%并且小于12.1%；未涨停；非ST',
 ]
 // localStorage：自定义查询 [{label, query}]、预置重命名 {idx: label}

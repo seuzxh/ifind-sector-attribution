@@ -910,12 +910,15 @@ function renderStats(payload) {
 }
 
 // ========== 渲染：集合竞价选股（auction 看板专用）==========
+// 预留当前选中的分组（跨刷新保持），全局
+let auctionSelectedGroup = null;
+
 function renderAuction(payload) {
-  // 竞价看板语义调整：top 面板显示"个股排行"，隐藏 bottom 面板，成分股区改为"分组详情"
-  document.getElementById('topPanelTitle').innerHTML = '<span class="badge badge-red">⚡</span> 竞价强势个股 <span class="hint">4 因子综合分（高开/爆量/失衡/趋势）· 表头可排序</span>';
+  // 竞价看板语义：top 面板 = 竞价强势分组排名（点击行看成分股），下方 = 选中分组的成分股
+  document.getElementById('topPanelTitle').innerHTML = '<span class="badge badge-red">⚡</span> 竞价强势分组 <span class="hint">通过竞价个股反推今天可能爆发的分组 · 点击行查看成分股 · 表头可排序</span>';
   document.getElementById('bottomPanel').style.display = 'none';
   document.getElementById('ztPanel').style.display = 'none';
-  document.getElementById('membersTitle').innerHTML = '分组详情 <span class="sub" id="modeHint"></span>';
+  document.getElementById('membersTitle').innerHTML = '成分股详情 <span class="sub" id="modeHint"></span>';
   document.getElementById('membersTabs').style.display = 'none';
 
   // 统计栏
@@ -929,76 +932,89 @@ function renderAuction(payload) {
     <div class="item up"><span class="label">爆量</span><span class="val">${s.explode_count||0}</span></div>
   `;
 
-  // 个股排行表（top_stocks）
-  const stocks = payload.top_stocks || [];
+  // 顶部主表：分组排名（top_groups + zt_groups 合并，ZT 在末尾标紫）
+  const allGroups = [...(payload.top_groups||[]), ...(payload.zt_groups||[])];
+  // 缓存到全局供点击行渲染成分股
+  window._auctionGroups = allGroups;
   const topEl = document.getElementById('topTable');
-  const bottomEl = document.getElementById('bottomTable');
-  bottomEl.innerHTML = '';  // 竞价看板不用 bottom 表
-
-  if (stocks.length === 0) {
-    topEl.innerHTML = '<div class="empty-msg">无竞价数据</div>';
+  if (allGroups.length === 0) {
+    topEl.innerHTML = '<div class="empty-msg">无竞价分组数据</div>';
   } else {
-    const rows = stocks.map((m, i) => {
-      const gapCls = m.gap_pct > 0 ? 'up' : (m.gap_pct < 0 ? 'down' : '');
-      const imbCls = m.order_imbalance > 0.3 ? 'up' : (m.order_imbalance < -0.3 ? 'down' : '');
-      const holdTag = m.holding ? '<span class="limit-tag" style="background:#f59e0b;">持仓</span>' : '';
+    const rows = allGroups.map((g, i) => {
+      const gapCls = g.sector_gap > 0 ? 'up' : (g.sector_gap < 0 ? 'down' : '');
+      const ztTag = g.is_zt ? '<span class="limit-tag" style="background:#8b5cf6;">涨停池</span>' : '';
       const rankCls = i === 0 ? 'r1' : (i === 1 ? 'r2' : (i === 2 ? 'r3' : 'rN'));
-      return `<tr data-code="${m.code}">
+      return `<tr data-gid="${g.group_id}" onclick="selectAuctionGroup('${g.group_id}', this)">
         <td class="center"><span class="rank-num ${rankCls}">${i+1}</span></td>
-        <td class="left">${m.code}<div style="font-size:11px;color:#9ca3af;">${m.name||''}</div></td>
-        <td class="${gapCls}" data-v="${m.gap_pct}">${fmt(m.gap_pct)}%${holdTag}</td>
-        <td data-v="${m.vol_ratio}">${m.vol_ratio ? m.vol_ratio.toFixed(2) : '-'}</td>
-        <td class="${imbCls}" data-v="${m.order_imbalance}">${(m.order_imbalance*100).toFixed(0)}%</td>
-        <td data-v="${m.trend_score}">${fmt(m.trend_score)}%</td>
-        <td><span class="score-bar" style="background:${m.score>=0?'#ef4444':'#10b981'};">${fmt(m.score)}</span></td>
+        <td class="left concept-name">${g.group_name}${ztTag}<div style="font-size:11px;color:#9ca3af;font-weight:normal;">${g.member_count} 只成分股</div></td>
+        <td class="${gapCls}" data-v="${g.sector_gap}">${fmt(g.sector_gap)}%</td>
+        <td data-v="${g.sector_vol_ratio}">${g.sector_vol_ratio||'-'}</td>
+        <td data-v="${g.sector_imbalance}">${(g.sector_imbalance*100).toFixed(0)}%</td>
+        <td data-v="${g.coherency}">${(g.coherency*100).toFixed(0)}%</td>
+        <td><span class="score-bar" style="background:${g.score>=0?'#ef4444':'#10b981'};">${fmt(g.score)}</span></td>
       </tr>`;
     }).join('');
     topEl.innerHTML = `<table class="rank-table" data-tab="auction">
       <thead><tr>
         <th class="center">#</th>
-        <th class="left">代码 / 名称</th>
-        <th class="sorted" data-order="↓" data-k="gap_pct" onclick="sortAuctionTable(this)">高开<br><span style="font-weight:normal;color:#9ca3af;">竞价涨跌幅</span></th>
-        <th data-k="vol_ratio" onclick="sortAuctionTable(this)">量比<br><span style="font-weight:normal;color:#9ca3af;">竞价/昨日量</span></th>
-        <th data-k="order_imbalance" onclick="sortAuctionTable(this)">失衡<br><span style="font-weight:normal;color:#9ca3af;">买-卖/总</span></th>
-        <th data-k="trend_score" onclick="sortAuctionTable(this)">趋势<br><span style="font-weight:normal;color:#9ca3af;">9:20→9:25</span></th>
-        <th class="sorted" data-order="↓" data-k="score" onclick="sortAuctionTable(this)">综合分</th>
+        <th class="left">分组名称</th>
+        <th class="sorted" data-order="↓" data-k="sector_gap" onclick="sortAuctionGroupTable(this)">竞价涨幅<br><span style="font-weight:normal;color:#9ca3af;">成分股均值</span></th>
+        <th data-k="sector_vol_ratio" onclick="sortAuctionGroupTable(this)">量比中位<br><span style="font-weight:normal;color:#9ca3af;">爆量度</span></th>
+        <th data-k="sector_imbalance" onclick="sortAuctionGroupTable(this)">挂单失衡<br><span style="font-weight:normal;color:#9ca3af;">抢筹度</span></th>
+        <th data-k="coherency" onclick="sortAuctionGroupTable(this)">联动度<br><span style="font-weight:normal;color:#9ca3af;">高开占比</span></th>
+        <th class="sorted" data-order="↓" data-k="score" onclick="sortAuctionGroupTable(this)">综合分</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
   }
 
-  // 分组卡片（top_groups + zt_groups）
+  // 下方：默认选中第一个分组的成分股（或保持上次选中）
   const grid = document.getElementById('membersGrid');
-  const allGroups = [...(payload.top_groups||[]), ...(payload.zt_groups||[])];
-  if (allGroups.length === 0) {
-    grid.innerHTML = '<div class="empty-msg">无分组数据</div>';
-    return;
+  const sel = auctionSelectedGroup && allGroups.find(g => g.group_id === auctionSelectedGroup)
+            ? auctionSelectedGroup
+            : (allGroups[0] && allGroups[0].group_id);
+  if (sel) {
+    renderAuctionGroupMembers(sel);
+    // 高亮选中行
+    document.querySelectorAll('#topTable tr[data-gid]').forEach(r => {
+      r.classList.toggle('active', r.dataset.gid === sel);
+    });
+  } else {
+    grid.innerHTML = '<div class="empty-msg">点击上方分组查看成分股</div>';
   }
-  grid.innerHTML = allGroups.map((g, i) => auctionGroupCardHtml(g, i+1)).join('');
 }
 
-function auctionGroupCardHtml(g, idx) {
-  const isZt = g.is_zt;
-  const color = isZt ? '#8b5cf6' : (g.score >= 0 ? '#ef4444' : '#10b981');
-  const ztTag = isZt ? ' <span style="background:#fff3;color:#fff;padding:0 4px;border-radius:3px;font-size:10px;">涨停池</span>' : '';
+// 渲染某分组的成分股到 membersGrid（竞价 4 因子明细）
+function renderAuctionGroupMembers(gid) {
+  auctionSelectedGroup = gid;
+  const grid = document.getElementById('membersGrid');
+  const g = (window._auctionGroups || []).find(x => x.group_id === gid);
+  if (!g) { grid.innerHTML = '<div class="empty-msg">无该分组数据</div>'; return; }
   const members = g.top_stocks || [];
+  if (members.length === 0) {
+    grid.innerHTML = `<div class="empty-msg">${g.group_name} 无成分股竞价数据</div>`;
+    return;
+  }
+  // 用单张大卡片展示该分组成分股（复用 sector-card 样式）
+  const color = g.is_zt ? '#8b5cf6' : (g.score >= 0 ? '#ef4444' : '#10b981');
   const rows = members.map(m => {
     const gapCls = m.gap_pct > 0 ? 'up' : (m.gap_pct < 0 ? 'down' : '');
+    const imbCls = m.order_imbalance > 0.3 ? 'up' : (m.order_imbalance < -0.3 ? 'down' : '');
     const holdTag = m.holding ? '<span class="limit-tag" style="background:#f59e0b;">持</span>' : '';
     return `<tr>
       <td class="left">${m.code}</td>
       <td class="left"><div class="stock-name" title="${m.name||''}">${m.name||''}</div></td>
       <td class="r ${gapCls}" data-k="gap_pct">${fmt(m.gap_pct)}%${holdTag}</td>
       <td class="r" data-k="vol_ratio">${m.vol_ratio ? m.vol_ratio.toFixed(2) : '-'}</td>
-      <td class="r" data-k="order_imbalance">${(m.order_imbalance*100).toFixed(0)}%</td>
+      <td class="r ${imbCls}" data-k="order_imbalance">${(m.order_imbalance*100).toFixed(0)}%</td>
       <td class="r" data-k="trend_score">${fmt(m.trend_score)}%</td>
       <td class="r" data-k="score"><b>${fmt(m.score)}</b></td>
     </tr>`;
   }).join('');
-  return `<div class="sector-card" data-code="${g.group_id}">
+  grid.innerHTML = `<div class="sector-card" data-code="${g.group_id}" style="grid-column:1/-1;">
     <div class="card-head" style="background:${color};">
-      <span><span class="num">${idx}</span>${g.group_name}${ztTag}</span>
-      <span class="meta">分${fmt(g.score)} · 高开${fmt(g.sector_gap)}% · 量比${g.sector_vol_ratio} · 联动${(g.coherency*100).toFixed(0)}% · ${g.member_count}只</span>
+      <span>${g.is_zt ? '🔥 ' : ''}${g.group_name}</span>
+      <span class="meta">综合分 ${fmt(g.score)} · 竞价涨幅 ${fmt(g.sector_gap)}% · 量比中位 ${g.sector_vol_ratio} · 联动 ${(g.coherency*100).toFixed(0)}% · ${g.member_count} 只</span>
     </div>
     <table>
       <thead><tr>
@@ -1009,12 +1025,44 @@ function auctionGroupCardHtml(g, idx) {
         <th class="r" onclick="sortCard(this,'trend_score')">趋势</th>
         <th class="r" onclick="sortCard(this,'score')">综合分</th>
       </tr></thead>
-      <tbody>${rows || '<tr><td colspan="7" style="text-align:center;color:#9ca3af;">无</td></tr>'}</tbody>
+      <tbody>${rows}</tbody>
     </table>
   </div>`;
 }
 
-// 竞价个股表排序（复用 applyRankSort 内核，但 data-v 直接是数值）
+// 点击分组行：渲染该分组成分股 + 高亮
+function selectAuctionGroup(gid, tr) {
+  renderAuctionGroupMembers(gid);
+  document.querySelectorAll('#topTable tr[data-gid]').forEach(r => r.classList.remove('active'));
+  if (tr) tr.classList.add('active');
+}
+
+// 分组表排序（复用 sortAuctionTable 内核，列映射不同）
+function sortAuctionGroupTable(th) {
+  const table = th.closest('table');
+  const tbody = table.querySelector('tbody');
+  if (!tbody || tbody.querySelectorAll('tr').length === 0) return;
+  const key = th.dataset.k;
+  const newOrder = th.dataset.order === '↓' ? '↑' : '↓';
+  const thead = table.querySelector('thead');
+  thead.querySelectorAll('th').forEach(t => { t.classList.remove('sorted'); t.dataset.order = ''; });
+  th.classList.add('sorted'); th.dataset.order = newOrder;
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const desc = newOrder === '↓';
+  const colIdx = {sector_gap:2, sector_vol_ratio:3, sector_imbalance:4, coherency:5, score:6}[key];
+  rows.sort((a, b) => {
+    let av = parseFloat(a.children[colIdx].dataset.v), bv = parseFloat(b.children[colIdx].dataset.v);
+    if (isNaN(av)) av = 0; if (isNaN(bv)) bv = 0;
+    return desc ? bv - av : av - bv;
+  });
+  rows.forEach((r, i) => {
+    const badge = r.querySelector('.rank-num');
+    if (badge) { badge.textContent = i+1; badge.className = 'rank-num ' + (i===0?'r1':(i===1?'r2':(i===2?'r3':'rN'))); }
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+// 竞价个股表排序（已废弃，分组表用 sortAuctionGroupTable；保留供潜在个股表复用）
 function sortAuctionTable(th) {
   const table = th.closest('table');
   const tbody = table.querySelector('tbody');
