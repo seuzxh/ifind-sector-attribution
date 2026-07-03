@@ -628,9 +628,11 @@ class RealtimeEngine:
                     "raw_preview": str(md_raw)[:300]}
         hit_codes = set(hit_lookup.keys())
 
-        # 3. 按 884 概念板块归类（一股属多板块，各板块各计）
-        members_map = self._members_map       # {884xxx.TI: [stock_codes]}
-        group_names = self._concept_names      # {884xxx.TI: concept_name}
+        # 3. 按 884 行业分类板块归类（一股属多板块，各板块各计）
+        # 只取 884 开头的行业分类（剔除 885/886 大类概念，它们成分股太多无意义）
+        members_map = {gid: codes for gid, codes in self._members_map.items()
+                       if gid.startswith("884")}
+        group_names = self._concept_names
         groups_out = []
         for gid, g_codes in members_map.items():
             g_hit_codes = [c for c in g_codes if c in hit_codes]
