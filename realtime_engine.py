@@ -532,10 +532,9 @@ class RealtimeEngine:
         group_names = self.db.get_custom_group_names()
         custom_codes = set(self.db.get_custom_all_stock_codes())  # 自选股票全集（取交集用）
 
-        # 1. 调 MCP search_stocks 选股（~4.5s）
+        # 1. 调 MCP search_stocks 选股（带重试，防间歇性失败）
         try:
-            mcp = MCPClient.instance()
-            md_raw = mcp.call_tool("stock", "search_stocks", {"query": query})
+            md_raw = _mcp_search_with_retry(query)
         except Exception as e:
             return {"error": f"MCP 选股失败：{e}", "query": query}
         if isinstance(md_raw, dict) and md_raw.get("error"):
@@ -613,10 +612,9 @@ class RealtimeEngine:
         if not query or not query.strip():
             return {"error": "请输入选股条件（query）"}
 
-        # 1. 调 MCP search_stocks 选股（~4.5s，返回 markdown 表格）
+        # 1. 调 MCP search_stocks 选股（带重试，防间歇性失败）
         try:
-            mcp = MCPClient.instance()
-            md_raw = mcp.call_tool("stock", "search_stocks", {"query": query})
+            md_raw = _mcp_search_with_retry(query)
         except Exception as e:
             return {"error": f"MCP 选股失败：{e}", "query": query}
         if isinstance(md_raw, dict) and md_raw.get("error"):
@@ -667,6 +665,26 @@ class RealtimeEngine:
             "group_hit_count": len(groups_out),
             "groups": groups_out,
         }
+
+
+def _mcp_search_with_retry(query: str, max_retries: int = 2) -> str:
+    """
+    调 MCP search_stocks，带重试。
+    MCP 间歇性返回"未找到"（服务端不稳定/限流），重试可大幅降低失败率。
+    只在返回"未找到/无符合"时重试（正常返回数据不重试）。
+    """
+    from mcp_proxy import MCPClient
+    import time
+    mcp = MCPClient.instance()
+    for attempt in range(max_retries + 1):
+        md = str(mcp.call_tool("stock", "search_stocks", {"query": query}))
+        # 有数据（含表格）→ 直接返回
+        if "|股票代码" in md:
+            return md
+        # 无数据 → 最后一次也返回（让调用方处理）
+        if attempt < max_retries:
+            time.sleep(1)
+    return md
 
 
 def _parse_search_stocks_md(md: str) -> Dict[str, dict]:
