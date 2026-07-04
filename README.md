@@ -40,12 +40,11 @@ ifind_sector_attribution/
 ├── stock_scorer.py        # 成分股四维综合评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速
 ├── realtime_engine.py     # 盘中实时引擎（分时序列缓存 + 时刻切片 + 板块强度）
 ├── prescreen.py           # 盘前筛选（5日涨幅选板块+成分股→watchlist）
-├── api_server.py          # FastAPI 服务层（API + 可视化页面）
+├── api_server.py          # FastAPI 服务层（API + 静态前端托管）
 ├── main.py                # 入口脚本
 ├── requirements.txt       # 依赖
-├── templates/
-│   ├── tabs.html          # 顶层 Tab 容器（板块强度/自选分组 双看板 iframe 隔离）
-│   └── index.html         # 看板单页（?board=sector/custom 复用；时间滑块+播放+3s轮询+加速列+持仓标注）
+├── frontend/              # Vue 3 + Vite + TypeScript 前端源码（构建产物输出到 static/）
+├── static/                # 前端构建产物（FastAPI 托管；已 gitignore）
 ├── ifind-monitor.service  # systemd 服务配置（开机自启+自动重启）
 ├── install_service.sh     # 一键安装 systemd 服务脚本
 ├── data/                  # 数据库文件（已 gitignore）
@@ -154,9 +153,9 @@ python main.py server --host 0.0.0.0 --port 8000
 - **可视化看板**：浏览器打开 `http://localhost:8000`
 - **REST API**：见下方"API 接口"
 
-#### 可视化看板（双 Tab，盘中实时监控）
+#### 可视化看板（Vue SPA，盘中实时监控）
 
-访问 `http://localhost:8000` 进入**顶层 Tab 容器**，两个看板各自独立 iframe，状态完全隔离（模式/时间条/播放互不影响）：
+访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部 7 个 Tab 切换（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/AI问答），各页状态由 `<keep-alive>` 保留：
 
 **📊 Tab 1：板块强度监控**（默认）
 - 每个分组 = 同花顺概念板块（884 行业分类码）。三种模式可切：
@@ -230,7 +229,7 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `GET /` | — | **顶层 Tab 容器**（`tabs.html`）；带 `?board=sector`/`=custom` 返回 iframe 内页 |
+| `GET /` | — | **前端入口**（Vue 3 SPA，`static/index.html`，Hash 路由） |
 | `GET /api/sector/rankings` | — | 获取板块强度排名（含多周期融合分） |
 | `POST /api/attribution/stock` | — | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |

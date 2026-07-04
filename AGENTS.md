@@ -17,7 +17,7 @@
 
 ### 待做（按优先级）⬇️
 1. **🟡 新增「更新指数成分」按钮**（前端 + 后端）
-   - 前端：`templates/index.html` 顶部栏加按钮，仿 `runPrescreen()` 范式（POST + setStatus 反馈）
+   - 前端：`frontend/src/views/DashboardPage.vue` 控制栏加按钮，仿 `runPrescreen()` 范式（POST + ElMessage 反馈）
    - 后端：`api_server.py` 加 `POST /api/observe/refresh`，仿 `/api/custom/check_reload` 模式（同步执行 + 返回 stats + 清 realtime 缓存）
    - 同步 `sync_pipeline.py` 加 `refresh_observe_members()`（遍历 884+885/886 全集，复用 `_fetch_concept_members_batch`）
 
@@ -98,9 +98,8 @@
 | `api_server.py` | FastAPI 服务（REST API + 可视化页面 + AI 问答 SSE 路由） | 中（加接口看这） |
 | `llm_agent.py` | AI 问答的"大脑"（火山方舟 Coding Plan，OpenAI 兼容；静态 10 模型白名单 `_CODING_PLAN_MODELS`；运行时可切模型） | 低 |
 | `mcp_proxy.py` | iFinD MCP 客户端代理（hexin-ifind-ds-stock-mcp / -index-mcp，JWT 鉴权） | 低 |
-| `templates/tabs.html` | **顶层 Tab 容器**（[📊板块强度]/[⭐自选分组]/[🎯强势归类]/[🌐全市场强势归类]/[💬AI问答] iframe，状态完全隔离） | 低 |
-| `templates/index.html` | 看板单页（`?board=sector`/`=custom`/`=scan`/`=market_scan` 复用同模板；时间滑块 + 播放 + 3s 轮询 + 加速列 + **持仓金色标注** + **强势归类手风琴** + **全市场选股+自定义条件**） | 低 |
-| `templates/chat.html` | AI 问答页面（自然语言查行情，模型下拉框 + SSE 流式） | 低 |
+| `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。7 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/板块轮动/AI问答。结构详见 `docs/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
+| `static/` | 前端构建产物（FastAPI `mount('/static')` 托管；已 gitignore，勿手改） | — |
 | `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
 | `main.py` | 命令入口（argparse 子命令） | 低 |
 
@@ -143,7 +142,7 @@
 - **交易时段由服务端 `session_phase` 决定**（`trade_calendar.py`，7 个 phase：`pre_open`/`auction`/`pre_morning`/`morning`/`lunch`/`afternoon`/`closed`）。前端仅 `<9:15(pre_open)` 和非交易日停 3s 轮询，**收盘后 `closed` 仍轮询**展示全天数据供回看。
 - **历史日期回看 ≠ 历史看板**：实时接口传 `trade_date=YYYYMMDD` 走分时链路（拉该日全天分时 + 内存切片）；`/api/history/dashboard` 读已入库的 `concept_strength`（降级为纯涨幅排序）。两条路径别混。
 - **自选股分组看板**：`GET /api/custom/dashboard` 用 `custom_group` 表替代概念板块算分组强弱，复用 realtime_engine 的缓存/切片（仅 `members_map` 来源不同）。需先用 `import-groups` 导入分组。
-- **双看板 Tab 隔离**：根路由 `/` 返回 `tabs.html`（顶层 Tab 容器），内嵌两个 iframe：`/?board=sector`（板块强度）和 `/?board=custom`（自选分组）。两 iframe 各自独立 JS 环境，状态完全隔离（模式/时间条/播放/autoFollow 互不影响）。`index.html` 据 `?board` 参数切换数据源与标题。
+- **Vue SPA 多 Tab**：根路由 `/` 返回 Vue SPA（`static/index.html`，Hash 路由），7 个 Tab（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/AI问答）在前端切换，`<keep-alive>` 保留各页状态。`DashboardPage` 按 `route.name` 复用（sector/custom）；`ScanPage` 同理（scan/market_scan）。
 - **时间条播放**：`togglePlay` 用 `setInterval` 逐分钟推进滑块（`stepPlay` → `refresh`），速度 1.5x/2x/4x/8x。切模式/切日期/拖滑块/点"回到最新"自动 `stopPlay`。播放时 `autoFollow=false`（否则 3s 轮询拉回最新）。`refreshSeq` 序号守卫防异步乱序覆盖。
 
 ## 三套数据源（重要）
@@ -174,7 +173,7 @@
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `GET /` | — | **顶层 Tab 容器**（`tabs.html`）；带 `?board=sector`/`=custom` 时返回 iframe 内页（`index.html`） |
+| `GET /` | — | **前端入口**（Vue 3 SPA，`static/index.html`，Hash 路由） |
 | `GET /api/sector/rankings` | — | 板块强度排名（含多周期融合分） |
 | `POST /api/attribution/stock` | — | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
@@ -207,11 +206,11 @@
 | 接入自选股分组监控 | `main.py import-groups` 导入 JSON → 调 `GET /api/custom/dashboard` |
 | 改盘前筛选/时段判定 | `prescreen.py`（筛选）/ `trade_calendar.py`（`session_phase`、交易日历） |
 | 改持仓分组（自选看板金色标注） | `config.HOLDING_GROUP_NAME` 改分组名（默认 "CC"），无需改代码 |
-| 改双看板（Tab 隔离） | `templates/tabs.html`（容器）/ `templates/index.html`（`?board=sector`/`=custom` 复用同模板） |
+| 改前端（加 Tab / 改看板） | `frontend/src/`（Vue SPA）：`views/` 加页 + `router/index.ts` 加路由 + `AppLayout.vue` 加 Tab；接口在 `api/<域>.ts` 封装。详见 `docs/FRONTEND.md` |
 | 时间条播放异常（时刻跳变） | 检查 `refreshSeq` 请求序号守卫是否被破坏（防异步乱序覆盖） |
 | 改 AI 问答模型 / 加模型 | `llm_agent._CODING_PLAN_MODELS` 白名单（静态 10 个）；或 `config.LLM_MODEL` 改默认；页面下拉框运行时切。**base_url 必须用 `/api/coding/v3`** |
 | AI 问答报错 / 不调工具 | 检查 `LLM_API_KEY` + `IFIND_MCP_TOKEN` 是否配在 `config_local.py`；看 `/api/llm/models` 是否返回模型列表 |
-| 改全市场选股预置条件 | `templates/index.html` 的 `MARKET_PRESETS` 数组（4 组）；自定义条件存浏览器 localStorage（`market_scan_custom_queries`，结构 `{label,query}`），页面可存/重命名/删除 |
+| 改全市场选股预置条件 | `frontend/src/views/ScanPage.vue` 的预置条件数组；自定义条件存浏览器 localStorage（`market_scan_custom_queries`，结构 `{label,query}`），页面可存/重命名/删除 |
 | 全市场选股归类慢 / 报错 | `/api/market/scan` 调 MCP `search_stocks` 约 4.5s；报错看 `IFIND_MCP_TOKEN` 是否配置、query 表达是否被 MCP 理解 |
 
 ## 深入阅读

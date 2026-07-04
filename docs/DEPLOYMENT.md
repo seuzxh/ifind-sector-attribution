@@ -29,7 +29,7 @@
 
 服务绑 `0.0.0.0:8000`，**支持两种访问方式**：公网直连（需安全组放行）和 SSH 隧道（无需开放端口）。
 
-> **前端架构**：看板前端已迁移为 **Vue 3 + Vite + TypeScript + Element Plus**（`frontend/` 子目录）。默认 `/` 返回 Vue SPA（`static/index.html`，构建产物）。访问 `/?legacy=1` 可回退旧版原生 JS 看板（`templates/`）。
+> **前端架构**：看板前端为 **Vue 3 + Vite + TypeScript + Element Plus**（`frontend/` 子目录）。`/` 返回 Vue SPA（`static/index.html`，构建产物）。旧版原生 JS 看板已删除，前后端架构统一。
 
 ---
 
@@ -96,7 +96,7 @@ sudo systemctl restart ifind-monitor   # 重启服务加载新产物
 cd frontend && npm run dev    # 启 Vite dev server（5173），/api 自动代理到后端 8000
 ```
 
-> 构建产物 `static/` 已 gitignore，不入库；`node_modules/` 同样不入库。`/?legacy=1` 可访问旧版看板用于对比/回滚。
+> 构建产物 `static/` 已 gitignore，不入库；`node_modules/` 同样不入库。
 
 ---
 
