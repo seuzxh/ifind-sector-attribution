@@ -888,6 +888,7 @@ def scan_market_groups(query: str) -> Dict:
 
 def clear_cache():
     """清空全部缓存（分时序列 + 看板结果 + singleflight 锁 + 后台刷新标志，调试/切日用）"""
+    global _engine_instance
     with RealtimeEngine._series_locks_guard:
         RealtimeEngine._series_cache.clear()
         RealtimeEngine._series_locks.clear()
@@ -896,3 +897,5 @@ def clear_cache():
     with RealtimeEngine._result_locks_guard:
         RealtimeEngine._result_cache.clear()
         RealtimeEngine._result_locks.clear()
+    # 重置引擎单例，让下次请求用新成分股数据重建 _members_map（刷新板块后必须）
+    _engine_instance = None

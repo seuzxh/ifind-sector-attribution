@@ -620,6 +620,72 @@ def sector_manage_save(req: WatchedSaveRequest):
     return {"ok": True, "saved_count": len(req.concept_codes)}
 
 
+# 刷新板块信息的后台任务状态（全局，进程内）
+_refresh_state = {
+    "running": False,
+    "done": False,
+    "error": None,
+    "result": None,
+    "started_at": None,
+    "finished_at": None,
+}
+
+
+def _run_refresh_background():
+    """后台线程：刷新板块字典+成分股，完成后清看板缓存。"""
+    from sync_pipeline import SyncPipeline
+    from realtime_engine import clear_cache
+    from datetime import datetime
+    global _refresh_state
+    try:
+        pipeline = SyncPipeline()
+        result = pipeline.refresh_observe_members()
+        # 刷新成功后清看板缓存（engine 单例会在 clear_cache 内重置）
+        try:
+            clear_cache()
+        except Exception as e:
+            print(f"[REFRESH] clear_cache 失败（不影响数据）: {e}")
+        _refresh_state.update({
+            "running": False, "done": True, "error": None, "result": result,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        print(f"[REFRESH] 后台刷新完成：{result}")
+    except Exception as e:
+        _refresh_state.update({
+            "running": False, "done": True, "error": str(e), "result": None,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        print(f"[REFRESH] 后台刷新失败：{e}")
+
+
+@app.post("/api/sector_manage/refresh")
+def sector_manage_refresh():
+    """
+    触发刷新：后台线程重新从 iFinD 拉取最新板块字典 + 成分股（约 1-2 分钟）。
+    立即返回，前端轮询 /api/sector_manage/refresh/status 查进度。
+    不可重入：已在刷新中则返回 running 状态。
+    """
+    import threading
+    from datetime import datetime
+    global _refresh_state
+    if _refresh_state["running"]:
+        return {"ok": False, "reason": "已在刷新中", "status": _refresh_state}
+    _refresh_state.update({
+        "running": True, "done": False, "error": None, "result": None,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "finished_at": None,
+    })
+    t = threading.Thread(target=_run_refresh_background, daemon=True)
+    t.start()
+    return {"ok": True, "reason": "刷新已启动", "status": _refresh_state}
+
+
+@app.get("/api/sector_manage/refresh/status")
+def sector_manage_refresh_status():
+    """查询刷新进度（前端轮询用）。"""
+    return _refresh_state
+
+
 # ========== 板块轮动分析智能体 ==========
 @app.get("/api/rotation/analyze")
 def rotation_analyze():

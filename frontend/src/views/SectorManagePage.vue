@@ -16,6 +16,9 @@
       </span>
       <button class="btn-select" @click="selectAllFiltered(true)">全选筛选</button>
       <button class="btn-select" @click="selectAllFiltered(false)">取消筛选</button>
+      <button class="btn-refresh" @click="onRefresh" :disabled="refreshing">
+        {{ refreshing ? '🔄 刷新中…' : '🔄 刷新板块' }}
+      </button>
       <button class="btn-save" @click="onSave" :disabled="saving || dirty === 0">
         {{ saving ? '保存中…' : `💾 保存勾选${dirty ? ' *' : ''}` }}
       </button>
@@ -66,15 +69,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getSectorManageList, saveWatchedSectors, type SectorCandidate } from '@/api/sectorManage'
+import { getSectorManageList, saveWatchedSectors, triggerRefresh, getRefreshStatus, type SectorCandidate } from '@/api/sectorManage'
 import { fmt, changeCls } from '@/utils/format'
 
 // ===== 数据 =====
 const allSectors = ref<SectorCandidate[]>([])
 const loading = ref(false)
 const saving = ref(false)
+const refreshing = ref(false)
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 const dirty = ref(0)            // 未保存改动计数（>0 表示有改动）
 const statusText = ref('')
 const statusCls = ref('')
@@ -180,7 +185,61 @@ async function onSave() {
   }
 }
 
-onMounted(loadList)
+// ===== 刷新板块（后台线程拉取 iFinD 字典+成分股，约1-2分钟）=====
+async function onRefresh() {
+  if (refreshing.value) return
+  refreshing.value = true
+  statusText.value = '🔄 正在从 iFinD 拉取最新板块字典+成分股（约1-2分钟）…'; statusCls.value = ''
+  try {
+    const res = await triggerRefresh()
+    if (!res.ok) {
+      // 已在刷新中：直接进入轮询
+      ElMessage.info(res.reason)
+    }
+    startPollingRefresh()
+  } catch (e: any) {
+    refreshing.value = false
+    statusText.value = '⚠ 刷新启动失败: ' + (e?.message || e); statusCls.value = 'warn'
+  }
+}
+
+function startPollingRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer)
+  refreshTimer = setInterval(async () => {
+    try {
+      const st = await getRefreshStatus()
+      if (st.error) {
+        stopPollingRefresh()
+        refreshing.value = false
+        statusText.value = '⚠ 刷新失败: ' + st.error; statusCls.value = 'warn'
+        ElMessage.error('刷新失败: ' + st.error)
+      } else if (st.done && st.result) {
+        stopPollingRefresh()
+        refreshing.value = false
+        const r = st.result
+        statusText.value = `✅ 刷新完成：字典 ${r.dict_count} 个，成分股 ${r.member_concepts} 板块 / ${r.saved_records} 条`
+        statusCls.value = 'live'
+        ElMessage.success(`板块信息已刷新（${r.member_concepts} 板块）`)
+        await loadList()   // 重新加载列表展示新数据
+      }
+    } catch { /* 轮询失败忽略，下次重试 */ }
+  }, 3000)
+}
+
+function stopPollingRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+}
+
+onMounted(async () => {
+  // 进页面先检查是否有正在进行的刷新（如服务重启后），有则恢复轮询
+  try {
+    const st = await getRefreshStatus()
+    if (st.running) { refreshing.value = true; startPollingRefresh() }
+  } catch { /* 忽略 */ }
+  await loadList()
+})
+
+onUnmounted(stopPollingRefresh)
 </script>
 
 <style scoped>
@@ -202,6 +261,12 @@ onMounted(loadList)
   border: 1px solid #d1d5db; background: #fff; color: #374151;
 }
 .btn-select:hover { background: #f3f4f6; }
+.btn-refresh {
+  padding: 5px 12px; font-size: 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid #2563eb; background: #fff; color: #2563eb;
+}
+.btn-refresh:hover:not(:disabled) { background: #eff6ff; }
+.btn-refresh:disabled { color: #9ca3af; border-color: #d1d5db; cursor: not-allowed; }
 .btn-save {
   padding: 6px 16px; font-size: 13px; border-radius: 6px; cursor: pointer;
   border: 1px solid #059669; background: #059669; color: #fff; font-weight: 600;

@@ -48,3 +48,23 @@ export function getWatchedSectors(): Promise<WatchedPayload> {
 export function saveWatchedSectors(payload: SaveWatchedPayload): Promise<{ ok: boolean; saved_count: number }> {
   return http.post('/api/sector_manage/save', payload)
 }
+
+/** 刷新任务状态（后台线程执行，前端轮询） */
+export interface RefreshStatus {
+  running: boolean
+  done: boolean
+  error: string | null
+  result: { dict_count?: number; member_concepts?: number; saved_records?: number; member_date?: string } | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+/** 触发刷新（后台线程拉取最新板块字典+成分股，约1-2分钟） */
+export function triggerRefresh(): Promise<{ ok: boolean; reason: string; status: RefreshStatus }> {
+  return http.post('/api/sector_manage/refresh')
+}
+
+/** 查询刷新进度（前端轮询用） */
+export function getRefreshStatus(): Promise<RefreshStatus> {
+  return http.get('/api/sector_manage/refresh/status')
+}

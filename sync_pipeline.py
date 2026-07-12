@@ -88,6 +88,40 @@ class SyncPipeline:
         print(f"[INIT] 共 {len(concept_codes)} 个概念")
         return self._fetch_concept_members_batch(concept_codes, member_date)
 
+    def refresh_observe_members(self, member_date: str = None):
+        """
+        一键刷新观察池全集（884+885+886）的板块字典 + 成分股（管理页刷新按钮用）。
+
+        与 init_concept_dict/init_concept_members 的区别：
+          - 字典：对【全集】调接口5（init_concept_dict 只刷 884，885/886 字典历史缺口）
+          - 成分股：对【全集】调接口2（init_concept_members 受 watched 表限制，只刷勾选的）
+        不跑 init_concept_universe（要扫全市场5500股，太慢；885/886 字典直接刷接口5即可补）。
+
+        :return: {dict_count, member_concepts, saved_records, failed_concepts}
+        """
+        member_date = member_date or datetime.now().strftime("%Y%m%d")
+        print(f"[REFRESH] 开始刷新观察池板块信息，日期={member_date}...")
+
+        # 1) 刷字典：对全集调接口5（batch_get_concept_basic_info 支持批量100/批）
+        observe_codes = self.db.get_observe_concept_codes()
+        print(f"[REFRESH] 观察池全集 {len(observe_codes)} 个概念")
+        a_share_codes = [c for c in observe_codes if config.is_a_share_concept(c)]
+        concepts = self.client.batch_get_concept_basic_info(a_share_codes, batch_size=100)
+        self.db.save_concept_dict(concepts)
+        print(f"[REFRESH] 字典已刷新 {len(concepts)} 个概念")
+
+        # 2) 刷成分股：对全集调接口2（8线程并发，约1-2分钟）
+        #    重新取全集（字典刷新后可能新增概念）
+        all_codes = self.db.get_observe_concept_codes()
+        saved = self._fetch_concept_members_batch(all_codes, member_date)
+        print(f"[REFRESH] 完成：{len(all_codes)} 个概念，{saved} 条成分股记录")
+        return {
+            "dict_count": len(concepts),
+            "member_concepts": len(all_codes),
+            "saved_records": saved,
+            "member_date": member_date,
+        }
+
     def init_concept_universe(self, map_date: str = None):
         """
         扫描全市场股票收集实际在用的概念板块码（885xxx/886xxx 等），
