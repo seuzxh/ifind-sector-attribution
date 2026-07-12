@@ -27,8 +27,11 @@ class Database:
     @contextmanager
     def _connect(self):
         """上下文管理器管理连接"""
-        conn = sqlite3.connect(self.db_path)
+        timeout_ms = int(getattr(config, "DB_BUSY_TIMEOUT_MS", 5000))
+        conn = sqlite3.connect(self.db_path, timeout=timeout_ms / 1000)
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout={timeout_ms}")
+        conn.execute("PRAGMA synchronous=NORMAL")
         try:
             yield conn
             conn.commit()
@@ -153,9 +156,30 @@ class Database:
             PRIMARY KEY (group_id, stock_code)
         );
         CREATE INDEX IF NOT EXISTS idx_cg_group ON custom_group(group_id);
+
+        -- 监控板块勾选清单（管理页勾选的板块，作为全局监控范围唯一真相源）
+        CREATE TABLE IF NOT EXISTS watched_concepts (
+            concept_code  TEXT PRIMARY KEY,
+            added_at      TEXT NOT NULL
+        );
         """
         with self._connect() as conn:
+            # 读多写少的看板服务使用 WAL：读请求不再被 daily/prescreen 写事务阻塞。
+            # synchronous=NORMAL 是连接级配置，已在 _connect 中为每个连接设置。
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(ddl)
+            # watched_concepts 首次建表时若为空，灌入 config.SECTOR_POOL_CODES 作种子，
+            # 保证上线即有默认监控集（884×259），行为与改造前一致。
+            cnt = conn.execute("SELECT COUNT(*) FROM watched_concepts").fetchone()[0]
+            if cnt == 0:
+                pool = list(getattr(config, "SECTOR_POOL_CODES", set()))
+                if pool:
+                    now = datetime.now().isoformat(timespec="seconds")
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO watched_concepts (concept_code, added_at) VALUES (?, ?)",
+                        [(c, now) for c in pool],
+                    )
+                    print(f"[DB] watched_concepts 初始化种子 {len(pool)} 个板块")
 
     # ========== 概念字典操作 ==========
     def save_concept_dict(self, concepts: List[Dict[str, str]], update_date: str = None):
@@ -185,10 +209,14 @@ class Database:
 
     def get_a_share_concept_codes(self) -> List[str]:
         """
-        获取所有 A股相关概念代码（按前缀白名单 + 板块池过滤）。
-        排除海外行业指数（861xxx[US]/871xxx[HK] 等），用于板块强度与归因计算。
-        板块池启用时只返回池内代码（当前为 884 行业分类码）。
+        获取参与 daily 归因/盘前筛选的概念代码。
+        优先读 watched_concepts 表（管理页勾选的全局监控范围，唯一真相源）；
+        表空时退回 config 板块池兜底（避免 daily 漏算）。
         """
+        watched = self.get_watched_concept_codes()
+        if watched:
+            return watched
+        # 兜底：watched 表空（未配置）→ 用 config 原逻辑
         with self._connect() as conn:
             cursor = conn.execute("SELECT concept_code FROM ths_concept_dict")
             return [
@@ -210,6 +238,31 @@ class Database:
                 if config.is_a_share_concept(row["concept_code"])
                 and config.is_in_observe_pool(row["concept_code"])
             ]
+
+    # ========== 监控板块勾选（watched_concepts） ==========
+    def get_watched_concept_codes(self) -> List[str]:
+        """
+        读取监控板块勾选清单（watched_concepts 表）。
+        作为全局监控范围的唯一真相源，联动 看板/scan/prescreen/daily 归因。
+        表空返回空列表（由调用方决定兜底策略：看板/scan 提示未配置，daily 退回 config）。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT concept_code FROM watched_concepts ORDER BY concept_code")
+            return [row["concept_code"] for row in cursor.fetchall()]
+
+    def save_watched_concepts(self, codes: List[str]):
+        """
+        全量覆盖监控板块勾选清单（事务内 DELETE ALL + 批量 INSERT）。
+        :param codes: 勾选的概念代码列表（全量，未在列表中的会被移除）
+        """
+        now = datetime.now().isoformat(timespec="seconds")
+        with self._connect() as conn:
+            conn.execute("DELETE FROM watched_concepts")
+            if codes:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO watched_concepts (concept_code, added_at) VALUES (?, ?)",
+                    [(c, now) for c in codes],
+                )
 
     def get_all_member_stock_codes(self) -> List[str]:
         """
@@ -373,6 +426,34 @@ class Database:
                 {"stock_code": row["stock_code"], "stock_name": row["stock_name"]}
                 for row in cursor.fetchall()
             ]
+
+    def get_concept_members_map(self, concept_codes: List[str]) -> Dict[str, List[Dict]]:
+        """批量读取各概念最新成分股快照，避免逐概念建立 SQLite 连接。"""
+        if not concept_codes:
+            return {}
+        placeholders = ",".join("?" for _ in concept_codes)
+        sql = f"""
+            WITH latest AS (
+                SELECT concept_code, MAX(member_date) AS member_date
+                FROM concept_members
+                WHERE concept_code IN ({placeholders})
+                GROUP BY concept_code
+            )
+            SELECT cm.concept_code, cm.stock_code, cm.stock_name
+            FROM concept_members cm
+            JOIN latest l
+              ON cm.concept_code = l.concept_code
+             AND cm.member_date = l.member_date
+            ORDER BY cm.concept_code, cm.stock_code
+        """
+        result: Dict[str, List[Dict]] = {}
+        with self._connect() as conn:
+            for row in conn.execute(sql, concept_codes):
+                result.setdefault(row["concept_code"], []).append({
+                    "stock_code": row["stock_code"],
+                    "stock_name": row["stock_name"],
+                })
+        return result
 
     # ========== 日K线操作 ==========
     def save_daily_kline(self, records: List[Dict]):

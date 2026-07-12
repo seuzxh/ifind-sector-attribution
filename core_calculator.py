@@ -120,19 +120,50 @@ def calc_all_sectors_strength(
         min_member_count = getattr(config, "MIN_MEMBER_COUNT", 0)
     market_return = daily_df["change_ratio"].mean()
 
-    results = []
-    skipped = 0
-    for concept_code, member_codes in members_map.items():
-        r = calc_sector_strength(daily_df, concept_code, member_codes, market_return, min_member_count)
-        if r:
-            results.append(r)
-        else:
-            skipped += 1
+    # 把成员关系一次性转成长表并与行情做一次 join，再由 groupby 聚合全部板块。
+    # 旧实现对每个板块执行一次 DataFrame.isin（板块数 × 全股票数）；这里的复杂度
+    # 主要取决于实际成员关系条数，更贴合 concept_members 的多对多数据模型。
+    member_pairs = [
+        (concept_code, stock_code)
+        for concept_code, member_codes in members_map.items()
+        for stock_code in dict.fromkeys(member_codes)  # 保持 isin 对重复成员的去重语义
+    ]
+    if not member_pairs:
+        return pd.DataFrame()
 
+    membership_df = pd.DataFrame(member_pairs, columns=["concept_code", "code"])
+    value_columns = ["change_ratio"] + (["body"] if "body" in daily_df.columns else [])
+    quote_df = daily_df.drop_duplicates(subset="code", keep="last").set_index("code")[value_columns]
+    joined = membership_df.join(quote_df, on="code", how="inner")
+    if joined.empty:
+        return pd.DataFrame()
+
+    joined["is_up"] = (joined["change_ratio"] > 0).astype(float)
+    grouped = joined.groupby("concept_code", sort=False)
+    df = grouped.agg(
+        s1_return=("change_ratio", "mean"),
+        up_count=("is_up", "sum"),
+        member_count=("code", "size"),
+    ).reset_index()
+    df["s2_breadth"] = df["up_count"] / df["member_count"]
+    df["s4_relative"] = df["s1_return"] - market_return
+    if "body" in joined.columns:
+        body_mean = grouped["body"].mean()
+        df["s_body"] = df["concept_code"].map(body_mean)
+    else:
+        df["s_body"] = None
+
+    skipped = len(members_map) - int((df["member_count"] >= min_member_count).sum())
+    df = df[df["member_count"] >= min_member_count].copy()
     if skipped:
         print(f"[CALC] 成分股命中数 < {min_member_count} 的概念已过滤: {skipped} 个")
+    if df.empty:
+        return df
 
-    df = pd.DataFrame(results)
+    for column in ("s1_return", "s2_breadth", "s4_relative", "s_body"):
+        if column in df.columns:
+            df[column] = df[column].round(4)
+    df.drop(columns="up_count", inplace=True)
     if df.empty:
         return df
 

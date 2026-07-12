@@ -22,6 +22,7 @@ import os
 import sys
 import time
 import threading
+from bisect import bisect_right
 from datetime import datetime
 from typing import List, Dict, Optional
 
@@ -59,14 +60,15 @@ class RealtimeEngine:
             return
         print("[REALTIME] 构建成分股映射缓存...")
         import sqlite3
-        # 用观察池全集（884 行业 + 885/886 概念），而非归因池（仅 884）。
-        # 这样看板能展示概念板块强度；归因链路仍用 get_a_share_concept_codes（不受影响）。
-        concept_codes = self.db.get_observe_concept_codes()
-        members_map = {}
-        for cc in concept_codes:
-            members = self.db.get_concept_members(cc)
-            if members:
-                members_map[cc] = [m["stock_code"] for m in members]
+        # 监控板块由管理页勾选决定（watched_concepts 表，唯一真相源）。
+        # 表空（用户清空所有勾选）→ members_map 为空，compute_dashboard 返回"未配置"提示。
+        concept_codes = self.db.get_watched_concept_codes()
+        member_records = self.db.get_concept_members_map(concept_codes)
+        members_map = {
+            cc: [m["stock_code"] for m in members]
+            for cc, members in member_records.items()
+            if members
+        }
         self._members_map = members_map
 
         with sqlite3.connect(self.db.db_path) as conn:
@@ -107,6 +109,17 @@ class RealtimeEngine:
     _result_locks_guard = threading.Lock()
     _RESULT_TTL = 10            # 看板结果 TTL（秒），略小于 series TTL，保证新鲜
     _RESULT_MAX_ENTRIES = 60    # result_cache 最大条数（LRU 防膨胀，拖滑块产生多个时刻）
+
+    @classmethod
+    def _trim_series_cache(cls):
+        """按 fetched_at 淘汰最旧的分时缓存，限制历史回看造成的内存增长。"""
+        limit = max(1, int(getattr(config, "INTRADAY_SERIES_CACHE_MAX", 12)))
+        while len(cls._series_cache) > limit:
+            oldest_key = min(
+                cls._series_cache,
+                key=lambda key: cls._series_cache[key].get("fetched_at", 0),
+            )
+            cls._series_cache.pop(oldest_key, None)
 
     @classmethod
     def _cache_key(cls, trade_date: str, mode_key: str) -> str:
@@ -157,6 +170,7 @@ class RealtimeEngine:
             "available_times": available_times,
         }
         self._series_cache[cache_key] = rec
+        self._trim_series_cache()
         print(f"[REALTIME] 序列就绪：{len(series)} 只，{len(available_times)} 个时间点，"
               f"最新 {latest_time}，耗时 {time.time()-t0:.1f}s")
         return rec
@@ -253,27 +267,38 @@ class RealtimeEngine:
             # 严格按 snapshot_time 切 trading（不兜底回退，否则会把 9:20 误判成 9:30）
             trading = rec.get("trading", [])
             if snapshot_time:
-                sliced = [p for p in trading if p["time"] <= snapshot_time]
+                trading_times = rec.get("trading_times")
+                if trading_times is None:
+                    trading_times = [p["time"] for p in trading]
+                end = bisect_right(trading_times, snapshot_time)
             else:
-                sliced = trading  # 无 snapshot_time = 取最新
+                end = len(trading)
 
-            if sliced:
+            if end:
                 # —— 盘中：用连续竞价序列算全部指标 ——
-                last_prices = [p["last_price"] for p in sliced]
+                # 当前指标只依赖最后三个点，无需为每只股票复制整段价格序列。
+                tail = trading[max(0, end - 3):end]
+                last_prices = [p["last_price"] for p in tail]
                 last = last_prices[-1]
                 change_ratio = (last / pre_close - 1) * 100
                 body = compute_body_ratio(rec.get("open"), last)
                 speed = compute_speed(last_prices)
                 speed_series = compute_speed_series(last_prices)
                 acceleration = compute_acceleration(speed_series)
-                amount = float(sliced[-1].get("turnover", 0) or 0)  # 累计成交额（元）
+                amount = float(trading[end - 1].get("turnover", 0) or 0)  # 累计成交额（元）
             else:
                 # —— 集合竞价：仅用 pre_market 末点 ref_price 算涨跌幅 ——
                 pm = rec.get("pre_market") or []
-                pm_sliced = self._slice_to_snapshot(pm, snapshot_time) if snapshot_time else pm
-                if not pm_sliced:
+                if snapshot_time:
+                    pm_times = rec.get("pre_market_times")
+                    if pm_times is None:
+                        pm_times = [p["time"] for p in pm]
+                    pm_end = bisect_right(pm_times, snapshot_time)
+                else:
+                    pm_end = len(pm)
+                if not pm_end:
                     continue
-                last = pm_sliced[-1]["ref_price"]
+                last = pm[pm_end - 1]["ref_price"]
                 change_ratio = (last / pre_close - 1) * 100
                 # 此阶段无连续价格序列，speed/body/acceleration 无意义，置 0
                 body = 0.0
@@ -379,6 +404,10 @@ class RealtimeEngine:
             return {"error": "指标计算为空", "trade_date": trade_date}
 
         # 4. 算板块强度
+        # watched_concepts 表空（用户清空所有勾选）→ 提示去管理页配置
+        if active_members_map is None and not (watchlist_mode and watchlist_concepts) \
+                and not self._members_map:
+            return {"error": "未配置监控板块，请到「监控板块管理」勾选", "trade_date": trade_date}
         if active_members_map is not None:
             # custom 模式已设置完整的自定义分组映射
             members_map = active_members_map
@@ -609,6 +638,8 @@ class RealtimeEngine:
         from mcp_proxy import MCPClient
 
         self._ensure_maps()
+        if not self._members_map:
+            return {"error": "未配置监控板块，请到「监控板块管理」勾选"}
         if not query or not query.strip():
             return {"error": "请输入选股条件（query）"}
 
@@ -628,10 +659,10 @@ class RealtimeEngine:
                     "raw_preview": str(md_raw)[:300]}
         hit_codes = set(hit_lookup.keys())
 
-        # 3. 按 884 行业分类板块归类（一股属多板块，各板块各计）
-        # 只取 884 开头的行业分类（剔除 885/886 大类概念，它们成分股太多无意义）
-        members_map = {gid: codes for gid, codes in self._members_map.items()
-                       if gid.startswith("884")}
+        # 3. 按监控板块归类（一股属多板块，各板块各计）
+        # self._members_map 已由 watched_concepts 表限定范围（_ensure_maps 读勾选集），
+        # 不再硬编码 884 —— 用户勾选哪些板块就按哪些归类。
+        members_map = self._members_map
         group_names = self._concept_names
         groups_out = []
         for gid, g_codes in members_map.items():
@@ -754,11 +785,11 @@ def _parse_search_stocks_md(md: str) -> Dict[str, dict]:
 _engine_instance = None
 
 
-def _result_cache_key(trade_date, snapshot_time, watchlist_mode, watchlist_date, custom_mode):
+def _result_cache_key(trade_date, snapshot_time, watchlist_mode, watchlist_date, custom_mode, top_n):
     """构造看板结果缓存的 key（同一看板+同一时刻的多人请求命中同一 key）"""
     mode = "custom" if custom_mode else ("wl:" + (watchlist_date or "") if watchlist_mode else "market")
     st = snapshot_time if snapshot_time else "latest"
-    return f"{mode}:{trade_date or 'today'}:{st}"
+    return f"{mode}:{trade_date or 'today'}:{st}:top{top_n}"
 
 
 def _get_result_lock(rk: str) -> "threading.Lock":
@@ -810,7 +841,9 @@ def get_realtime_dashboard(
         _engine_instance = RealtimeEngine()
 
     # —— 第1层：result_cache 快速路径 ——
-    rk = _result_cache_key(trade_date, snapshot_time, watchlist_mode, watchlist_date, custom_mode)
+    rk = _result_cache_key(
+        trade_date, snapshot_time, watchlist_mode, watchlist_date, custom_mode, top_n
+    )
     cached = _result_cache_get(rk)
     if cached is not None:
         return cached

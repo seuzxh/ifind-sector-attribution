@@ -19,18 +19,16 @@ REFRESH_TOKEN = os.environ.get("IFIND_REFRESH_TOKEN", "")
 # 默认从环境变量读，config_local.py（已 gitignore）的 * 导入会覆盖此默认值。
 KLINE_API_BASE_URL = os.environ.get("KLINE_API_BASE_URL", "")
 
-# ========== iFinD MCP 配置（自然语言查询用）==========
+# ========== iFinD MCP 配置（轮动分析智能体 / 实时引擎用）==========
 # MCP server 的 JWT 鉴权 token（敏感，放 config_local.py 或环境变量，勿入库）。
-# 用于网页「AI 问答」Tab 调用 hexin-ifind-ds-stock-mcp / -index-mcp。
+# 用于 rotation_agent / realtime_engine 调用 hexin-ifind-ds-stock-mcp / -index-mcp。
 IFIND_MCP_TOKEN = os.environ.get("IFIND_MCP_TOKEN", "")
 
-# ========== LLM 配置（AI 问答的"大脑"）==========
-# 配置后启用全自动模式（LLM 自动选 MCP 工具 + 整理自然语言回答）；
-# 留空则降级为「手动选工具查询」模式（页面可用、不报错）。
-# 火山方舟 Coding Plan（OpenAI 兼容，走 Plan 额度）：
+# ========== LLM 配置（板块轮动分析智能体的"大脑"）==========
+# 火山方舟 Coding Plan（OpenAI 兼容，走 Plan 额度），供 rotation_agent 调用：
 #   - base_url 必须用 /api/coding/v3（切勿用 /api/v3，后者不消耗 Plan 额度会产生额外费用）
 #   - 文档：https://www.volcengine.com/docs/82379/1928261
-# 可用模型（改 LLM_MODEL 即可实时切换，全小写亦可；页面下拉框会动态拉取可用列表）：
+# 可用模型（改 LLM_MODEL 即可切换，全小写亦可）：
 #   doubao-seed-2.0-pro / doubao-seed-2.0-code / doubao-seed-2.0-lite / doubao-seed-code
 #   minimax-latest / glm-latest / deepseek-v4-flash / deepseek-v4-pro
 #   kimi-k2.6 / kimi-k2.7-code
@@ -51,6 +49,9 @@ HEADERS = {
 
 # ========== 数据库配置 ==========
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "sector_attribution.db")
+# SQLite 并发写入等待时间。WAL 下读写可并行，但两个写事务仍需串行；
+# busy_timeout 避免短暂竞争直接抛出 database is locked。
+DB_BUSY_TIMEOUT_MS = 5000
 
 # ========== 概念板块代码列表 ==========
 # 已限定为 884 行业分类码（259 个）。完整列表见下方 SECTOR_POOL_CODES。
@@ -174,6 +175,9 @@ INTRADAY_WORKERS = 32
 # 必须大于单次拉取耗时（实测 7-8s），否则缓存永远在追赶、每轮都有慢窗口。
 # 配合 stale-while-revalidate：过期时立即返回旧数据 + 后台异步刷新，请求永不阻塞。
 INTRADAY_CACHE_TTL = 15
+# 分时序列缓存最多保留的“日期 × 模式”数量。历史回看数据不会过期，
+# 因此必须设置容量上限，避免长期运行时因浏览多个日期持续占用内存。
+INTRADAY_SERIES_CACHE_MAX = 12
 
 # ========== 自选股分组配置 ==========
 # 持仓分组名（自选股分组看板里，名称匹配此值的分组视为"持仓分组"，

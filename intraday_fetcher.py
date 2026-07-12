@@ -134,7 +134,9 @@ class IntradayFetcher:
             "pre_close": pre_close,
             "open": open_price,
             "trading": trading,
+            "trading_times": [p["time"] for p in trading],
             "pre_market": pre_market,   # 集合竞价逐点序列（供 realtime_engine 在 trading 为空时算涨跌幅）
+            "pre_market_times": [p["time"] for p in pre_market],
         }
 
     def fetch_batch(

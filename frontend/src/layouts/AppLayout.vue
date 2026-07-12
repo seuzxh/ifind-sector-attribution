@@ -39,7 +39,7 @@ const tabs = [
   { name: 'scan', title: '自选强势归类', icon: '🎯' },
   { name: 'market_scan', title: '全市场强势归类', icon: '🌐' },
   { name: 'rotation', title: '板块轮动分析', icon: '🔮' },
-  { name: 'chat', title: 'AI 问答', icon: '🤖' },
+  { name: 'sector_manage', title: '监控板块管理', icon: '🛠️' },
 ] as const
 
 const activeTab = computed(() => (route.name as string) || 'sector')

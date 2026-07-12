@@ -51,6 +51,11 @@ class PrescreenRequest(BaseModel):
     top_stock: Optional[int] = None
 
 
+class WatchedSaveRequest(BaseModel):
+    """保存监控板块勾选清单（全量覆盖）。"""
+    concept_codes: List[str]
+
+
 # ========== API 接口 ==========
 @app.get("/", response_class=HTMLResponse)
 def root():
@@ -579,162 +584,40 @@ def get_available_dates():
     return {"dates": [r[0] for r in rows]}
 
 
-# ========== MCP 自然语言查询（AI 问答）==========
-class MCPCallRequest(BaseModel):
-    """直接调一个 MCP 工具（手动查询模式）。"""
-    server: str                         # "stock" 或 "index"
-    tool: str                           # 工具名，如 "get_stock_summary"
-    arguments: Dict[str, Any] = {}      # 工具入参，如 {"query": "..."}
-
-
-class ChatRequest(BaseModel):
-    """AI 问答请求（自然语言 → LLM 自动选工具）。"""
-    message: str                                    # 用户本轮问题
-    history: Optional[List[Dict[str, str]]] = None  # 历史对话
-
-
-class LLMModelRequest(BaseModel):
-    """切换当前 LLM 模型（运行时，进程内）。"""
-    model: str   # 模型 id，如 "doubao-seed-2-0-pro-260215"
-
-
-# ========== LLM 模型管理（前端模型选择器用）==========
-@app.get("/api/llm/models")
-def llm_list_models():
+# ========== 监控板块管理 ==========
+@app.get("/api/sector_manage/list")
+def sector_manage_list(date: str = None):
     """
-    列出当前 coding plan 支持的、适合文本对话的可用模型。
-    从 ARK /models 动态拉取（带 10 分钟缓存），过滤掉 embedding/vision/视频/图片等非对话模型。
-    :return: {models:[{id,name,status}], current, default, error}
+    监控板块管理列表：全部候选板块（观察池全集）+ 多周期涨幅 + 是否已勾选监控。
+    :param date: 基准日 YYYYMMDD，默认 DB 最新交易日
+    :return: {date, total, watched_count, sectors: [{concept_code, concept_name, level,
+              change_ratio, body, return_3d, return_5d, member_count, watched}]}
     """
-    from llm_agent import list_chat_models
-    return list_chat_models()
+    from sector_manage import compute_sector_multi_period_returns
+    rows = compute_sector_multi_period_returns(db, calc_date=date)
+    return {
+        "date": date or db.get_latest_trade_date(),
+        "total": len(rows),
+        "watched_count": sum(1 for r in rows if r.get("watched")),
+        "sectors": rows,
+    }
 
 
-@app.get("/api/llm/model")
-def llm_get_current_model():
-    """获取当前生效的 LLM 模型 id。"""
-    from llm_agent import get_current_model
-    return {"current": get_current_model()}
+@app.get("/api/sector_manage/watched")
+def sector_manage_watched():
+    """读取当前勾选的监控板块代码列表（轻量，供其他页校验）。"""
+    codes = db.get_watched_concept_codes()
+    return {"count": len(codes), "concept_codes": codes}
 
 
-@app.post("/api/llm/model")
-def llm_set_model(req: LLMModelRequest):
+@app.post("/api/sector_manage/save")
+def sector_manage_save(req: WatchedSaveRequest):
     """
-    运行时切换 LLM 模型（进程内，重启回 config 默认）。
-    :return: {ok, current, previous}
+    全量覆盖监控板块勾选清单。保存后立即生效（各链路下次查询即读取新清单）。
+    :return: {ok, saved_count}
     """
-    from llm_agent import get_current_model, set_current_model
-    previous = get_current_model()
-    set_current_model(req.model)
-    return {"ok": True, "current": req.model, "previous": previous}
-
-
-@app.post("/api/llm/model/reset")
-def llm_reset_model():
-    """重置为 config 默认模型。"""
-    from llm_agent import reset_current_model
-    return {"ok": True, "current": reset_current_model()}
-
-
-@app.get("/api/mcp/tools")
-def mcp_list_tools(server: Optional[str] = None):
-    """
-    列出所有可用的 MCP 工具（供前端展示 + LLM 选工具）。
-    :param server: 可选，过滤单个 server（stock/index）
-    :return: {count, tools: [{name, description, server, inputSchema}]}
-    """
-    from mcp_proxy import MCPClient, is_configured, MCPError
-    if not is_configured():
-        return {"count": 0, "tools": [], "error": "未配置 IFIND_MCP_TOKEN（请在 config_local.py 设置）"}
-    try:
-        tools = MCPClient.instance().list_tools(server=server)
-        return {"count": len(tools), "tools": tools}
-    except MCPError as e:
-        return {"count": 0, "tools": [], "error": str(e)}
-
-
-@app.post("/api/mcp/call")
-def mcp_call_tool(req: MCPCallRequest):
-    """
-    直接调用一个 MCP 工具（不经 LLM，手动查询模式）。
-    :return: {ok, server, tool, result} 或 {ok:false, error}
-    """
-    from mcp_proxy import MCPClient, MCPError
-    try:
-        result = MCPClient.instance().call_tool(req.server, req.tool, req.arguments)
-        return {"ok": True, "server": req.server, "tool": req.tool, "result": result}
-    except MCPError as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.post("/api/chat")
-def chat(req: ChatRequest):
-    """
-    AI 问答（自然语言 → LLM 自动选 MCP 工具 → 整理回答），SSE 流式返回。
-    未配置 LLM（LLM_API_KEY 空）时降级：返回工具列表 + 引导手动查询。
-
-    SSE 事件流（data: 开头，每条 JSON 一行，前端按 type 渲染）：
-      {type:"mode", mode:"llm"|"fallback"}            模式标识（开头）
-      {type:"tools", tools:[...]}                      工具列表（降级模式）
-      {type:"delta", text:"..."}                       回答文本片段（LLM 模式，可多次）
-      {type:"error", text:"..."}                       异常
-      {type:"done"}                                    结束
-    """
-    from mcp_proxy import MCPClient, MCPError
-    from llm_agent import get_agent, get_current_model
-
-    message = (req.message or "").strip()
-    if not message:
-        return {"error": "消息不能为空"}
-
-    def _sse(obj: dict) -> str:
-        return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
-
-    def event_stream():
-        agent = get_agent()
-        # ---- 降级模式：无 LLM，列工具引导手动查询 ----
-        if agent is None:
-            yield _sse({"type": "mode", "mode": "fallback"})
-            try:
-                tools = MCPClient.instance().list_tools()
-                yield _sse({"type": "tools", "tools": tools})
-                tip = (
-                    "⚠ 当前未配置 LLM（LLM_API_KEY 为空），无法自动理解自然语言。\n\n"
-                    "已为你加载 **%d 个可用工具**，请在右侧工具列表中：\n"
-                    "1. 选择一个工具\n"
-                    "2. 在输入框填写查询内容（如「同花顺最新估值水平」）\n"
-                    "3. 点「查询」即可。\n\n"
-                    "配置 LLM_API_KEY 后将启用全自动问答模式。"
-                ) % len(tools)
-                for chunk in _split_stream(tip):
-                    yield _sse({"type": "delta", "text": chunk})
-            except MCPError as e:
-                yield _sse({"type": "error", "text": f"MCP 工具加载失败：{e}"})
-            yield _sse({"type": "done"})
-            return
-
-        # ---- LLM 模式：自动选工具 + 流式回答 ----
-        yield _sse({"type": "mode", "mode": "llm", "model": get_current_model()})
-        try:
-            tools = MCPClient.instance().list_tools()
-        except MCPError as e:
-            yield _sse({"type": "error", "text": f"MCP 工具加载失败：{e}"})
-            yield _sse({"type": "done"})
-            return
-        try:
-            for chunk in agent.chat(message, req.history, tools):
-                yield _sse({"type": "delta", "text": chunk})
-        except Exception as e:
-            yield _sse({"type": "error", "text": f"LLM 调用异常：{e}"})
-        yield _sse({"type": "done"})
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-def _split_stream(text: str, size: int = 40):
-    """把文本按定长切片 yield，制造流式打字机观感（降级模式用）。"""
-    for i in range(0, len(text), size):
-        yield text[i:i + size]
+    db.save_watched_concepts(req.concept_codes)
+    return {"ok": True, "saved_count": len(req.concept_codes)}
 
 
 # ========== 板块轮动分析智能体 ==========

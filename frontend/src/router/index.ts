@@ -13,7 +13,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'scan', name: 'scan', component: () => import('@/views/ScanPage.vue'), meta: { title: '自选强势归类', icon: '🎯' } },
       { path: 'market_scan', name: 'market_scan', component: () => import('@/views/ScanPage.vue'), meta: { title: '全市场强势归类', icon: '🌐' } },
       { path: 'rotation', name: 'rotation', component: () => import('@/views/RotationPage.vue'), meta: { title: '板块轮动分析', icon: '🔮' } },
-      { path: 'chat', name: 'chat', component: () => import('@/views/ChatPage.vue'), meta: { title: 'AI 问答', icon: '🤖' } },
+      { path: 'sector_manage', name: 'sector_manage', component: () => import('@/views/SectorManagePage.vue'), meta: { title: '监控板块管理', icon: '🛠️' } },
     ],
   },
 ]

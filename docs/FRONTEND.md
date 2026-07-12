@@ -85,8 +85,8 @@ frontend/
     │   ├── DashboardPage.vue   # 板块强度 / 自选分组（同组件复用）
     │   ├── AuctionPage.vue     # 集合竞价
     │   ├── ScanPage.vue        # 强势归类（自选/全市场同组件复用）
-    │   ├── RotationPage.vue    # 板块轮动
-    │   └── ChatPage.vue        # AI 问答（SSE）
+    │   ├── RotationPage.vue    # 板块轮动（SSE）
+    │   └── SectorManagePage.vue # 监控板块管理（勾选+多周期涨幅）
     ├── components/
     │   └── dashboard/      # 看板子组件
     │       ├── TimeBar.vue         # 时间轴播放控件
@@ -166,7 +166,7 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 | `/scan` | scan | ScanPage | 🎯 自选强势归类 |
 | `/market_scan` | market_scan | ScanPage | 🌐 全市场强势归类 |
 | `/rotation` | rotation | RotationPage | 🔮 板块轮动分析 |
-| `/chat` | chat | ChatPage | 🤖 AI 问答 |
+| `/sector_manage` | sector_manage | SectorManagePage | 🛠️ 监控板块管理 |
 
 **组件复用约定**：
 - `DashboardPage` 同时服务 `sector` 和 `custom` —— 用 `route.name === 'custom'` 区分数据源。
@@ -190,7 +190,6 @@ const http = axios.create({ timeout: 60000 })
 | `dashboard.ts` | `/api/realtime`, `/api/custom`, `/api/auction`, `/api/history` | 看板数据 |
 | `auction.ts` | `/api/auction/*` | 集合竞价 |
 | `scan.ts` | `/api/custom/scan`, `/api/market/scan` | 强势归类 |
-| `chat.ts` | `/api/mcp/*`, `/api/llm/*`, `/api/chat` | AI 问答（SSE 流） |
 | `custom.ts` | `/api/custom/check_reload` | 自选分组热更新 |
 | `prescreen.ts` | `/api/prescreen`, `/api/watchlist` | 盘前筛选（触发 + 读 watchlist） |
 | `calendar.ts` | `/api/trade_calendar`, `/api/dates` | 交易日历 |

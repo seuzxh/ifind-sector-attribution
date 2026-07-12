@@ -61,9 +61,9 @@
 | 数据库 | `data/sector_attribution.db`（SQLite，~92MB，9 张表） |
 | 交易日历缓存 | `data/trade_calendar.txt`（`trade_calendar.py` 三级缓存的本地落盘，缺失会自动重建） |
 | 服务器 / 部署 | **115.191.14.82:8000**；systemd 服务 `ifind-monitor`，一键装 `sudo bash install_service.sh`（详见 `docs/DEPLOYMENT.md`） |
-| **AI 问答 LLM** | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`（火山方舟 Coding Plan）：base_url **必须用 `/api/coding/v3`**（`/api/v3` 不消耗 Plan 额度会产生额外费用）。配在 `config_local.py` 或环境变量，不配则 AI 问答降级为手动选工具模式。文档 `https://www.volcengine.com/docs/82379/1928261` |
-| **AI 问答 MCP** | `IFIND_MCP_TOKEN`（iFinD MCP server 的 JWT 鉴权）：配在 `config_local.py` 或环境变量，不配则 AI 问答无法调 iFinD 工具 |
-| **可用模型** | Coding Plan 白名单 10 个（`llm_agent._CODING_PLAN_MODELS`）：doubao-seed-2.0-pro/code/lite、doubao-seed-code、minimax-latest、glm-latest、deepseek-v4-flash/pro、kimi-k2.6/k2.7-code。页面下拉框运行时可切 |
+| **轮动分析 LLM** | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`（火山方舟 Coding Plan）：base_url **必须用 `/api/coding/v3`**（`/api/v3` 不消耗 Plan 额度会产生额外费用）。配在 `config_local.py` 或环境变量，供 rotation_agent 使用。文档 `https://www.volcengine.com/docs/82379/1928261` |
+| **MCP（轮动/实时用）** | `IFIND_MCP_TOKEN`（iFinD MCP server 的 JWT 鉴权）：配在 `config_local.py` 或环境变量，供 rotation_agent / realtime_engine 调 iFinD 工具 |
+| **可用模型** | Coding Plan 白名单 10 个（`llm_agent._CODING_PLAN_MODELS`）：doubao-seed-2.0-pro/code/lite、doubao-seed-code、minimax-latest、glm-latest、deepseek-v4-flash/pro、kimi-k2.6/k2.7-code |
 
 > ⚠️ 上述 `config_local.py` 已 gitignore，**勿提交、勿外传**（含真实 token）。跑命令前务必用上面的 conda python，否则缺 `fastapi`/`pandas`/`numpy`/`plotly` 等依赖；盘中实时链路还需 `kline-fetcher`。
 
@@ -95,10 +95,11 @@
 | `realtime_engine.py` | 盘中实时引擎（分时序列缓存 + 时刻切片 + 内存计算，**不入库**） | 低 |
 | `trade_calendar.py` | 交易日历模块（`TradeCalendar` 单例，三级缓存：内存→`data/trade_calendar.txt`→网络→DB 兜底；复用 `kline_fetcher.fetch_trade_calendar`） | 低 |
 | `probe_auction.py` | 集合竞价数据探针脚本（生产环境验证 `pre_market` 形态用，非业务链路） | 低 |
-| `api_server.py` | FastAPI 服务（REST API + 可视化页面 + AI 问答 SSE 路由） | 中（加接口看这） |
-| `llm_agent.py` | AI 问答的"大脑"（火山方舟 Coding Plan，OpenAI 兼容；静态 10 模型白名单 `_CODING_PLAN_MODELS`；运行时可切模型） | 低 |
+| `api_server.py` | FastAPI 服务（REST API + 可视化页面 + 轮动分析 SSE 路由） | 中（加接口看这） |
+| `sector_manage.py` | 监控板块管理：多周期涨幅计算（1d/3d/5d）+ 候选板块列表组装 | 中（改管理页看这） |
+| `llm_agent.py` | LLM 客户端封装（火山方舟 Coding Plan，OpenAI 兼容；`OpenAICompatibleAgent` 供 rotation_agent 调用） | 低 |
 | `mcp_proxy.py` | iFinD MCP 客户端代理（hexin-ifind-ds-stock-mcp / -index-mcp，JWT 鉴权） | 低 |
-| `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。7 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/板块轮动/AI问答。结构详见 `docs/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
+| `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。7 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理。结构详见 `docs/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
 | `static/` | 前端构建产物（FastAPI `mount('/static')` 托管；已 gitignore，勿手改） | — |
 | `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
 | `main.py` | 命令入口（argparse 子命令） | 低 |
@@ -124,6 +125,7 @@
 - **海外前缀** `861/864/865/871/875` 是美股/港股行业指数，会污染股票池，必须排除。
 - **双概念编码体系**：行业码（700xxx/881xxx，来自 `config.ALL_CONCEPT_CODES`）与概念板块码（885xxx/886xxx，来自接口1）**交集为 0**。归因链路靠 `init_concept_universe` 补全后者后才能 JOIN 打通。详见 ARCHITECTURE.md §1。
 - **日期须为交易日**：`daily --date` 传非交易日会因当日无数据返回空。
+- **监控板块由 watched_concepts 表驱动**：管理页勾选的板块存 `watched_concepts` 表，是看板/scan/prescreen/daily 归因的**全局监控范围唯一真相源**。`get_a_share_concept_codes()` / `realtime_engine._ensure_maps()` 都读它；表空时看板/scan 提示"未配置"，daily 归因退回 `config.SECTOR_POOL_CODES` 兜底（避免漏算）。`config.SECTOR_POOL_CODES` 保留作种子 + 兜底，不再是运行时主来源。改监控范围走管理页，**不要改 config**。
 
 ## 两套数据链路
 
@@ -142,7 +144,7 @@
 - **交易时段由服务端 `session_phase` 决定**（`trade_calendar.py`，7 个 phase：`pre_open`/`auction`/`pre_morning`/`morning`/`lunch`/`afternoon`/`closed`）。前端仅 `<9:15(pre_open)` 和非交易日停 3s 轮询，**收盘后 `closed` 仍轮询**展示全天数据供回看。
 - **历史日期回看 ≠ 历史看板**：实时接口传 `trade_date=YYYYMMDD` 走分时链路（拉该日全天分时 + 内存切片）；`/api/history/dashboard` 读已入库的 `concept_strength`（降级为纯涨幅排序）。两条路径别混。
 - **自选股分组看板**：`GET /api/custom/dashboard` 用 `custom_group` 表替代概念板块算分组强弱，复用 realtime_engine 的缓存/切片（仅 `members_map` 来源不同）。需先用 `import-groups` 导入分组。
-- **Vue SPA 多 Tab**：根路由 `/` 返回 Vue SPA（`static/index.html`，Hash 路由），7 个 Tab（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/AI问答）在前端切换，`<keep-alive>` 保留各页状态。`DashboardPage` 按 `route.name` 复用（sector/custom）；`ScanPage` 同理（scan/market_scan）。
+- **Vue SPA 多 Tab**：根路由 `/` 返回 Vue SPA（`static/index.html`，Hash 路由），7 个 Tab（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理）在前端切换，`<keep-alive>` 保留各页状态。`DashboardPage` 按 `route.name` 复用（sector/custom）；`ScanPage` 同理（scan/market_scan）。
 - **时间条播放**：`togglePlay` 用 `setInterval` 逐分钟推进滑块（`stepPlay` → `refresh`），速度 1.5x/2x/4x/8x。切模式/切日期/拖滑块/点"回到最新"自动 `stopPlay`。播放时 `autoFollow=false`（否则 3s 轮询拉回最新）。`refreshSeq` 序号守卫防异步乱序覆盖。
 
 ## 三套数据源（重要）
@@ -208,8 +210,8 @@
 | 改持仓分组（自选看板金色标注） | `config.HOLDING_GROUP_NAME` 改分组名（默认 "CC"），无需改代码 |
 | 改前端（加 Tab / 改看板） | `frontend/src/`（Vue SPA）：`views/` 加页 + `router/index.ts` 加路由 + `AppLayout.vue` 加 Tab；接口在 `api/<域>.ts` 封装。详见 `docs/FRONTEND.md` |
 | 时间条播放异常（时刻跳变） | 检查 `refreshSeq` 请求序号守卫是否被破坏（防异步乱序覆盖） |
-| 改 AI 问答模型 / 加模型 | `llm_agent._CODING_PLAN_MODELS` 白名单（静态 10 个）；或 `config.LLM_MODEL` 改默认；页面下拉框运行时切。**base_url 必须用 `/api/coding/v3`** |
-| AI 问答报错 / 不调工具 | 检查 `LLM_API_KEY` + `IFIND_MCP_TOKEN` 是否配在 `config_local.py`；看 `/api/llm/models` 是否返回模型列表 |
+| 改轮动分析 LLM 模型 | `llm_agent._CODING_PLAN_MODELS` 白名单（静态 10 个）；或 `config.LLM_MODEL` 改默认。**base_url 必须用 `/api/coding/v3`** |
+| 轮动分析报错 / 不调工具 | 检查 `LLM_API_KEY` + `IFIND_MCP_TOKEN` 是否配在 `config_local.py`；rotation_agent 依赖 llm_agent + mcp_proxy |
 | 改全市场选股预置条件 | `frontend/src/views/ScanPage.vue` 的预置条件数组；自定义条件存浏览器 localStorage（`market_scan_custom_queries`，结构 `{label,query}`），页面可存/重命名/删除 |
 | 全市场选股归类慢 / 报错 | `/api/market/scan` 调 MCP `search_stocks` 约 4.5s；报错看 `IFIND_MCP_TOKEN` 是否配置、query 表达是否被 MCP 理解 |
 

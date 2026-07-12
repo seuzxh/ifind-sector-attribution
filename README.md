@@ -13,7 +13,7 @@
   - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
   - **强势股归类**：按筛选条件（涨幅/成交额/实体涨幅）扫描自选股池，按分组归类统计命中，发现哪个分组批量冒强势股
   - **全市场强势归类**：自然语言选股（iFinD MCP `search_stocks`，4 组预置 + 自定义条件可存/重命名）→ 按 884 概念板块归类，发现全市场强势股集中在哪些行业
-  - **AI 问答**：自然语言查行情（火山方舟 Coding Plan，10 模型可切，SSE 流式 + iFinD MCP 工具自动调用）
+  - **板块轮动分析**：Loop Engine 三阶段智能体（数据采集 → 第一性原理分析 → 对抗审查），SSE 流式推送
   - 顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
 
 ## 5 个 iFinD 接口
@@ -76,19 +76,19 @@ REFRESH_TOKEN = "你的 refresh token"
 # 中焯行情 API 地址（盘中实时监控用，敏感不入库）
 KLINE_API_BASE_URL = "http://your-kline-api-host:port"
 
-# AI 问答 LLM（火山方舟 Coding Plan，敏感不入库）
+# 板块轮动分析智能体 LLM（火山方舟 Coding Plan，敏感不入库）
 # 注意：base_url 必须用 /api/coding/v3（走 Plan 额度），
 #       切勿用 /api/v3（不消耗 Plan 额度会产生额外费用）。
 # 文档：https://www.volcengine.com/docs/82379/1928261
 LLM_API_KEY = "你的 ark api key"
 LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
-LLM_MODEL = "doubao-seed-2.0-pro"   # 可选 10 个模型，页面下拉框运行时也可切
+LLM_MODEL = "doubao-seed-2.0-pro"   # 可选 10 个模型
 
-# iFinD MCP server 鉴权 JWT（AI 问答调 iFinD 工具用，敏感不入库）
+# iFinD MCP server 鉴权 JWT（轮动分析 / 实时引擎调 iFinD 工具用，敏感不入库）
 IFIND_MCP_TOKEN = "你的 mcp jwt token"
 ```
 
-AI 问答可用模型（`doubao-seed-2.0-pro`/`code`/`lite`、`doubao-seed-code`、`minimax-latest`、`glm-latest`、`deepseek-v4-flash`/`pro`、`kimi-k2.6`、`kimi-k2.7-code`）。`LLM_API_KEY` / `IFIND_MCP_TOKEN` 留空时 AI 问答降级为手动选工具模式（页面可用不报错）。
+轮动分析可用模型（`doubao-seed-2.0-pro`/`code`/`lite`、`doubao-seed-code`、`minimax-latest`、`glm-latest`、`deepseek-v4-flash`/`pro`、`kimi-k2.6`、`kimi-k2.7-code`）。`LLM_API_KEY` / `IFIND_MCP_TOKEN` 未配置时轮动分析智能体无法运行。
 
 ### 3. 运行接口测试
 
@@ -155,7 +155,7 @@ python main.py server --host 0.0.0.0 --port 8000
 
 #### 可视化看板（Vue SPA，盘中实时监控）
 
-访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部 7 个 Tab 切换（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/AI问答），各页状态由 `<keep-alive>` 保留：
+访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部 7 个 Tab 切换（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理），各页状态由 `<keep-alive>` 保留：
 
 **📊 Tab 1：板块强度监控**（默认）
 - 每个分组 = 同花顺概念板块（884 行业分类码）。三种模式可切：
@@ -268,8 +268,8 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `INTRADAY_CACHE_TTL` | 5 | 分时序列缓存 TTL（秒） |
 | `SECTOR_POOL_ENABLED` / `SECTOR_POOL_CODES` | True / 884(259个) | 板块池白名单（限定观察的概念范围，当前 884 行业分类码） |
 | `HOLDING_GROUP_NAME` | "CC" | 持仓分组名（自选看板金色标注用，按 block_name 精确匹配） |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | （空）/ `.../api/coding/v3` / `doubao-seed-2.0-pro` | AI 问答 LLM（火山方舟 Coding Plan），用 `config_local.py` 覆盖 |
-| `IFIND_MCP_TOKEN` | （空） | iFinD MCP server JWT（AI 问答调工具用），用 `config_local.py` 覆盖 |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | （空）/ `.../api/coding/v3` / `doubao-seed-2.0-pro` | 轮动分析智能体 LLM（火山方舟 Coding Plan），用 `config_local.py` 覆盖 |
+| `IFIND_MCP_TOKEN` | （空） | iFinD MCP server JWT（轮动分析/实时引擎调工具用），用 `config_local.py` 覆盖 |
 
 ## 数据模型
 
