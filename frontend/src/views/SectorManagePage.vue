@@ -9,6 +9,12 @@
         <option value="885">概念板块(885)</option>
         <option value="886">概念板块(886)</option>
       </select>
+      <label>状态</label>
+      <select v-model="watchFilter" class="level-sel">
+        <option value="">全部</option>
+        <option value="watched">已勾选</option>
+        <option value="unwatched">未勾选</option>
+      </select>
       <label>搜索</label>
       <input v-model="keyword" class="search-input" placeholder="代码 / 名称" />
       <span class="count-hint">
@@ -32,6 +38,17 @@
       <div v-if="loading" class="empty-msg">加载中...</div>
       <div v-else-if="!allSectors.length" class="empty-msg">暂无候选板块数据</div>
       <table v-else class="sector-table">
+        <colgroup>
+          <col class="w-check" />
+          <col class="w-code" />
+          <col class="w-name" />
+          <col class="w-num" />
+          <col class="w-num" />
+          <col class="w-num" />
+          <col class="w-num" />
+          <col class="w-num" />
+          <col class="w-level" />
+        </colgroup>
         <thead>
           <tr>
             <th class="col-check">
@@ -86,12 +103,18 @@ const statusCls = ref('')
 
 // ===== 筛选 =====
 const levelFilter = ref('')     // ''=全部, '884'/'885'/'886'
+const watchFilter = ref('')     // ''=全部, 'watched'=已勾选, 'unwatched'=未勾选
 const keyword = ref('')
 
 const filtered = computed(() => {
   let list = allSectors.value
   if (levelFilter.value) {
     list = list.filter(s => s.concept_code.startsWith(levelFilter.value))
+  }
+  if (watchFilter.value === 'watched') {
+    list = list.filter(s => s.watched)
+  } else if (watchFilter.value === 'unwatched') {
+    list = list.filter(s => !s.watched)
   }
   const kw = keyword.value.trim()
   if (kw) {
@@ -278,19 +301,25 @@ onUnmounted(stopPollingRefresh)
 .status-bar.warn { color: #d97706; }
 .table-wrap { flex: 1; overflow: auto; padding: 0; }
 .empty-msg { text-align: center; color: #9ca3af; padding: 40px 0; font-size: 13px; }
-.sector-table { width: 100%; font-size: 12px; border-collapse: collapse; }
-.sector-table th, .sector-table td { padding: 6px 10px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; }
+.sector-table { width: 100%; font-size: 12px; border-collapse: collapse; table-layout: fixed; }
+/* colgroup 列宽（fixed 布局下表头与数据严格对齐） */
+.w-check { width: 40px; }
+.w-code { width: 110px; }
+.w-name { width: auto; }      /* 名称列弹性，吸收剩余宽度 */
+.w-num { width: 90px; }
+.w-level { width: 90px; }
+.sector-table th, .sector-table td { padding: 6px 10px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sector-table th {
   background: #f9fafb; color: #6b7280; font-weight: 600; text-align: left;
   position: sticky; top: 0; z-index: 1; cursor: pointer; user-select: none;
 }
 .sector-table th:hover { color: #1e40af; }
 .sector-table th .arrow { font-size: 10px; color: #1e40af; }
-.sector-table td.col-num { text-align: right; font-variant-numeric: tabular-nums; }
+/* 数值列：表头与数据都右对齐 */
+.sector-table th.col-num, .sector-table td.col-num { text-align: right; font-variant-numeric: tabular-nums; }
 .sector-table td.col-code { color: #6b7280; font-family: monospace; }
-.sector-table td.col-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .sector-table td.col-level { color: #9ca3af; font-size: 11px; }
 .sector-table tr.selected { background: #eff6ff; }
 .sector-table tr:hover { background: #f9fafb; }
-.col-check { width: 36px; text-align: center; }
+.col-check { width: 40px; text-align: center; }
 </style>
