@@ -733,11 +733,23 @@ def _parse_search_stocks_md(md: str) -> Dict[str, dict]:
     :return: {code: {"name": str, "change_ratio": float}}
     """
     import json
-    # md 可能是 JSON 字符串（含 data.result），也可能是纯 markdown
+    # md 可能是纯 markdown，也可能是 JSON 包装（一层或两层）。
+    # MCP search_stocks 实际返回：{"code":1,"data":"{\"answer\":\"# 选股结果...|股票代码|...\", ...}"}
+    #   —— data 是字符串化的 JSON，真实表格在 data.answer 里。
     try:
         j = json.loads(md)
         if isinstance(j, dict):
-            md = j.get("data", {}).get("result", "") or md
+            data = j.get("data")
+            # data 可能是 dict（直接取 result/answer），也可能是字符串化的 JSON（二次解析）
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except (ValueError, TypeError):
+                    pass
+            if isinstance(data, dict):
+                md = data.get("answer") or data.get("result") or ""
+            elif isinstance(data, str) and data:
+                md = data
     except (ValueError, TypeError):
         pass
 
