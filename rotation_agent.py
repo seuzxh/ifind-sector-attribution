@@ -297,20 +297,21 @@ class RotationAgent(OpenAICompatibleAgent):
         }
         if use_tools:
             body["tools"] = self._build_tools_param()
-        r = requests.post(chat_url, headers=headers, json=body, timeout=120)
+        # 轮动分析数据量大 + doubao-seed-2.0-pro 深度推理耗时长，给 300s
+        r = requests.post(chat_url, headers=headers, json=body, timeout=300)
         if r.status_code != 200:
             return {"content": f"[LLM 返回 {r.status_code}: {r.text[:200]}]"}
         data = r.json()
         return (data.get("choices") or [{}])[0].get("message", {})
 
-    def _batch_collect(self) -> str:
+    def _batch_collect(self) -> dict:
         """
-        后端批量采集数据（多线程，约10-20秒），返回汇总文本供 LLM 分析。
-        采集内容：
-          1. 列出自选分组（剔除ZT/CC），过滤成分股>6的分组
-          2. 多线程拉全部成分股的最近5日日K线
-          3. 按分组汇总：涨跌家数/平均涨幅/量能/与指数对比
-          4. 拉上证/创业板指数最近5日日K线
+        后端批量采集数据（多线程，约3-5秒），返回结构化数据供分批 LLM 分析。
+        :return: {
+            "group_stats": [{name, members, valid, up_count, up_pct, avg_5d, avg_last, vol_ratio, vs_index, top_stocks}],
+            "index": {"sh_5d": X, "sh_last": X, "cyb_5d": X, "cyb_last": X, "avg_5d": X, "avg_last": X},
+            "summary_text": str  # 完整文本（阶段1展示用）
+        }
         """
         from database import Database
         from kline_fetcher import KLineFetcher
@@ -337,13 +338,12 @@ class RotationAgent(OpenAICompatibleAgent):
 
         print(f"[ROTATION] 有效分组 {len(valid_groups)} 个，总股票 {len(all_codes)} 只")
 
-        # 多线程拉日K线（每线程独立 KLineFetcher 实例，避免共享 session/throttle 竞争）
-        kline_data = {}  # {code: [day_kline_dicts]}
-
+        # 多线程拉日K线（每线程独立实例）
+        kline_data = {}
         def _fetch_one(code):
             pure = code.split(".")[0] if "." in code else code
             try:
-                f = KLineFetcher()   # 每线程独立实例（独立 session + throttle）
+                f = KLineFetcher()
                 return code, f.fetch_day_kline(pure, count=-5) or []
             except Exception:
                 return code, []
@@ -354,98 +354,86 @@ class RotationAgent(OpenAICompatibleAgent):
                 code, data = fu.result()
                 kline_data[code] = data
 
-        # 拉指数（单独实例）
+        # 拉指数
         idx_fetcher = KLineFetcher()
         idx_sh = idx_fetcher.fetch_day_kline("000001", count=-5) or []
         idx_cyb = idx_fetcher.fetch_day_kline("399006", count=-5) or []
 
-        # 汇总
-        lines = ["# 板块数据汇总\n"]
-        # 指数
-        lines.append("## 大盘指数")
-        if idx_sh:
-            sh_chg5 = (idx_sh[-1]["close"] / idx_sh[0]["close"] - 1) * 100
-            sh_last = (idx_sh[-1]["close"] / idx_sh[-2]["close"] - 1) * 100 if len(idx_sh) >= 2 else 0
-            lines.append(f"- 上证指数: 5日{sh_chg5:+.2f}% 最新{sh_last:+.2f}%")
-        if idx_cyb:
-            cyb_chg5 = (idx_cyb[-1]["close"] / idx_cyb[0]["close"] - 1) * 100
-            cyb_last = (idx_cyb[-1]["close"] / idx_cyb[-2]["close"] - 1) * 100 if len(idx_cyb) >= 2 else 0
-            lines.append(f"- 创业板指: 5日{cyb_chg5:+.2f}% 最新{cyb_last:+.2f}%")
-        idx_avg5 = (sh_chg5 + cyb_chg5) / 2 if idx_sh and idx_cyb else 0
-        idx_avg_last = (sh_last + cyb_last) / 2 if idx_sh and idx_cyb else 0
+        sh_chg5 = (idx_sh[-1]["close"] / idx_sh[0]["close"] - 1) * 100 if idx_sh else 0
+        sh_last = (idx_sh[-1]["close"] / idx_sh[-2]["close"] - 1) * 100 if len(idx_sh) >= 2 else 0
+        cyb_chg5 = (idx_cyb[-1]["close"] / idx_cyb[0]["close"] - 1) * 100 if idx_cyb else 0
+        cyb_last = (idx_cyb[-1]["close"] / idx_cyb[-2]["close"] - 1) * 100 if len(idx_cyb) >= 2 else 0
+        idx_avg5 = (sh_chg5 + cyb_chg5) / 2
+        idx_avg_last = (sh_last + cyb_last) / 2
+        index_data = {
+            "sh_5d": round(sh_chg5, 2), "sh_last": round(sh_last, 2),
+            "cyb_5d": round(cyb_chg5, 2), "cyb_last": round(cyb_last, 2),
+            "avg_5d": round(idx_avg5, 2), "avg_last": round(idx_avg_last, 2),
+        }
 
-        lines.append(f"\n## 自选分组数据（共{len(valid_groups)}个分组）\n")
-
-        # 按最近一日涨幅排序分组
+        # 汇总分组统计
         group_stats = []
         for gid, info in valid_groups.items():
             codes = info["codes"]
-            changes_5d = []
-            changes_last = []
-            vol_ratios = []
+            changes_5d, changes_last, vol_ratios = [], [], []
             up_count = 0
-
             for code in codes:
                 kl = kline_data.get(code, [])
                 if len(kl) < 2:
                     continue
                 closes = [d["close"] for d in kl]
                 vols = [d.get("volume", 0) for d in kl]
-                # 5日累计涨幅
                 chg5 = (closes[-1] / closes[0] - 1) * 100 if closes[0] else 0
-                # 最后一日涨幅
                 chg_last = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 else 0
-                # 量比
                 avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1) if len(vols) > 1 else vols[0] if vols else 1
                 vr = vols[-1] / avg_vol if avg_vol else 1
-
                 changes_5d.append(chg5)
                 changes_last.append(chg_last)
                 vol_ratios.append(vr)
                 if chg_last > 0:
                     up_count += 1
-
             valid_cnt = len(changes_5d)
             if valid_cnt == 0:
                 continue
-
             avg_5d = sum(changes_5d) / valid_cnt
-            avg_last = sum(changes_last) / valid_cnt
+            avg_last_v = sum(changes_last) / valid_cnt
             avg_vol_ratio = sum(vol_ratios) / valid_cnt
             up_pct = up_count / valid_cnt * 100
-
-            # vs 指数
             vs_idx = "强于大盘" if avg_5d > idx_avg5 + 1 else ("弱于大盘" if avg_5d < idx_avg5 - 1 else "同步")
-
             group_stats.append({
-                "name": info["name"],
-                "members": len(codes),
-                "valid": valid_cnt,
-                "up_count": up_count,
-                "up_pct": round(up_pct, 1),
-                "avg_5d": round(avg_5d, 2),
-                "avg_last": round(avg_last, 2),
-                "vol_ratio": round(avg_vol_ratio, 2),
-                "vs_index": vs_idx,
-                # 找涨幅最大的3只
+                "name": info["name"], "members": len(codes), "valid": valid_cnt,
+                "up_count": up_count, "up_pct": round(up_pct, 1),
+                "avg_5d": round(avg_5d, 2), "avg_last": round(avg_last_v, 2),
+                "vol_ratio": round(avg_vol_ratio, 2), "vs_index": vs_idx,
                 "top_stocks": sorted(
                     [(codes[i], round(changes_last[i], 2)) for i in range(len(codes)) if i < len(changes_last)],
-                    key=lambda x: x[1], reverse=True
-                )[:3],
+                    key=lambda x: x[1], reverse=True)[:3],
             })
 
-        # 按最近日涨幅排序
         group_stats.sort(key=lambda x: x["avg_last"], reverse=True)
 
+        # 生成 summary_text（阶段1展示用）
+        lines = [f"# 板块数据汇总\n", f"## 大盘指数",
+                 f"- 上证: 5日{sh_chg5:+.2f}% 最新{sh_last:+.2f}%",
+                 f"- 创业板: 5日{cyb_chg5:+.2f}% 最新{cyb_last:+.2f}%",
+                 f"\n## 自选分组数据（共{len(group_stats)}个分组）\n"]
         for i, g in enumerate(group_stats):
             lines.append(f"### {i+1}. {g['name']}（{g['valid']}/{g['members']}只有效）")
             lines.append(f"   - 5日均涨: **{g['avg_5d']:+.2f}%** | 最新日: **{g['avg_last']:+.2f}%**")
             lines.append(f"   - 上涨: {g['up_count']}/{g['valid']}({g['up_pct']:.0f}%) | 量比: {g['vol_ratio']:.2f} | vs指数: {g['vs_index']}")
             top_str = ", ".join(f"{c.split('.')[0]}({v:+.1f}%)" for c, v in g["top_stocks"])
-            lines.append(f"   - 领涨: {top_str}")
-            lines.append("")
+            lines.append(f"   - 领涨: {top_str}\n")
 
-        return "\n".join(lines)
+        return {"group_stats": group_stats, "index_data": index_data, "summary_text": "\n".join(lines)}
+
+    @staticmethod
+    def _format_group_text(g: dict, idx_data: dict) -> str:
+        """把单个分组的统计数据格式化为 LLM 可读文本"""
+        top_str = ", ".join(f"{c.split('.')[0]}({v:+.1f}%)" for c, v in g["top_stocks"])
+        return (f"### {g['name']}（{g['valid']}/{g['members']}只有效）\n"
+                f"- 5日均涨: {g['avg_5d']:+.2f}% | 最新日: {g['avg_last']:+.2f}%\n"
+                f"- 上涨: {g['up_count']}/{g['valid']}({g['up_pct']:.0f}%) | 量比: {g['vol_ratio']:.2f} | vs指数: {g['vs_index']}\n"
+                f"- 领涨: {top_str}")
 
     def analyze_rotation(self) -> Generator[str, None, None]:
         """
@@ -460,80 +448,90 @@ class RotationAgent(OpenAICompatibleAgent):
         try:
             import time as _t
             _t0 = _t.time()
-            raw_data = self._batch_collect()
+            collected = self._batch_collect()
             _dt = _t.time() - _t0
 
-            # 从 raw_data 提取统计摘要展示给用户
-            lines = raw_data.split('\n')
-            group_count = sum(1 for l in lines if l.startswith('### '))
+            group_stats = collected["group_stats"]
+            idx = collected["index_data"]
+            group_count = len(group_stats)
             yield f"✅ 采集完成：**{group_count}** 个概念题材分组，耗时 **{_dt:.1f}s**\n\n"
+            yield f"**大盘基准**：上证 5日{idx['sh_5d']:+.1f}%/{idx['sh_last']:+.1f}%，创业板 5日{idx['cyb_5d']:+.1f}%/{idx['cyb_last']:+.1f}%\n\n"
             yield "**当日涨幅 Top 10 分组：**\n\n"
             yield "| # | 分组 | 5日均涨 | 最新日 | 上涨占比 | 量比 | vs指数 |\n"
             yield "|---|---|---|---|---|---|---|\n"
-            shown = 0
-            for l in lines:
-                if l.startswith('### ') and shown < 10:
-                    # 解析分组名
-                    name_part = l.replace('### ', '').split('（')[0]
-                    # 找紧跟的两行数据
-                    idx = lines.index(l)
-                    detail1 = lines[idx+1] if idx+1 < len(lines) else ''
-                    detail2 = lines[idx+2] if idx+2 < len(lines) else ''
-                    yield f"| {shown+1} | {name_part} | {detail1.replace('   - ', '')} | {detail2.replace('   - ', '')} |\n"
-                    shown += 1
+            for i, g in enumerate(group_stats[:10]):
+                yield f"| {i+1} | {g['name']} | {g['avg_5d']:+.1f}% | {g['avg_last']:+.1f}% | {g['up_count']}/{g['valid']}({g['up_pct']:.0f}%) | {g['vol_ratio']:.2f} | {g['vs_index']} |\n"
             yield f"\n"
         except Exception as e:
             yield f"\n⚠ 数据采集失败：{e}\n\n"
             return
 
-        # ========== 阶段2：第一性原理 + 情绪周期分析 ==========
-        yield "---\n📈 **阶段2：第一性原理分析**\n\n"
-        stage2_system = (
-            "你是一位资深A股板块轮动分析师。请基于第一性原理，结合情绪周期理论分析以下数据。\n\n"
-            "## 情绪周期四阶段（核心分析框架）\n"
-            "每个概念题材分组都处于以下某个阶段：\n"
-            "1. **启动期**：少数龙头股率先异动（涨幅3-7%），量能温和放大，板块多数个股尚未跟涨。"
-            "→ 明日大概率继续走强（资金刚开始关注，上行空间大）\n"
-            "2. **发酵期**：板块内>60%个股上涨，涨幅扩散，量能明显放大，与指数同步偏强。"
-            "→ 明日可能继续强势（趋势确立，资金涌入）\n"
-            "3. **高潮期**：板块普涨且涨幅巨大（多只>10%），量能急剧放大（天量），龙头股涨停潮。"
-            "→ 明日可能分歧/回调（短期过热，获利盘抛压）\n"
-            "4. **退潮期**：涨幅收窄、冲高回落、涨跌分化，量能萎缩。"
-            "→ 明日大概率走弱（资金流出，寻找下一个题材）\n\n"
+        # ========== 阶段2：分批 LLM 分析（每批5组，防超时）==========
+        yield "---\n📈 **阶段2：第一性原理分析（分批处理）**\n\n"
+
+        batch_prompt = (
+            "你是一位资深A股板块轮动分析师。请基于情绪周期理论，分析以下{batch_num}个概念题材分组的数据。\n\n"
+            "## 情绪周期四阶段\n"
+            "1. **启动期**：少数龙头异动（3-7%），量能温和，多数未跟涨 → 明日大概率走强\n"
+            "2. **发酵期**：>60%个股上涨，涨幅扩散，量能放大，与指数同步偏强 → 明日可能继续强势\n"
+            "3. **高潮期**：普涨+巨大涨幅（多只>10%），天量，涨停潮 → 明日可能分歧/回调\n"
+            "4. **退潮期**：涨幅收窄/冲高回落/分化，缩量 → 明日大概率走弱\n\n"
+            "## 大盘基准\n"
+            f"上证5日{idx['sh_5d']:+.1f}%（最新{idx['sh_last']:+.1f}%），创业板5日{idx['cyb_5d']:+.1f}%（最新{idx['cyb_last']:+.1f}%）\n\n"
             "## 分析要求\n"
-            "1. **情绪周期定位**：对每个分组，判断其处于哪个阶段，给出依据\n"
-            "2. **轮动预判**：高潮/退潮的板块资金可能流向哪些启动/发酵期的板块？\n"
-            "3. **指数共振**：哪些分组与指数走势强共振？（指数跌它抗跌→真强势；指数涨它不涨→弱势）\n"
-            "4. **冰点反转信号**：如果指数连续下跌，哪些板块率先企稳走强？（可能是新主线）\n\n"
-            "## 输出格式\n"
-            "给出**明日强势板块排名（Top 5）**，每个包含：\n"
-            "- 当前情绪周期阶段 + 判断依据（引用具体数据）\n"
-            "- 明日预判（继续走强/分歧/回调）+ 理由\n"
-            "- 风险提示（什么信号出现就应放弃）\n"
-            "- 重点关注个股（该分组内的领涨股）\n\n"
-            "用 Markdown 格式输出，分析要有数据支撑，不要空泛。"
+            "对每个分组：① 判断情绪周期阶段 ② 给出明日预判（继续走强/分歧/回调）+ 理由\n"
+            "简洁有力，每个分组 2-3 行。用 Markdown。"
         )
-        messages2 = [
-            {"role": "system", "content": stage2_system},
-            {"role": "user", "content": f"以下是采集到的板块数据：\n\n{raw_data}"},
+
+        BATCH_SIZE = 10
+        # 只分析 Top 20 个分组（按最新日涨幅排序），弱分组跳过
+        ANALYZE_TOP_N = 20
+        groups_to_analyze = group_stats[:ANALYZE_TOP_N]
+        total_batches = (len(groups_to_analyze) + BATCH_SIZE - 1) // BATCH_SIZE
+        batch_results = []
+        for bi in range(0, len(groups_to_analyze), BATCH_SIZE):
+            batch = group_stats[bi:bi + BATCH_SIZE]
+            batch_text = "\n\n".join(self._format_group_text(g, idx) for g in batch)
+            batch_num = len(batch)
+            yield f"🔄 分析批次 {bi//BATCH_SIZE+1}/{total_batches}（{batch_num}个分组）...\n\n"
+
+            msgs = [
+                {"role": "system", "content": batch_prompt.replace("{batch_num}", str(batch_num))},
+                {"role": "user", "content": f"分析以下{batch_num}个分组：\n\n{batch_text}"},
+            ]
+            msg = self._llm_call(msgs, use_tools=False)
+            result = msg.get("content") or "(分析为空)"
+            batch_results.append(result)
+            yield from _stream_text(result)
+            yield "\n\n"
+
+        # 汇总所有批次 → LLM 出 Top 5 排名
+        yield "---\n📊 **阶段2.5：综合排名**\n\n"
+        all_analysis = "\n\n---\n\n".join(batch_results)
+        rank_prompt = (
+            "基于以上对所有分组的情绪周期分析，给出**明日强势板块排名（Top 5）**。\n\n"
+            "每个包含：\n"
+            "- 当前情绪周期阶段 + 一句话依据\n"
+            "- 明日预判 + 理由\n"
+            "- 风险提示（什么信号出现就放弃）\n"
+            "- 重点关注个股\n\n"
+            "优先推荐启动期/发酵期板块，规避高潮期/退潮期。用 Markdown。"
+        )
+        msgs_rank = [
+            {"role": "system", "content": rank_prompt},
+            {"role": "user", "content": all_analysis},
         ]
-        msg2 = self._llm_call(messages2, use_tools=False)
-        analysis = msg2.get("content") or "(分析为空)"
-        # 流式 yield（分段）
+        msg_rank = self._llm_call(msgs_rank, use_tools=False)
+        analysis = msg_rank.get("content") or "(排名为空)"
         yield from _stream_text(analysis)
         yield "\n\n"
 
-        # ========== 阶段3：对抗审查 ==========
+        # ========== 阶段3：对抗审查（精简，限 300 字）==========
         yield "---\n⚔ **阶段3：对抗审查**\n\n"
         stage3_system = (
-            "你是一位严格的投资审查者。请对以下板块轮动分析进行对抗性审查：\n\n"
-            "审查维度：\n"
-            "1. **过拟合风险**：结论是否仅基于最近几日数据？小样本是否可靠？\n"
-            "2. **系统性风险**：如果大盘次日大跌，所有板块可能失效。分析是否考虑了止损？\n"
-            "3. **逻辑漏洞**：排名是否把已涨过高的板块排在前面（追高风险）？\n"
-            "4. **数据局限**：仅看日K线是否忽略了关键信息（如政策面、资金面）？\n"
-            "5. **确认/修正**：哪些排名你认为合理？哪些需要调整？\n\n"
-            "请直接给出审查意见。如果分析合理，确认即可；如果有漏洞，指出并给出修正建议。"
+            "你是严格的投资审查者。请对以下板块排名做对抗性审查。\n"
+            "只指出关键问题（过拟合/系统性风险/追高/数据局限）和修正建议。\n"
+            "简洁有力，不超过 300 字。不要废话。"
         )
         messages3 = [
             {"role": "system", "content": stage3_system},
@@ -547,16 +545,9 @@ class RotationAgent(OpenAICompatibleAgent):
         # ========== 阶段4：综合结论 ==========
         yield "---\n✅ **阶段4：综合结论**\n\n"
         stage4_system = (
-            "请综合分析师的分析和审查者的审查意见，给出最终的明日板块操作建议。\n"
-            "格式：\n"
-            "## 最终排名\n"
-            "1. **板块名** - 推荐度（★★★~★）- 一句话理由\n"
-            "...\n\n"
-            "## 操作策略\n"
-            "- 重点关注：...\n"
-            "- 观察信号：...（什么情况下确认/放弃）\n"
-            "- 风险控制：...\n\n"
-            "简洁有力，不超过300字。"
+            "综合分析排名和审查意见，给出最终明日操作建议。\n"
+            "格式：最终排名（板块名+推荐度+一句话理由）+ 操作策略 + 风险控制。\n"
+            "不超过 200 字。直接输出，不要解释。"
         )
         messages4 = [
             {"role": "system", "content": stage4_system},
