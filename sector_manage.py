@@ -18,7 +18,6 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import Database
-from core_calculator import calc_period_return_df
 
 
 def _sector_prefix_label(code: str) -> str:
@@ -85,19 +84,11 @@ def compute_sector_multi_period_returns(
     watched = set(db.get_watched_concept_codes())
 
     # 多周期个股涨幅：
-    #   - 当日涨幅：直接读 daily_kline.change_ratio（当日真实涨跌幅，不能用累计涨幅替代）
-    #   - 3日/5日累计涨幅：用 calc_period_return_df（窗口内 close/pre_close，对正常股票准确）
+    #   - 当日涨幅：直接读 daily_kline.change_ratio（当日真实涨跌幅）
+    #   - 3日/5日累计涨幅：_load_stock_period_returns（per-stock 最近日对齐，避免个别缺日股票被丢弃）
     stock_1d = _load_stock_change_ratio(db, end_date)
-    ret_3d_df = calc_period_return_df(db, end_date, 3)
-    ret_5d_df = calc_period_return_df(db, end_date, 5)
-
-    def _to_dict(df: pd.DataFrame) -> Dict[str, float]:
-        if df.empty:
-            return {}
-        return dict(zip(df["code"], df["change_ratio"]))
-
-    stock_3d = _to_dict(ret_3d_df)
-    stock_5d = _to_dict(ret_5d_df)
+    stock_3d = _load_stock_period_returns(db, end_date, 3)
+    stock_5d = _load_stock_period_returns(db, end_date, 5)
 
     # 过滤新股（上市不足5交易日），避免连板新股的累计涨幅严重污染板块均值。
     # 与 prescreen 的过滤口径一致（get_new_stock_codes）。
@@ -151,9 +142,50 @@ def _load_concept_names(db: Database) -> Dict[str, str]:
     return names
 
 
+def _load_stock_period_returns(db: Database, trade_date: str, days: int) -> Dict[str, float]:
+    """
+    算个股 N 日累计涨幅 (期末close / 窗口起点pre_close - 1) × 100。
+    与 calc_period_return_df 的区别：per-stock 各自取最近交易日对齐（个别股票期末日
+    无数据时回退到其最近交易日，而非被全局 end_date 过滤丢弃）。
+
+    窗口起点 = 期末日 - days*2 自然日（覆盖 days 个交易日，与 calc_period_return_df 一致）。
+    :return: {stock_code: period_return_pct}
+    """
+    import sqlite3
+    from datetime import datetime, timedelta
+    end_obj = datetime.strptime(trade_date, "%Y%m%d")
+    start = (end_obj - timedelta(days=days * 2)).strftime("%Y%m%d")
+    result: Dict[str, float] = {}
+    with sqlite3.connect(db.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        # 每只股票各自的期末日（<= trade_date 的最新）+ 窗口起点的 pre_close
+        for row in conn.execute(
+            """
+            WITH latest AS (
+                SELECT code, MAX(trade_date) AS end_date
+                FROM daily_kline WHERE trade_date <= ? AND trade_date >= ?
+                GROUP BY code
+            )
+            SELECT l.code,
+                   l.end_date,
+                   (SELECT close FROM daily_kline d WHERE d.code = l.code AND d.trade_date = l.end_date) AS end_close,
+                   (SELECT pre_close FROM daily_kline d WHERE d.code = l.code AND d.trade_date = (
+                       SELECT MIN(trade_date) FROM daily_kline WHERE code = l.code AND trade_date >= ?
+                   )) AS start_pre_close
+            FROM latest l
+            """,
+            (trade_date, start, start),
+        ):
+            ec, sp = row["end_close"], row["start_pre_close"]
+            if ec is not None and sp and sp != 0:
+                result[row["code"]] = (ec / sp - 1) * 100
+    return result
+
+
 def _load_stock_body(db: Database, trade_date: str) -> Dict[str, float]:
     """
-    读当日日K，算个股实体涨幅 (close - open)/open × 100。
+    读个股实体涨幅 (close - open)/open × 100。
+    取每只股票 <= trade_date 的最新一日日K（部分股票期末日可能无数据，回退到其最近交易日）。
     :return: {stock_code: body_ratio}
     """
     import sqlite3
@@ -161,7 +193,12 @@ def _load_stock_body(db: Database, trade_date: str) -> Dict[str, float]:
     with sqlite3.connect(db.db_path) as conn:
         conn.row_factory = sqlite3.Row
         for row in conn.execute(
-            "SELECT code, open, close FROM daily_kline WHERE trade_date = ?", (trade_date,)
+            """SELECT code, open, close FROM daily_kline
+               WHERE (code, trade_date) IN (
+                   SELECT code, MAX(trade_date) FROM daily_kline
+                   WHERE trade_date <= ? GROUP BY code
+               )""",
+            (trade_date,),
         ):
             o, c = row["open"], row["close"]
             if o and o != 0 and c is not None:
@@ -171,9 +208,8 @@ def _load_stock_body(db: Database, trade_date: str) -> Dict[str, float]:
 
 def _load_stock_change_ratio(db: Database, trade_date: str) -> Dict[str, float]:
     """
-    读当日日K的个股涨跌幅（daily_kline.change_ratio，已由行情接口计算好）。
-    这是【当日真实涨跌幅】，不能用 calc_period_return_df(days=1) 替代——
-    后者的窗口是 days*2 自然日，会把累计涨幅误当单日涨幅，对新股尤其失真。
+    读个股涨跌幅（daily_kline.change_ratio，行情接口已算好的真实涨跌幅）。
+    取每只股票 <= trade_date 的最新一日（部分股票期末日可能无数据，回退到其最近交易日）。
     :return: {stock_code: change_ratio}
     """
     import sqlite3
@@ -181,7 +217,12 @@ def _load_stock_change_ratio(db: Database, trade_date: str) -> Dict[str, float]:
     with sqlite3.connect(db.db_path) as conn:
         conn.row_factory = sqlite3.Row
         for row in conn.execute(
-            "SELECT code, change_ratio FROM daily_kline WHERE trade_date = ?", (trade_date,)
+            """SELECT code, change_ratio FROM daily_kline
+               WHERE (code, trade_date) IN (
+                   SELECT code, MAX(trade_date) FROM daily_kline
+                   WHERE trade_date <= ? GROUP BY code
+               )""",
+            (trade_date,),
         ):
             v = row["change_ratio"]
             if v is not None:
