@@ -84,8 +84,10 @@ def compute_sector_multi_period_returns(
     concept_names = _load_concept_names(db)
     watched = set(db.get_watched_concept_codes())
 
-    # 多周期个股累计涨幅（1d/3d/5d），各调一次 calc_period_return_df
-    ret_1d_df = calc_period_return_df(db, end_date, 1)
+    # 多周期个股涨幅：
+    #   - 当日涨幅：直接读 daily_kline.change_ratio（当日真实涨跌幅，不能用累计涨幅替代）
+    #   - 3日/5日累计涨幅：用 calc_period_return_df（窗口内 close/pre_close，对正常股票准确）
+    stock_1d = _load_stock_change_ratio(db, end_date)
     ret_3d_df = calc_period_return_df(db, end_date, 3)
     ret_5d_df = calc_period_return_df(db, end_date, 5)
 
@@ -94,9 +96,17 @@ def compute_sector_multi_period_returns(
             return {}
         return dict(zip(df["code"], df["change_ratio"]))
 
-    stock_1d = _to_dict(ret_1d_df)
     stock_3d = _to_dict(ret_3d_df)
     stock_5d = _to_dict(ret_5d_df)
+
+    # 过滤新股（上市不足5交易日），避免连板新股的累计涨幅严重污染板块均值。
+    # 与 prescreen 的过滤口径一致（get_new_stock_codes）。
+    new_stocks = db.get_new_stock_codes(end_date, min_days=5)
+    if new_stocks:
+        for d in (stock_3d, stock_5d):
+            for code in new_stocks:
+                d.pop(code, None)
+        print(f"[SECTOR-MANAGE] 过滤新股 {len(new_stocks)} 只（避免污染 3d/5d 板块均值）")
 
     # 当日实体涨幅：用当日日K的 (close - open)/open（从 daily_kline 取）
     stock_body = _load_stock_body(db, end_date)
@@ -157,3 +167,23 @@ def _load_stock_body(db: Database, trade_date: str) -> Dict[str, float]:
             if o and o != 0 and c is not None:
                 body[row["code"]] = (c / o - 1) * 100
     return body
+
+
+def _load_stock_change_ratio(db: Database, trade_date: str) -> Dict[str, float]:
+    """
+    读当日日K的个股涨跌幅（daily_kline.change_ratio，已由行情接口计算好）。
+    这是【当日真实涨跌幅】，不能用 calc_period_return_df(days=1) 替代——
+    后者的窗口是 days*2 自然日，会把累计涨幅误当单日涨幅，对新股尤其失真。
+    :return: {stock_code: change_ratio}
+    """
+    import sqlite3
+    cr = {}
+    with sqlite3.connect(db.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute(
+            "SELECT code, change_ratio FROM daily_kline WHERE trade_date = ?", (trade_date,)
+        ):
+            v = row["change_ratio"]
+            if v is not None:
+                cr[row["code"]] = v
+    return cr
