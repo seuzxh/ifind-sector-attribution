@@ -483,27 +483,49 @@ class RotationAgent(OpenAICompatibleAgent):
             "简洁有力，每个分组 2-3 行。用 Markdown。"
         )
 
-        BATCH_SIZE = 10
-        # 只分析 Top 20 个分组（按最新日涨幅排序），弱分组跳过
+        BATCH_SIZE = 3
         ANALYZE_TOP_N = 20
+        LLM_CONCURRENCY = 4   # 并发调 LLM 的路数
         groups_to_analyze = group_stats[:ANALYZE_TOP_N]
-        total_batches = (len(groups_to_analyze) + BATCH_SIZE - 1) // BATCH_SIZE
-        batch_results = []
+        batches = []
         for bi in range(0, len(groups_to_analyze), BATCH_SIZE):
-            batch = group_stats[bi:bi + BATCH_SIZE]
+            batches.append(groups_to_analyze[bi:bi + BATCH_SIZE])
+        total_batches = len(batches)
+
+        yield f"🚀 并发分析 **{total_batches}** 批（每批{BATCH_SIZE}组，{LLM_CONCURRENCY}路并发）...\n\n"
+
+        # 并发调 LLM
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time as _t2
+
+        def _analyze_batch(batch_idx, batch):
             batch_text = "\n\n".join(self._format_group_text(g, idx) for g in batch)
             batch_num = len(batch)
-            yield f"🔄 分析批次 {bi//BATCH_SIZE+1}/{total_batches}（{batch_num}个分组）...\n\n"
-
             msgs = [
                 {"role": "system", "content": batch_prompt.replace("{batch_num}", str(batch_num))},
                 {"role": "user", "content": f"分析以下{batch_num}个分组：\n\n{batch_text}"},
             ]
             msg = self._llm_call(msgs, use_tools=False)
-            result = msg.get("content") or "(分析为空)"
-            batch_results.append(result)
-            yield from _stream_text(result)
-            yield "\n\n"
+            return batch_idx, batch_num, msg.get("content") or "(分析为空)"
+
+        batch_t0 = _t2.time()
+        batch_results = [None] * total_batches  # 按顺序填充
+        with ThreadPoolExecutor(max_workers=LLM_CONCURRENCY) as ex:
+            futs = {ex.submit(_analyze_batch, i, b): i for i, b in enumerate(batches)}
+            for fu in as_completed(futs):
+                idx_r, num_r, result_r = fu.result()
+                batch_results[idx_r] = result_r
+                done = sum(1 for r in batch_results if r is not None)
+                yield f"  ✅ 批次 {idx_r+1}/{total_batches} 完成（{done}/{total_batches}）\n"
+
+        batch_dt = _t2.time() - batch_t0
+        yield f"\n⚡ 并发分析完成，耗时 **{batch_dt:.0f}s**\n\n"
+
+        # 按顺序输出各批次结果
+        for result in batch_results:
+            if result:
+                yield from _stream_text(result)
+                yield "\n\n"
 
         # 汇总所有批次 → LLM 出 Top 5 排名
         yield "---\n📊 **阶段2.5：综合排名**\n\n"
