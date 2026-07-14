@@ -131,6 +131,103 @@ def compute_sector_multi_period_returns(
     return rows
 
 
+def compute_sector_quotes_from_ifind(db: Database) -> List[Dict]:
+    """
+    直接从 iFinD 接口3（cmd_history_quotation）查询概念指数本身的日K行情，
+    算出当日涨幅 / 实体涨幅 / 3日 / 5日累计涨幅。
+
+    与 compute_sector_multi_period_returns（从成分股聚合 daily_kline）的区别：
+      - 数据源：iFinD 实时接口（概念指数本身），非本地 daily_kline 成分股聚合
+      - 准确性：指数官方值，不受成分股缺数据/新股污染
+      - 速度：636 个板块 7 批约 3 秒（成分股聚合要遍历数万条记录）
+      - 实时性：盘中调用返回当日实时值
+
+    :return: [{concept_code, concept_name, level, change_ratio, body,
+               return_3d, return_5d, member_count, watched}] 按涨幅降序
+    """
+    import time
+    from datetime import datetime, timedelta
+    from ifind_client import IFindClient
+
+    concept_codes = db.get_observe_concept_codes()
+    if not concept_codes:
+        return []
+    members_map = db.get_concept_members_map(concept_codes)
+    concept_names = _load_concept_names(db)
+    watched = set(db.get_watched_concept_codes())
+
+    # 查近 10 个自然日的日K（覆盖 5+ 交易日，够算 1d/3d/5d）
+    today = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d")
+    client = IFindClient()
+
+    # 分批查询（100/批），合并结果
+    # 解析后的数据：{concept_code: {change_ratio, body, return_3d, return_5d}}
+    quotes: Dict[str, Dict] = {}
+    batch_size = 100
+    t0 = time.time()
+    for i in range(0, len(concept_codes), batch_size):
+        batch = concept_codes[i:i + batch_size]
+        resp = client.get_history_quotation(
+            batch, start, today,
+            indicators="open,close,preClose,changeRatio",
+        )
+        if resp.get("errorcode") not in (0, None):
+            print(f"[SECTOR-MANAGE] iFinD 批次 {i} 错误: {resp.get('errorcode')}")
+            continue
+        for item in resp.get("tables", []):
+            cc = item.get("thscode", "")
+            tbl = item.get("table", {})
+            times = item.get("time", [])
+            closes = tbl.get("close", [])
+            opens = tbl.get("open", [])
+            chg_ratios = tbl.get("changeRatio", [])
+            if not closes or not chg_ratios:
+                continue
+            n = len(closes)
+            # 当日涨跌幅（最后一根）
+            change_ratio = chg_ratios[-1] if chg_ratios[-1] is not None else None
+            # 实体涨幅（当日 close vs open）
+            body = None
+            if n >= 1 and opens and opens[-1] and closes[-1] is not None:
+                body = (closes[-1] / opens[-1] - 1) * 100 if opens[-1] != 0 else None
+            # 累计涨幅：期末close / 起点close - 1（用 close 序列，比 preClose 更直观）
+            def _period_return(days_back: int) -> float | None:
+                if n < days_back + 1:
+                    return None
+                start_close = closes[n - 1 - days_back]
+                if start_close and start_close != 0:
+                    return (closes[-1] / start_close - 1) * 100
+                return None
+            quotes[cc] = {
+                "change_ratio": round(change_ratio, 4) if change_ratio is not None else None,
+                "body": round(body, 4) if body is not None else None,
+                "return_3d": round(_period_return(3), 4) if _period_return(3) is not None else None,
+                "return_5d": round(_period_return(5), 4) if _period_return(5) is not None else None,
+            }
+    print(f"[SECTOR-MANAGE] iFinD 行情拉取完成：{len(quotes)}/{len(concept_codes)} 个板块，"
+          f"耗时 {time.time()-t0:.1f}s")
+
+    # 组装结果行
+    rows = []
+    for cc in concept_codes:
+        members = members_map.get(cc, [])
+        q = quotes.get(cc, {})
+        rows.append({
+            "concept_code": cc,
+            "concept_name": concept_names.get(cc, cc),
+            "level": _sector_prefix_label(cc),
+            "change_ratio": q.get("change_ratio"),
+            "body": q.get("body"),
+            "return_3d": q.get("return_3d"),
+            "return_5d": q.get("return_5d"),
+            "member_count": len(members),
+            "watched": cc in watched,
+        })
+    rows.sort(key=lambda r: (r["change_ratio"] is None, -(r["change_ratio"] or 0)))
+    return rows
+
+
 def _load_concept_names(db: Database) -> Dict[str, str]:
     """加载 concept_code → concept_name 映射。"""
     import sqlite3

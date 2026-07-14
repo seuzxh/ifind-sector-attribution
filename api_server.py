@@ -588,15 +588,17 @@ def get_available_dates():
 @app.get("/api/sector_manage/list")
 def sector_manage_list(date: str = None):
     """
-    监控板块管理列表：全部候选板块（观察池全集）+ 多周期涨幅 + 是否已勾选监控。
-    :param date: 基准日 YYYYMMDD，默认 DB 最新交易日
+    监控板块管理列表：全部候选板块（观察池全集）+ iFinD 实时行情 + 是否已勾选监控。
+    行情数据直接从 iFinD 接口3（概念指数日K）获取，不依赖本地 daily_kline。
+    :param date: 保留兼容，实际行情由 iFinD 实时返回
     :return: {date, total, watched_count, sectors: [{concept_code, concept_name, level,
               change_ratio, body, return_3d, return_5d, member_count, watched}]}
     """
-    from sector_manage import compute_sector_multi_period_returns
-    rows = compute_sector_multi_period_returns(db, calc_date=date)
+    from sector_manage import compute_sector_quotes_from_ifind
+    from datetime import datetime
+    rows = compute_sector_quotes_from_ifind(db)
     return {
-        "date": date or db.get_latest_trade_date(),
+        "date": date or datetime.now().strftime("%Y%m%d"),
         "total": len(rows),
         "watched_count": sum(1 for r in rows if r.get("watched")),
         "sectors": rows,
