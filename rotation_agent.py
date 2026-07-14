@@ -509,23 +509,20 @@ class RotationAgent(OpenAICompatibleAgent):
             return batch_idx, batch_num, msg.get("content") or "(分析为空)"
 
         batch_t0 = _t2.time()
-        batch_results = [None] * total_batches  # 按顺序填充
+        batch_results = [None] * total_batches  # 按顺序填充（汇总排名用）
         with ThreadPoolExecutor(max_workers=LLM_CONCURRENCY) as ex:
             futs = {ex.submit(_analyze_batch, i, b): i for i, b in enumerate(batches)}
             for fu in as_completed(futs):
                 idx_r, num_r, result_r = fu.result()
                 batch_results[idx_r] = result_r
                 done = sum(1 for r in batch_results if r is not None)
-                yield f"  ✅ 批次 {idx_r+1}/{total_batches} 完成（{done}/{total_batches}）\n"
+                # 立即推送该批次的分析结果（逐批渐进式渲染，不等全部完成）
+                yield f"\n**批次 {idx_r+1}/{total_batches}**（{done}/{total_batches} 完成）\n\n"
+                yield from _stream_text(result_r)
+                yield "\n\n"
 
         batch_dt = _t2.time() - batch_t0
-        yield f"\n⚡ 并发分析完成，耗时 **{batch_dt:.0f}s**\n\n"
-
-        # 按顺序输出各批次结果
-        for result in batch_results:
-            if result:
-                yield from _stream_text(result)
-                yield "\n\n"
+        yield f"\n⚡ 全部批次完成，耗时 **{batch_dt:.0f}s**\n\n"
 
         # 汇总所有批次 → LLM 出 Top 5 排名
         yield "---\n📊 **阶段2.5：综合排名**\n\n"

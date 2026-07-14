@@ -48,8 +48,14 @@ function pushSection(text: string) {
   if (text.includes('阶段1') || text.includes('数据采集')) {
     title = titleMatch ? titleMatch[1] : '阶段1：数据采集'
     icon = '📊'; cls = 'stage-collect'
-  } else if (text.includes('阶段2') || text.includes('第一性原理')) {
-    title = titleMatch ? titleMatch[1] : '阶段2：第一性原理分析'
+  } else if (text.includes('阶段2') && text.includes('分批')) {
+    title = titleMatch ? titleMatch[1] : '阶段2：分批分析'
+    icon = '📈'; cls = 'stage-analyze'
+  } else if (text.includes('批次')) {
+    title = titleMatch ? titleMatch[1] : '批次分析'
+    icon = '🔄'; cls = 'stage-batch'
+  } else if (text.includes('阶段2') || text.includes('第一性原理') || text.includes('综合排名')) {
+    title = titleMatch ? titleMatch[1] : '阶段2：分析'
     icon = '📈'; cls = 'stage-analyze'
   } else if (text.includes('阶段3') || text.includes('对抗审查')) {
     title = titleMatch ? titleMatch[1] : '阶段3：对抗审查'
@@ -95,22 +101,28 @@ async function startAnalyze() {
           const e = JSON.parse(dataLine.slice(5).trim())
           if (e.type === 'delta') {
             const text = e.text || ''
-            // "---" 作为阶段分隔符
-            // 只把"独立行的 ---"（阶段分隔）当分隔符，不把表格 |---| 误判
+            // "---" 作为阶段分隔符（只匹配独立行的 ---）
             const isStageSep = /^---\s*$/m.test(text.trim()) || text.startsWith('---\n')
+            // "**批次" 作为子卡片分隔（并发批次各成小卡片）
+            const isBatchSep = text.trim().startsWith('**批次')
+
             if (isStageSep) {
-              // 把分隔前的内容推送为卡片
               const parts = text.split(/^---$/m)
               if (parts[0].trim()) {
                 currentSection += parts[0]
                 pushSection(currentSection)
                 currentSection = ''
               }
-              // 分隔后的新阶段文本（追加，不覆盖）
               const afterSep = parts.slice(1).join('---')
               if (afterSep.trim()) {
                 currentSection += afterSep
               }
+            } else if (isBatchSep) {
+              // 把之前累积的 section 推送（如果有的话），再开始新的 batch section
+              if (currentSection.trim()) {
+                pushSection(currentSection)
+              }
+              currentSection = text
             } else {
               currentSection += text
             }
@@ -171,6 +183,7 @@ async function startAnalyze() {
 .stage-card.stage-init { border-left-color: #6366f1; }
 .stage-card.stage-collect { border-left-color: #3b82f6; }
 .stage-card.stage-analyze { border-left-color: #10b981; }
+.stage-card.stage-batch { border-left-color: #06b6d4; }
 .stage-card.stage-review { border-left-color: #f59e0b; }
 .stage-card.stage-final { border-left-color: #8b5cf6; }
 .stage-card.stage-done { border-left-color: #6b7280; }
