@@ -65,7 +65,7 @@ function pushSection(text: string) {
 
   sections.value.push({
     title, icon, cls,
-    html: renderMarkdown(text.replace(/\*\*.+?\*\*.*?\n/g, '').trim()),
+    html: renderMarkdown(text.trim()),
   })
 }
 
@@ -96,17 +96,21 @@ async function startAnalyze() {
           if (e.type === 'delta') {
             const text = e.text || ''
             // "---" 作为阶段分隔符
-            if (text.includes('---')) {
+            // 只把"独立行的 ---"（阶段分隔）当分隔符，不把表格 |---| 误判
+            const isStageSep = /^---\s*$/m.test(text.trim()) || text.startsWith('---\n')
+            if (isStageSep) {
               // 把分隔前的内容推送为卡片
-              const beforeSep = text.split('---')[0]
-              if (beforeSep.trim()) {
-                currentSection += beforeSep
+              const parts = text.split(/^---$/m)
+              if (parts[0].trim()) {
+                currentSection += parts[0]
                 pushSection(currentSection)
                 currentSection = ''
               }
-              // 分隔后的新阶段文本
-              const afterSep = text.split('---').slice(1).join('---')
-              currentSection = afterSep
+              // 分隔后的新阶段文本（追加，不覆盖）
+              const afterSep = parts.slice(1).join('---')
+              if (afterSep.trim()) {
+                currentSection += afterSep
+              }
             } else {
               currentSection += text
             }
