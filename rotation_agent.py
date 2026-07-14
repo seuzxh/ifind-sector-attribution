@@ -337,14 +337,14 @@ class RotationAgent(OpenAICompatibleAgent):
 
         print(f"[ROTATION] 有效分组 {len(valid_groups)} 个，总股票 {len(all_codes)} 只")
 
-        # 多线程拉日K线
-        fetcher = KLineFetcher()
+        # 多线程拉日K线（每线程独立 KLineFetcher 实例，避免共享 session/throttle 竞争）
         kline_data = {}  # {code: [day_kline_dicts]}
 
         def _fetch_one(code):
             pure = code.split(".")[0] if "." in code else code
             try:
-                return code, fetcher.fetch_day_kline(pure, count=-5) or []
+                f = KLineFetcher()   # 每线程独立实例（独立 session + throttle）
+                return code, f.fetch_day_kline(pure, count=-5) or []
             except Exception:
                 return code, []
 
@@ -354,9 +354,10 @@ class RotationAgent(OpenAICompatibleAgent):
                 code, data = fu.result()
                 kline_data[code] = data
 
-        # 拉指数
-        idx_sh = fetcher.fetch_day_kline("000001", count=-5) or []
-        idx_cyb = fetcher.fetch_day_kline("399006", count=-5) or []
+        # 拉指数（单独实例）
+        idx_fetcher = KLineFetcher()
+        idx_sh = idx_fetcher.fetch_day_kline("000001", count=-5) or []
+        idx_cyb = idx_fetcher.fetch_day_kline("399006", count=-5) or []
 
         # 汇总
         lines = ["# 板块数据汇总\n"]
@@ -454,11 +455,33 @@ class RotationAgent(OpenAICompatibleAgent):
         yield "\n📋 **板块轮动分析启动**\n\n"
 
         # ========== 阶段1：后端批量数据采集（多线程，不依赖 LLM 调工具）==========
-        yield "---\n📊 **阶段1：数据采集**（后端批量拉取，约10-20秒）\n\n"
+        yield "---\n📊 **阶段1：数据采集**（后端批量拉取日K线）\n\n"
         raw_data = ""
         try:
+            import time as _t
+            _t0 = _t.time()
             raw_data = self._batch_collect()
-            yield f"\n✅ 数据采集完成\n\n"
+            _dt = _t.time() - _t0
+
+            # 从 raw_data 提取统计摘要展示给用户
+            lines = raw_data.split('\n')
+            group_count = sum(1 for l in lines if l.startswith('### '))
+            yield f"✅ 采集完成：**{group_count}** 个概念题材分组，耗时 **{_dt:.1f}s**\n\n"
+            yield "**当日涨幅 Top 10 分组：**\n\n"
+            yield "| # | 分组 | 5日均涨 | 最新日 | 上涨占比 | 量比 | vs指数 |\n"
+            yield "|---|---|---|---|---|---|---|\n"
+            shown = 0
+            for l in lines:
+                if l.startswith('### ') and shown < 10:
+                    # 解析分组名
+                    name_part = l.replace('### ', '').split('（')[0]
+                    # 找紧跟的两行数据
+                    idx = lines.index(l)
+                    detail1 = lines[idx+1] if idx+1 < len(lines) else ''
+                    detail2 = lines[idx+2] if idx+2 < len(lines) else ''
+                    yield f"| {shown+1} | {name_part} | {detail1.replace('   - ', '')} | {detail2.replace('   - ', '')} |\n"
+                    shown += 1
+            yield f"\n"
         except Exception as e:
             yield f"\n⚠ 数据采集失败：{e}\n\n"
             return

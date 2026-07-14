@@ -3,7 +3,7 @@
     <!-- 顶栏 -->
     <div class="topbar">
       <h1>🔮 板块轮动分析</h1>
-      <span class="subtitle">第一性原理 + 对抗审查 · Loop Engine</span>
+      <span class="subtitle">第一性原理 + 情绪周期 + 对抗审查</span>
       <button class="analyze-btn" @click="startAnalyze" :disabled="running">
         {{ running ? '⏳ 分析中...' : '🔮 开始分析' }}
       </button>
@@ -11,36 +11,75 @@
 
     <!-- 分析输出区 -->
     <div class="output-area" ref="outputEl">
-      <div v-if="!output && !running" class="empty-hint">
+      <div v-if="!sections.length && !running" class="empty-hint">
         点击"开始分析"，智能体将自主采集数据、分析板块轮动、对抗审查后给出明日强势排名。<br><br>
-        <b>分析流程</b>：数据采集（日K线+分时+指数）→ 第一性原理分析 → 对抗审查 → 综合结论<br>
-        <b>预计耗时</b>：1-2 分钟（全程流式展示）
+        <b>分析流程</b>：数据采集（日K线+指数）→ 第一性原理分析 → 对抗审查 → 综合结论<br>
+        <b>预计耗时</b>：1-2 分钟（全程流式展示思考过程）
       </div>
-      <div v-if="output" class="output-content" v-html="renderedOutput"></div>
+
+      <!-- 按阶段分卡片展示 -->
+      <div v-for="(sec, i) in sections" :key="i" class="stage-card" :class="sec.cls">
+        <div class="stage-header">
+          <span class="stage-icon">{{ sec.icon }}</span>
+          <span class="stage-title">{{ sec.title }}</span>
+        </div>
+        <div class="stage-body" v-html="sec.html"></div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, nextTick } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 
 const running = ref(false)
-const output = ref('')
 const outputEl = ref<HTMLElement | null>(null)
+const sections = ref<{title: string; icon: string; cls: string; html: string}[]>([])
 
-const renderedOutput = computed(() => renderMarkdown(output.value))
+// 把 SSE 累积的文本按 "---" 分隔成阶段卡片
+function pushSection(text: string) {
+  // 从文本提取阶段标题和图标
+  const titleMatch = text.match(/\*\*(.+?)\*\*/)
+  let title = '分析输出'
+  let icon = '📝'
+  let cls = 'stage-default'
+
+  if (text.includes('阶段1') || text.includes('数据采集')) {
+    title = titleMatch ? titleMatch[1] : '阶段1：数据采集'
+    icon = '📊'; cls = 'stage-collect'
+  } else if (text.includes('阶段2') || text.includes('第一性原理')) {
+    title = titleMatch ? titleMatch[1] : '阶段2：第一性原理分析'
+    icon = '📈'; cls = 'stage-analyze'
+  } else if (text.includes('阶段3') || text.includes('对抗审查')) {
+    title = titleMatch ? titleMatch[1] : '阶段3：对抗审查'
+    icon = '⚔️'; cls = 'stage-review'
+  } else if (text.includes('阶段4') || text.includes('综合结论')) {
+    title = titleMatch ? titleMatch[1] : '阶段4：综合结论'
+    icon = '✅'; cls = 'stage-final'
+  } else if (text.includes('分析完成')) {
+    title = '分析完成'; icon = '🏁'; cls = 'stage-done'
+  } else if (text.includes('启动')) {
+    title = '启动'; icon = '📋'; cls = 'stage-init'
+  }
+
+  sections.value.push({
+    title, icon, cls,
+    html: renderMarkdown(text.replace(/\*\*.+?\*\*.*?\n/g, '').trim()),
+  })
+}
 
 async function startAnalyze() {
   if (running.value) return
   running.value = true
-  output.value = ''
+  sections.value = []
 
   try {
     const resp = await fetch('/api/rotation/analyze')
     const reader = resp.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ''
+    let currentSection = ''
 
     while (true) {
       const { done, value } = await reader.read()
@@ -55,18 +94,37 @@ async function startAnalyze() {
         try {
           const e = JSON.parse(dataLine.slice(5).trim())
           if (e.type === 'delta') {
-            output.value += e.text || ''
-            // 自动滚动到底部
+            const text = e.text || ''
+            // "---" 作为阶段分隔符
+            if (text.includes('---')) {
+              // 把分隔前的内容推送为卡片
+              const beforeSep = text.split('---')[0]
+              if (beforeSep.trim()) {
+                currentSection += beforeSep
+                pushSection(currentSection)
+                currentSection = ''
+              }
+              // 分隔后的新阶段文本
+              const afterSep = text.split('---').slice(1).join('---')
+              currentSection = afterSep
+            } else {
+              currentSection += text
+            }
+            // 自动滚动
             await nextTick()
             if (outputEl.value) outputEl.value.scrollTop = outputEl.value.scrollHeight
           } else if (e.type === 'error') {
-            output.value += `\n\n⚠ **错误**: ${e.text}\n`
+            currentSection += `\n\n⚠ **错误**: ${e.text}\n`
           }
         } catch { /* 忽略解析错误 */ }
       }
     }
+    // 推送最后一个 section
+    if (currentSection.trim()) {
+      pushSection(currentSection)
+    }
   } catch (e: any) {
-    output.value += `\n\n⚠ **请求失败**: ${e.message}\n`
+    pushSection(`\n\n⚠ **请求失败**: ${e.message}\n`)
   } finally {
     running.value = false
   }
@@ -99,30 +157,51 @@ async function startAnalyze() {
 .empty-hint {
   color: #9ca3af; text-align: center; padding: 60px 20px; font-size: 14px; line-height: 2;
 }
-.output-content {
-  max-width: 900px; margin: 0 auto; background: #fff; border-radius: 10px;
-  padding: 24px 32px; font-size: 14px; line-height: 1.8; color: #1f2937;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+
+/* 阶段卡片 */
+.stage-card {
+  max-width: 900px; margin: 0 auto 16px; background: #fff; border-radius: 10px;
+  overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  border-left: 4px solid #e5e7eb;
 }
-.output-content :deep(h1),
-.output-content :deep(h2) {
-  border-bottom: 2px solid #e5e7eb; padding-bottom: 6px; margin: 20px 0 12px;
+.stage-card.stage-init { border-left-color: #6366f1; }
+.stage-card.stage-collect { border-left-color: #3b82f6; }
+.stage-card.stage-analyze { border-left-color: #10b981; }
+.stage-card.stage-review { border-left-color: #f59e0b; }
+.stage-card.stage-final { border-left-color: #8b5cf6; }
+.stage-card.stage-done { border-left-color: #6b7280; }
+.stage-card.stage-default { border-left-color: #e5e7eb; }
+
+.stage-header {
+  display: flex; align-items: center; gap: 8px; padding: 10px 16px;
+  font-size: 14px; font-weight: 600; color: #111827;
+  background: #f9fafb; border-bottom: 1px solid #f3f4f6;
 }
-.output-content :deep(h2) { font-size: 16px; color: #1e40af; }
-.output-content :deep(h3) { font-size: 14px; color: #374151; margin: 14px 0 8px; }
-.output-content :deep(table) { border-collapse: collapse; width: 100%; font-size: 13px; margin: 10px 0; }
-.output-content :deep(th), .output-content :deep(td) {
-  border: 1px solid #e5e7eb; padding: 6px 10px; text-align: left;
+.stage-icon { font-size: 18px; }
+.stage-title { font-size: 13px; }
+
+.stage-body {
+  padding: 16px 20px; font-size: 14px; line-height: 1.8; color: #1f2937;
 }
-.output-content :deep(th) { background: #f9fafb; font-weight: 600; }
-.output-content :deep(code) {
+.stage-body :deep(h1),
+.stage-body :deep(h2) {
+  border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; margin: 16px 0 8px;
+}
+.stage-body :deep(h2) { font-size: 15px; color: #1e40af; }
+.stage-body :deep(h3) { font-size: 14px; color: #374151; margin: 12px 0 6px; }
+.stage-body :deep(table) { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0; }
+.stage-body :deep(th), .stage-body :deep(td) {
+  border: 1px solid #e5e7eb; padding: 5px 8px; text-align: left;
+}
+.stage-body :deep(th) { background: #f9fafb; font-weight: 600; }
+.stage-body :deep(code) {
   background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 13px;
 }
-.output-content :deep(pre) {
+.stage-body :deep(pre) {
   background: #1e293b; color: #e2e8f0; padding: 12px 16px; border-radius: 8px;
   overflow-x: auto; font-size: 13px;
 }
-.output-content :deep(pre code) { background: none; color: inherit; }
-.output-content :deep(strong) { color: #111827; }
-.output-content :deep(hr) { border: none; border-top: 2px solid #e5e7eb; margin: 20px 0; }
+.stage-body :deep(pre code) { background: none; color: inherit; }
+.stage-body :deep(strong) { color: #111827; }
+.stage-body :deep(hr) { border: none; border-top: 1px solid #e5e7eb; margin: 16px 0; }
 </style>
