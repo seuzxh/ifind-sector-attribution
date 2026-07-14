@@ -203,6 +203,59 @@ class IFindClient:
         }
         return self._post(url, payload)
 
+    # ========== 接口6: 实时行情快照 ==========
+    def get_realtime_quotation(
+        self,
+        codes: List[str],
+        indicators: str = "changeRatio,open,latest,riseCount,fallCount,upLimitCount"
+    ) -> dict:
+        """
+        获取实时行情快照（THS_RQ）。盘中返回实时值，收盘后返回当日收盘值。
+        :param codes: 股票/指数代码列表
+        :param indicators: 指标列表，逗号分隔。常用：
+            latest(最新价) / changeRatio(涨跌幅%) / change(涨跌) / open / preClose /
+            high / low / swing(振幅%) / amount(成交额) / volume(成交量) /
+            riseCount(上涨家数) / fallCount(下跌家数) / upLimitCount(涨停家数) /
+            tradeTime / tradeDate
+        :return: API 原始响应（tables[].table 里每个指标是单值数组 [v]）
+        """
+        url = f"{self.base_url_quant}/real_time_quotation"
+        codes_str = ",".join(codes)
+        payload = {
+            "codes": codes_str,
+            "indicators": indicators,
+        }
+        return self._post(url, payload)
+
+    def batch_get_realtime_quotation(
+        self,
+        codes: List[str],
+        indicators: str = "changeRatio,open,latest,riseCount,fallCount,upLimitCount",
+        batch_size: int = 100,
+    ) -> Dict[str, Dict[str, float]]:
+        """
+        批量获取实时行情（自动分批），返回解析后的 {code: {indicator: value}}。
+        :return: {code: {"changeRatio": float, "open": float, ...}}（无数据的代码不在结果中）
+        """
+        result: Dict[str, Dict[str, float]] = {}
+        for i in range(0, len(codes), batch_size):
+            batch = codes[i:i + batch_size]
+            resp = self.get_realtime_quotation(batch, indicators=indicators)
+            if resp.get("errorcode") not in (0, None):
+                continue
+            for item in resp.get("tables", []):
+                cc = item.get("thscode", "")
+                tbl = item.get("table", {})
+                row: Dict[str, float] = {}
+                for k, v in tbl.items():
+                    if isinstance(v, list) and v:
+                        row[k] = v[0]
+                    elif v is not None:
+                        row[k] = v
+                if row:
+                    result[cc] = row
+        return result
+
     # ========== 接口5: 概念基本信息（字典初始化） ==========
     def get_concept_basic_info(self, concept_codes: List[str]) -> dict:
         """

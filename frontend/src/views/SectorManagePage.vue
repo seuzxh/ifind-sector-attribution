@@ -46,7 +46,9 @@
           <col class="w-name" />
           <col class="w-num" />
           <col class="w-num" />
-          <col class="w-num" />
+          <col class="w-num-sm" />
+          <col class="w-num-sm" />
+          <col class="w-num-sm" />
           <col class="w-num" />
           <col class="w-num" />
           <col class="w-level" />
@@ -61,9 +63,11 @@
             <th class="col-name" @click="sortBy('concept_name')">名称<span class="arrow">{{ sortArrow('concept_name') }}</span></th>
             <th class="col-num" @click="sortBy('change_ratio')">涨幅<span class="arrow">{{ sortArrow('change_ratio') }}</span></th>
             <th class="col-num" @click="sortBy('body')">实体<span class="arrow">{{ sortArrow('body') }}</span></th>
+            <th class="col-num" @click="sortBy('rise_count')">涨<span class="arrow">{{ sortArrow('rise_count') }}</span></th>
+            <th class="col-num" @click="sortBy('fall_count')">跌<span class="arrow">{{ sortArrow('fall_count') }}</span></th>
+            <th class="col-num" @click="sortBy('limit_up_count')">涨停<span class="arrow">{{ sortArrow('limit_up_count') }}</span></th>
             <th class="col-num" @click="sortBy('return_3d')">3日<span class="arrow">{{ sortArrow('return_3d') }}</span></th>
             <th class="col-num" @click="sortBy('return_5d')">5日<span class="arrow">{{ sortArrow('return_5d') }}</span></th>
-            <th class="col-num" @click="sortBy('member_count')">成分股<span class="arrow">{{ sortArrow('member_count') }}</span></th>
             <th class="col-level">层级</th>
           </tr>
         </thead>
@@ -76,9 +80,11 @@
             <td class="col-name" :title="s.concept_name">{{ s.concept_name }}</td>
             <td class="col-num" :class="changeCls(s.change_ratio)">{{ fmt(s.change_ratio) }}%</td>
             <td class="col-num" :class="changeCls(s.body)">{{ fmt(s.body) }}%</td>
+            <td class="col-num up">{{ s.rise_count ?? '-' }}</td>
+            <td class="col-num down">{{ s.fall_count ?? '-' }}</td>
+            <td class="col-num up">{{ s.limit_up_count ?? '-' }}</td>
             <td class="col-num" :class="changeCls(s.return_3d)">{{ fmt(s.return_3d) }}%</td>
             <td class="col-num" :class="changeCls(s.return_5d)">{{ fmt(s.return_5d) }}%</td>
-            <td class="col-num">{{ s.member_count }}</td>
             <td class="col-level"><span class="level-tag" :class="s.level === '三级行业' ? 'tag-industry' : 'tag-concept'">{{ s.level }}</span></td>
           </tr>
         </tbody>
@@ -189,6 +195,42 @@ async function loadList() {
   }
 }
 
+// ===== 行情刷新（仅更新行情数据，保留本地 watched 勾选状态）=====
+let quoteTimer: ReturnType<typeof setInterval> | null = null
+
+async function refreshQuotes() {
+  try {
+    const data = await getSectorManageList()
+    if (data.error || !data.sectors) return
+    // 以 concept_code 为键，只更新行情字段，保留本地 watched
+    const map = new Map(data.sectors.map(s => [s.concept_code, s]))
+    for (const row of allSectors.value) {
+      const fresh = map.get(row.concept_code)
+      if (!fresh) continue
+      row.change_ratio = fresh.change_ratio
+      row.body = fresh.body
+      row.rise_count = fresh.rise_count
+      row.fall_count = fresh.fall_count
+      row.limit_up_count = fresh.limit_up_count
+      row.return_3d = fresh.return_3d
+      row.return_5d = fresh.return_5d
+      // watched 不覆盖（保留本地未保存的勾选改动）
+    }
+    const now = new Date()
+    const hh = String(now.getHours()).padStart(2, '0')
+    const mm = String(now.getMinutes()).padStart(2, '0')
+    statusText.value = `🔄 ${hh}:${mm} 行情已刷新 · 已监控 ${selectedCount.value} 个`; statusCls.value = 'live'
+  } catch { /* 轮询失败静默，下次重试 */ }
+}
+
+function startQuotePolling() {
+  if (quoteTimer) return
+  quoteTimer = setInterval(refreshQuotes, 60000)  // 1 分钟
+}
+function stopQuotePolling() {
+  if (quoteTimer) { clearInterval(quoteTimer); quoteTimer = null }
+}
+
 // ===== 保存 =====
 async function onSave() {
   if (saving.value || dirty.value === 0) return
@@ -262,9 +304,13 @@ onMounted(async () => {
     if (st.running) { refreshing.value = true; startPollingRefresh() }
   } catch { /* 忽略 */ }
   await loadList()
+  startQuotePolling()   // 停留页面时每分钟刷新实时行情
 })
 
-onUnmounted(stopPollingRefresh)
+onUnmounted(() => {
+  stopPollingRefresh()
+  stopQuotePolling()
+})
 </script>
 
 <style scoped>
@@ -328,6 +374,7 @@ onUnmounted(stopPollingRefresh)
 .w-code { width: 116px; }
 .w-name { width: auto; }
 .w-num { width: 92px; }
+.w-num-sm { width: 64px; }
 .w-level { width: 96px; }
 
 .sector-table th, .sector-table td {

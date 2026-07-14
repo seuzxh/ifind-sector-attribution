@@ -6,8 +6,11 @@ export interface SectorCandidate {
   concept_code: string
   concept_name: string
   level: string          // "三级行业" | "概念板块" | "其他"
-  change_ratio: number | null   // 当日涨幅 %
+  change_ratio: number | null   // 当日涨跌幅 %
   body: number | null           // 实体涨幅 %
+  rise_count: number | null     // 上涨家数
+  fall_count: number | null     // 下跌家数
+  limit_up_count: number | null // 涨停家数
   return_3d: number | null      // 3日累计涨幅 %
   return_5d: number | null      // 5日累计涨幅 %
   member_count: number          // 成分股数
