@@ -403,10 +403,11 @@ class RotationAgent(OpenAICompatibleAgent):
                 kline_data[code] = data
                 done += 1
                 # 每完成 50 只 或 全部完成时 yield 进度（避免 SSE 事件过密）
+                # 用 [PROGRESS] 前缀让前端识别为"进度覆盖更新"（单独进度卡片，实时刷新）
                 if done - last_progress_at >= 50 or done == total:
                     last_progress_at = done
                     pct = done * 100 // total
-                    yield f"\r📊 拉取行情 {done}/{total}（{pct}%）"
+                    yield f"[PROGRESS]collect|{done}|{total}|{pct}"
 
         # 拉指数
         yield "\n📈 拉取指数基准..."

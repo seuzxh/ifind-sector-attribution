@@ -17,6 +17,14 @@
         <b>预计耗时</b>：1-2 分钟（全程流式展示思考过程）
       </div>
 
+      <!-- 实时进度条（拉取行情时覆盖式更新） -->
+      <div v-if="progress.visible" class="progress-card">
+        <div class="progress-label">{{ progress.label }} {{ progress.done }}/{{ progress.total }}（{{ progress.pct }}%）</div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" :style="{ width: progress.pct + '%' }"></div>
+        </div>
+      </div>
+
       <!-- 按阶段分卡片展示 -->
       <div v-for="(sec, i) in sections" :key="i" class="stage-card" :class="sec.cls">
         <div class="stage-header">
@@ -36,6 +44,10 @@ import { renderMarkdown } from '@/utils/markdown'
 const running = ref(false)
 const outputEl = ref<HTMLElement | null>(null)
 const sections = ref<{title: string; icon: string; cls: string; html: string}[]>([])
+// 进度状态（实时覆盖更新，独立于 sections 卡片）
+const progress = ref<{visible: boolean; label: string; done: number; total: number; pct: number}>({
+  visible: false, label: '', done: 0, total: 0, pct: 0,
+})
 
 // 把 SSE 累积的文本按 "---" 分隔成阶段卡片
 function pushSection(text: string) {
@@ -101,12 +113,27 @@ async function startAnalyze() {
           const e = JSON.parse(dataLine.slice(5).trim())
           if (e.type === 'delta') {
             const text = e.text || ''
+            // 进度标记：[PROGRESS]key|done|total|pct → 实时更新进度条（覆盖式，不入 sections）
+            const progMatch = text.match(/^\[PROGRESS\](\w+)\|(\d+)\|(\d+)\|(\d+)/)
+            if (progMatch) {
+              const [, key, done, total, pct] = progMatch
+              progress.value = {
+                visible: true,
+                label: key === 'collect' ? '📡 拉取行情' : '处理中',
+                done: parseInt(done), total: parseInt(total), pct: parseInt(pct),
+              }
+              await nextTick()
+              if (outputEl.value) outputEl.value.scrollTop = outputEl.value.scrollHeight
+              continue  // 不走下方的 section 累加
+            }
             // "---" 作为阶段分隔符（只匹配独立行的 ---）
             const isStageSep = /^---\s*$/m.test(text.trim()) || text.startsWith('---\n')
             // "**批次" 作为子卡片分隔（并发批次各成小卡片）
             const isBatchSep = text.trim().startsWith('**批次')
 
             if (isStageSep) {
+              // 进入新阶段，隐藏进度条
+              progress.value.visible = false
               const parts = text.split(/^---$/m)
               if (parts[0].trim()) {
                 currentSection += parts[0]
@@ -188,6 +215,11 @@ async function startAnalyze() {
 .stage-card.stage-final { border-left-color: #8b5cf6; }
 .stage-card.stage-done { border-left-color: #6b7280; }
 .stage-card.stage-default { border-left-color: #e5e7eb; }
+/* 实时进度条 */
+.progress-card { margin: 12px 16px; padding: 12px 16px; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.progress-label { font-size: 13px; font-weight: 600; color: #1e40af; margin-bottom: 6px; }
+.progress-bar-bg { height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; }
+.progress-bar-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #06b6d4); border-radius: 5px; transition: width 0.3s ease; }
 
 .stage-header {
   display: flex; align-items: center; gap: 8px; padding: 10px 16px;
