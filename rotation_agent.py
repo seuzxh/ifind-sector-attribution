@@ -285,12 +285,12 @@ class RotationAgent(OpenAICompatibleAgent):
         except Exception as e:
             return f"[工具调用失败 {full_name}: {e}]"
 
-    def _llm_call(self, messages: list, use_tools: bool = True) -> dict:
-        """单次 LLM 调用（非流式），返回 choice.message。"""
+    def _llm_call(self, messages: list, use_tools: bool = True, model: str = None) -> dict:
+        """单次 LLM 调用（非流式），返回 choice.message。model 留空用主模型。"""
         chat_url = f"{self.base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         body = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "stream": False,
             "temperature": 0.3,
@@ -304,14 +304,58 @@ class RotationAgent(OpenAICompatibleAgent):
         data = r.json()
         return (data.get("choices") or [{}])[0].get("message", {})
 
-    def _batch_collect(self) -> dict:
+    @property
+    def batch_model(self) -> str:
+        """批量分析用的轻量模型（轮动分析阶段2批次用），留空则同主模型。"""
+        m = getattr(config, "LLM_MODEL_BATCH", "") or ""
+        return m if m else self.model
+
+    def _llm_call_stream(self, messages: list, model: str = None,
+                         use_tools: bool = False) -> Generator[str, None, None]:
         """
-        后端批量采集数据（多线程，约3-5秒），返回结构化数据供分批 LLM 分析。
-        :return: {
-            "group_stats": [{name, members, valid, up_count, up_pct, avg_5d, avg_last, vol_ratio, vs_index, top_stocks}],
-            "index": {"sh_5d": X, "sh_last": X, "cyb_5d": X, "cyb_last": X, "avg_5d": X, "avg_last": X},
-            "summary_text": str  # 完整文本（阶段1展示用）
+        流式 LLM 调用，逐 token yield（真流式，首 token 1-3s 即开始输出）。
+
+        :param model: 指定模型（默认 self.model）；批次分析传 self.batch_model
+        :param use_tools: 是否带工具（流式 + 工具较复杂，轮动分析不用）
+        :yield: 每个 token 片段（str）
+        """
+        chat_url = f"{self.base_url}/chat/completions"
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        body = {
+            "model": model or self.model,
+            "messages": messages,
+            "stream": True,
+            "temperature": 0.3,
         }
+        try:
+            r = requests.post(chat_url, headers=headers, json=body, timeout=300, stream=True)
+        except Exception as e:
+            yield f"[LLM 流式请求失败: {e}]"
+            return
+        if r.status_code != 200:
+            yield f"[LLM 返回 {r.status_code}: {r.text[:200]}]"
+            return
+        # 解析 SSE：每行 data: {...}，提取 choices[0].delta.content；[DONE] 结束
+        for line in r.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            if line.startswith("data: "):
+                payload = line[6:]
+                if payload.strip() == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(payload)
+                    delta = (obj.get("choices") or [{}])[0].get("delta", {})
+                    content = delta.get("content")
+                    if content:
+                        yield content
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+    def _collect_klines_stream(self):
+        """
+        流式数据采集：读 DB 筛选有效分组 → 流式拉 K线+指数（边拉边 yield 进度）→ 汇总。
+        yield 内容：进度文字（str）或 末尾数据（dict，含 __done__=True 标记）。
         """
         from database import Database
         from kline_fetcher import KLineFetcher
@@ -338,8 +382,9 @@ class RotationAgent(OpenAICompatibleAgent):
 
         print(f"[ROTATION] 有效分组 {len(valid_groups)} 个，总股票 {len(all_codes)} 只")
 
-        # 多线程拉日K线（每线程独立实例）
+        total = len(all_codes)
         kline_data = {}
+
         def _fetch_one(code):
             pure = code.split(".")[0] if "." in code else code
             try:
@@ -348,16 +393,27 @@ class RotationAgent(OpenAICompatibleAgent):
             except Exception:
                 return code, []
 
+        yield f"📡 开始拉取 **{total}** 只股票行情（32 线程并发）...\n\n"
+        done = 0
+        last_progress_at = 0
         with ThreadPoolExecutor(max_workers=32) as ex:
             futs = {ex.submit(_fetch_one, c): c for c in all_codes}
             for fu in as_completed(futs):
                 code, data = fu.result()
                 kline_data[code] = data
+                done += 1
+                # 每完成 50 只 或 全部完成时 yield 进度（避免 SSE 事件过密）
+                if done - last_progress_at >= 50 or done == total:
+                    last_progress_at = done
+                    pct = done * 100 // total
+                    yield f"\r📊 拉取行情 {done}/{total}（{pct}%）"
 
         # 拉指数
+        yield "\n📈 拉取指数基准..."
         idx_fetcher = KLineFetcher()
         idx_sh = idx_fetcher.fetch_day_kline("000001", count=-5) or []
         idx_cyb = idx_fetcher.fetch_day_kline("399006", count=-5) or []
+        yield " ✅\n\n"
 
         sh_chg5 = (idx_sh[-1]["close"] / idx_sh[0]["close"] - 1) * 100 if idx_sh else 0
         sh_last = (idx_sh[-1]["close"] / idx_sh[-2]["close"] - 1) * 100 if len(idx_sh) >= 2 else 0
@@ -424,7 +480,9 @@ class RotationAgent(OpenAICompatibleAgent):
             top_str = ", ".join(f"{c.split('.')[0]}({v:+.1f}%)" for c, v in g["top_stocks"])
             lines.append(f"   - 领涨: {top_str}\n")
 
-        return {"group_stats": group_stats, "index_data": index_data, "summary_text": "\n".join(lines)}
+        # 末尾 yield 完整数据（用 __done__ 标记区分进度文字）
+        yield {"__done__": True, "group_stats": group_stats,
+               "index_data": index_data, "summary_text": "\n".join(lines)}
 
     @staticmethod
     def _format_group_text(g: dict, idx_data: dict) -> str:
@@ -448,13 +506,19 @@ class RotationAgent(OpenAICompatibleAgent):
         try:
             import time as _t
             _t0 = _t.time()
-            collected = self._batch_collect()
+            # 流式采集：边拉边 yield 进度，末尾拿到汇总数据
+            collected = None
+            for chunk in self._collect_klines_stream():
+                if isinstance(chunk, dict) and chunk.get("__done__"):
+                    collected = chunk
+                else:
+                    yield chunk  # 进度文字
             _dt = _t.time() - _t0
 
             group_stats = collected["group_stats"]
             idx = collected["index_data"]
             group_count = len(group_stats)
-            yield f"✅ 采集完成：**{group_count}** 个概念题材分组，耗时 **{_dt:.1f}s**\n\n"
+            yield f"\n✅ 采集完成：**{group_count}** 个概念题材分组，耗时 **{_dt:.1f}s**\n\n"
             yield f"**大盘基准**：上证 5日{idx['sh_5d']:+.1f}%/{idx['sh_last']:+.1f}%，创业板 5日{idx['cyb_5d']:+.1f}%/{idx['cyb_last']:+.1f}%\n\n"
             yield "**当日涨幅 Top 10 分组：**\n\n"
             yield "| # | 分组 | 5日均涨 | 最新日 | 上涨占比 | 量比 | vs指数 |\n"
@@ -492,7 +556,7 @@ class RotationAgent(OpenAICompatibleAgent):
             batches.append(groups_to_analyze[bi:bi + BATCH_SIZE])
         total_batches = len(batches)
 
-        yield f"🚀 并发分析 **{total_batches}** 批（每批{BATCH_SIZE}组，{LLM_CONCURRENCY}路并发）...\n\n"
+        yield f"🚀 并发分析 **{total_batches}** 批（每批{BATCH_SIZE}组，{LLM_CONCURRENCY}路并发，模型 `{self.batch_model}`）...\n\n"
 
         # 并发调 LLM
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -505,7 +569,8 @@ class RotationAgent(OpenAICompatibleAgent):
                 {"role": "system", "content": batch_prompt.replace("{batch_num}", str(batch_num))},
                 {"role": "user", "content": f"分析以下{batch_num}个分组：\n\n{batch_text}"},
             ]
-            msg = self._llm_call(msgs, use_tools=False)
+            # 批次分析用 lite 模型（结构化任务，快 2-3 倍）
+            msg = self._llm_call(msgs, use_tools=False, model=self.batch_model)
             return batch_idx, batch_num, msg.get("content") or "(分析为空)"
 
         batch_t0 = _t2.time()
@@ -524,8 +589,8 @@ class RotationAgent(OpenAICompatibleAgent):
         batch_dt = _t2.time() - batch_t0
         yield f"\n⚡ 全部批次完成，耗时 **{batch_dt:.0f}s**\n\n"
 
-        # 汇总所有批次 → LLM 出 Top 5 排名
-        yield "---\n📊 **阶段2.5：综合排名**\n\n"
+        # 汇总所有批次 → LLM 流式出 Top 5 排名（pro 模型，真流式）
+        yield "---\n📊 **阶段3：综合排名（流式）**\n\n"
         all_analysis = "\n\n---\n\n".join(batch_results)
         rank_prompt = (
             "基于以上对所有分组的情绪周期分析，给出**明日强势板块排名（Top 5）**。\n\n"
@@ -540,41 +605,33 @@ class RotationAgent(OpenAICompatibleAgent):
             {"role": "system", "content": rank_prompt},
             {"role": "user", "content": all_analysis},
         ]
-        msg_rank = self._llm_call(msgs_rank, use_tools=False)
-        analysis = msg_rank.get("content") or "(排名为空)"
-        yield from _stream_text(analysis)
+        # 真流式：逐 token yield（首 token 1-3s 即开始输出）
+        rank_chunks = []
+        for tok in self._llm_call_stream(msgs_rank, model=self.model):
+            yield tok
+            rank_chunks.append(tok)
+        analysis = "".join(rank_chunks) or "(排名为空)"
         yield "\n\n"
 
-        # ========== 阶段3：对抗审查（精简，限 300 字）==========
-        yield "---\n⚔ **阶段3：对抗审查**\n\n"
-        stage3_system = (
-            "你是严格的投资审查者。请对以下板块排名做对抗性审查。\n"
-            "只指出关键问题（过拟合/系统性风险/追高/数据局限）和修正建议。\n"
-            "简洁有力，不超过 300 字。不要废话。"
-        )
-        messages3 = [
-            {"role": "system", "content": stage3_system},
-            {"role": "user", "content": f"板块轮动分析：\n\n{analysis}"},
-        ]
-        msg3 = self._llm_call(messages3, use_tools=False)
-        critique = msg3.get("content") or "(审查为空)"
-        yield from _stream_text(critique)
-        yield "\n\n"
-
-        # ========== 阶段4：综合结论 ==========
-        yield "---\n✅ **阶段4：综合结论**\n\n"
-        stage4_system = (
-            "综合分析排名和审查意见，给出最终明日操作建议。\n"
+        # ========== 阶段4：对抗审查 + 综合结论（合并为一次流式调用，省一轮 LLM）==========
+        yield "---\n⚔✅ **阶段4：对抗审查 + 综合结论（流式）**\n\n"
+        merge_system = (
+            "你是严格的投资审查者兼综合分析师。请基于以下板块排名，依次输出两部分：\n\n"
+            "## 第一部分：对抗审查\n"
+            "指出关键问题（过拟合/系统性风险/追高/数据局限）和修正建议。\n"
+            "简洁有力，不超过 300 字。\n\n"
+            "## 第二部分：综合结论\n"
+            "综合排名和审查，给出最终明日操作建议。\n"
             "格式：最终排名（板块名+推荐度+一句话理由）+ 操作策略 + 风险控制。\n"
-            "不超过 200 字。直接输出，不要解释。"
+            "不超过 200 字。直接输出，不要解释。\n\n"
+            "用 Markdown，两部分都必输出。"
         )
-        messages4 = [
-            {"role": "system", "content": stage4_system},
-            {"role": "user", "content": f"分析师结论：\n{analysis}\n\n审查意见：\n{critique}"},
+        messages_merge = [
+            {"role": "system", "content": merge_system},
+            {"role": "user", "content": f"板块轮动分析排名：\n\n{analysis}"},
         ]
-        msg4 = self._llm_call(messages4, use_tools=False)
-        conclusion = msg4.get("content") or "(结论为空)"
-        yield from _stream_text(conclusion)
+        for tok in self._llm_call_stream(messages_merge, model=self.model):
+            yield tok
         yield "\n\n---\n🏁 **分析完成**"
 
 

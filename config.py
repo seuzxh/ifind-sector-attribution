@@ -35,6 +35,8 @@ IFIND_MCP_TOKEN = os.environ.get("IFIND_MCP_TOKEN", "")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3")
 LLM_MODEL = os.environ.get("LLM_MODEL", "doubao-seed-2.0-pro")
+# 批量分析用的轻量模型（轮动分析批次分析用，留空则同 LLM_MODEL）
+LLM_MODEL_BATCH = os.environ.get("LLM_MODEL_BATCH", "")
 
 # 本地配置文件覆盖（config_local.py 已加入 .gitignore）
 try:
