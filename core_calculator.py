@@ -191,27 +191,25 @@ def calc_period_return_df(db, calc_date: str, days: int) -> pd.DataFrame:
     累计涨幅 = (期末 close - 期初 preClose) / 期初 preClose * 100
     期初取窗口起点（往前 days*2 自然日以覆盖 days 个交易日）的首个 preClose。
 
-    模块级函数（从 calc_multi_period_score 闭包提取），供 prescreen 等复用。
+    模块级函数（从 calc_multi_period_score 闭包提取）。
 
-    盘前场景兼容：若 calc_date 当天尚无日K（盘前未收盘），自动回退到窗口内
-    最新的实际交易日作为期末价，并打印 warning。daily 盘后场景 calc_date 当天
-    一定有数据，回退不会触发，行为不变。
+    若 calc_date 当天尚无日K，自动回退到窗口内最新的实际交易日作为期末价。
 
     :param db: Database 实例
     :param calc_date: 计算日期，YYYYMMDD 或 YYYY-MM-DD
     :param days: 交易日数（如 5 表示 5 日累计涨幅）
     :return: DataFrame [code, trade_date, change_ratio, close]，change_ratio 为累计涨幅 %；
-             trade_date 为实际使用的期末交易日（盘前回退时 ≠ calc_date）。无数据返回空 DataFrame。
+             trade_date 为实际使用的期末交易日。无数据返回空 DataFrame。
     """
     date_str = calc_date.replace("-", "")
 
-    # 期末交易日：优先 calc_date 当天；当天无数据（盘前场景）则回退到 <= calc_date 的最新交易日。
+    # 期末交易日：优先 calc_date 当天；当天无数据则回退到 <= calc_date 的最新交易日。
     # 窗口起点必须基于"实际 end_date"计算，否则回退后的窗口与直接调用该 end_date 不一致。
     end_date = db.get_latest_trade_date(on_or_before=date_str)
     if not end_date:
         return pd.DataFrame()
     if end_date != date_str:
-        print(f"[CALC] {date_str} 当天无日K，回退到最近交易日 {end_date} 作为期末价（盘前筛选模式）")
+        print(f"[CALC] {date_str} 当天无日K，回退到最近交易日 {end_date} 作为期末价")
 
     end_obj = datetime.strptime(end_date, "%Y%m%d")
     start = (end_obj - timedelta(days=days * 2)).strftime("%Y%m%d")
@@ -259,7 +257,7 @@ def calc_multi_period_score(
     date_str = calc_date.replace("-", "")
     date_obj = datetime.strptime(date_str, "%Y%m%d")
 
-    # 复用模块级函数（原为闭包，提取后供 prescreen 等复用）
+    # 复用模块级函数
     def _period_return_df(days: int) -> pd.DataFrame:
         return calc_period_return_df(db, calc_date, days)
 

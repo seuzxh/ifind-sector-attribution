@@ -45,12 +45,6 @@ class PortfolioAttributionRequest(BaseModel):
     date: Optional[str] = None
 
 
-class PrescreenRequest(BaseModel):
-    date: Optional[str] = None
-    top_sector: Optional[int] = None
-    top_stock: Optional[int] = None
-
-
 class WatchedSaveRequest(BaseModel):
     """保存监控板块勾选清单（全量覆盖）。"""
     concept_codes: List[str]
@@ -174,28 +168,23 @@ def get_realtime_dashboard(
     trade_date: str = None,
     snapshot_time: str = None,
     top_n: int = 10,
-    watchlist_mode: bool = True,
-    watchlist_date: str = None,
 ):
     """
     实时看板（分时数据版）：拉取分时序列，按 snapshot_time 切片算板块强度 + 成分股排名。
 
-    分时序列在引擎内按 (日期, 模式) 缓存，TTL 内不重拉网络（watchlist ~1.5s 拉取，TTL 5s）。
+    股票范围取「监控板块管理」勾选板块的全部去重成分股。
+    分时序列在引擎内按日期和模式缓存，TTL 内不重拉网络。
     snapshot_time 切片纯内存（毫秒级），用于时间条拖动回看历史时刻。
 
     :param trade_date: 交易日 YYYYMMDD，默认今天（当日实时）；传历史日期则拉该日全天分时
     :param snapshot_time: 截止时刻 HH:MM（如 "09:50"），None 或 "latest" = 最新时刻
     :param top_n: 返回前/后 N 个板块
-    :param watchlist_mode: 聚焦 watchlist（默认 True，约 279 只股票 1.5s 拉取）
-    :param watchlist_date: watchlist 日期，默认最近一次
     """
     from realtime_engine import get_realtime_dashboard as _fetch
     return _fetch(
         trade_date=trade_date,
         snapshot_time=snapshot_time,
         top_n=top_n,
-        watchlist_mode=watchlist_mode,
-        watchlist_date=watchlist_date,
     )
 
 
@@ -270,10 +259,10 @@ def get_custom_scan(query: str):
 def get_market_scan(query: str):
     """
     全市场强势股概念板块归类：用 iFinD MCP search_stocks 自然语言选股，
-    把选出的股票按 884 概念板块归类统计。
+    把选出的股票按「监控板块管理」当前勾选板块归类统计。
 
     与 /api/custom/scan 的差异：命中股来自 MCP 选股（收盘数据），归类维度是
-    884 概念板块，不依赖分时序列。选股约 4.5s，归类纯内存。
+    管理页勾选概念板块，不依赖分时序列。选股约 4.5s，归类纯内存。
 
     :param query: 自然语言选股条件（如 "涨幅大于7%并且小于12.1%；未涨停；非ST"）
     """
@@ -316,6 +305,11 @@ def custom_check_reload():
     try:
         from realtime_engine import clear_cache
         clear_cache()
+    except Exception:
+        pass
+    try:
+        from auction_engine import clear_cache as clear_auction_cache
+        clear_auction_cache()
     except Exception:
         pass
     return {"reloaded": True, "reason": "JSON 变更，已全量重导", **result}
@@ -375,55 +369,13 @@ def get_session_status():
     }
 
 
-@app.post("/api/prescreen")
-def trigger_prescreen(req: PrescreenRequest):
-    """
-    触发盘前筛选（页面按钮用）：5日涨幅选板块+成分股，存入 watchlist。
-    """
-    from prescreen import run_prescreen
-    date = req.date or datetime.now().strftime("%Y%m%d")
-    result = run_prescreen(
-        db, date,
-        top_sector=req.top_sector,
-        top_stock=req.top_stock,
-    )
-    return result
-
-
-@app.get("/api/watchlist")
-def get_watchlist(date: str = None):
-    """
-    读取 watchlist（盘前筛选结果）。
-    :param date: 日期，默认最近一次
-    """
-    date = date or db.get_latest_watchlist_date()
-    if not date:
-        return {"error": "无 watchlist 数据，请先盘前筛选", "date": None}
-    rows = db.get_watchlist(date)
-    # 按板块分组组装
-    sectors = {}
-    for r in rows:
-        cc = r["concept_code"]
-        if cc not in sectors:
-            sectors[cc] = {
-                "concept_code": cc,
-                "concept_name": r["concept_name"],
-                "sector_5d_return": r["sector_5d_return"],
-                "rank_sector": r["rank_sector"],
-                "stocks": [],
-            }
-        sectors[cc]["stocks"].append({
-            "stock_code": r["stock_code"],
-            "stock_name": r["stock_name"],
-            "stock_5d_return": r["stock_5d_return"],
-            "rank_stock": r["rank_stock"],
-        })
-    sector_list = sorted(sectors.values(), key=lambda x: x["rank_sector"])
-    return {"date": date, "sector_count": len(sector_list), "sectors": sector_list}
-
-
 @app.get("/api/history/dashboard")
-def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
+def get_history_dashboard(
+    date: str,
+    top_n: int = 10,
+    force_calc: bool = False,
+    scope: str = "sector",
+):
     """
     历史看板：读取已入库的收盘数据（concept_strength + daily_kline）。
     成分股排名按当日涨幅（历史模式无1min，降级为纯涨幅）。
@@ -431,13 +383,29 @@ def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
     :param date: 历史日期 YYYYMMDD
     :param top_n: 返回前 N 个板块
     :param force_calc: 无数据时是否自动拉取并计算（耗时约2分钟）
+    :param scope: sector=当前勾选监控板块；custom=自选分组
     """
     import sqlite3
 
-    # 板块强度（读 concept_strength）
-    rankings = db.get_sector_rankings(date, top_n=999)  # 取全部再切片
-    if not rankings:
-        # force_calc：按需拉取 K 线 + 计算
+    if scope not in ("sector", "custom"):
+        return {"error": f"不支持的历史范围：{scope}", "date": date}
+
+    watched_codes = set(db.get_watched_concept_codes())
+    rankings = []
+    if scope == "sector":
+        # 历史表可能含旧监控范围，读取时必须再次按当前勾选集收口。
+        rankings = [
+            r for r in db.get_sector_rankings(date, top_n=999)
+            if r["concept_code"] in watched_codes
+        ]
+
+    daily_data = db.get_daily_kline_by_date(date)
+    needs_history_data = (
+        (scope == "sector" and not rankings)
+        or (scope == "custom" and not daily_data)
+    )
+    if needs_history_data:
+        # force_calc：板块缺评分时重新计算；自选缺个股日K时按需拉取。
         if force_calc:
             from sync_pipeline import SyncPipeline
             # 校验日期格式
@@ -447,16 +415,24 @@ def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
                 return {"error": f"日期格式错误，需 YYYYMMDD：{date}", "date": date}
             try:
                 pipeline = SyncPipeline()
-                # 检查该日是否有 K 线（接口3 单日窗口在交易日能拿到数据）
-                # run_daily 会同步单日 K 线 + 算板块强度 + 归因
-                pipeline.sync_daily_kline(pipeline.db.get_all_member_stock_codes(), date, date)
-                pipeline.calc_daily_strength(date)
-                pipeline.calc_daily_attribution(date)
-                # 重新读取
-                rankings = db.get_sector_rankings(date, top_n=999)
+                if not daily_data:
+                    stock_codes = (
+                        pipeline.db.get_custom_all_stock_codes()
+                        if scope == "custom"
+                        else pipeline.db.get_all_member_stock_codes()
+                    )
+                    pipeline.sync_daily_kline(stock_codes, date, date)
+                if scope == "sector":
+                    pipeline.calc_daily_strength(date)
+                    pipeline.calc_daily_attribution(date)
+                    rankings = [
+                        r for r in db.get_sector_rankings(date, top_n=999)
+                        if r["concept_code"] in watched_codes
+                    ]
+                daily_data = db.get_daily_kline_by_date(date)
             except Exception as e:
                 return {"error": f"计算失败：{e}", "date": date}
-            if not rankings:
+            if (scope == "sector" and not rankings) or not daily_data:
                 return {"error": f"日期 {date} 可能非交易日或无行情数据", "date": date}
         else:
             return {"error": f"日期 {date} 无数据，可点击\"拉取并计算\"获取", "date": date, "can_calc": True}
@@ -469,12 +445,8 @@ def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
             concept_names[row["concept_code"]] = row["concept_name"]
 
     # 当日个股涨幅（成分股排名用）
-    daily_data = db.get_daily_kline_by_date(date)
     daily_df = pd.DataFrame(daily_data) if daily_data else pd.DataFrame()
     change_map = dict(zip(daily_df["code"], daily_df["change_ratio"])) if not daily_df.empty else {}
-
-    # 成分股映射
-    concept_codes = [r["concept_code"] for r in rankings]
 
     # 成分股名称映射
     stock_names = {}
@@ -488,13 +460,38 @@ def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
             if _row["stock_code"] not in stock_names:
                 stock_names[_row["stock_code"]] = _row["stock_name"]
 
+    if scope == "custom":
+        members_map = db.get_custom_members_map()
+        group_names = db.get_custom_group_names()
+        rankings = []
+        for gid, codes in members_map.items():
+            changes = [
+                float(change_map[c]) for c in codes
+                if c in change_map and not pd.isna(change_map[c])
+            ]
+            if not changes:
+                continue
+            rankings.append({
+                "concept_code": gid,
+                "concept_name": group_names.get(gid, gid),
+                "score_final": sum(changes) / len(changes),
+                "s1_return": sum(changes) / len(changes),
+                "s2_breadth": sum(1 for v in changes if v > 0) / len(changes),
+            })
+        rankings.sort(key=lambda r: r["score_final"], reverse=True)
+
+    def _group_members(group_code: str):
+        if scope == "custom":
+            return [{"stock_code": c} for c in db.get_custom_members_map().get(group_code, [])]
+        return db.get_concept_members(group_code)
+
     def _build_member_ranking(concept_code: str, limit: int = 10, reverse: bool = True):
         """
         历史模式：成分股按当日涨幅排序。
         :param reverse: True=降序(涨幅最大在前，给top板块)；False=升序(跌幅最深在前，给bottom板块)
         :return: (排序后的前 limit 只, 有当日涨幅数据的成分股总数)
         """
-        members = db.get_concept_members(concept_code)
+        members = _group_members(concept_code)
         member_changes = []
         for m in members:
             chg = change_map.get(m["stock_code"])
@@ -512,14 +509,24 @@ def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
         return member_changes[:limit], len(member_changes)
 
     # Top 板块（含成分股，涨幅最大前10）
-    top_rankings = rankings[:top_n]
+    main_rankings = rankings
+    zt_rankings = []
+    if scope == "custom":
+        zt_rankings = [
+            r for r in rankings if r["concept_name"].strip().upper().startswith("ZT")
+        ]
+        main_rankings = [
+            r for r in rankings if not r["concept_name"].strip().upper().startswith("ZT")
+        ]
+
+    top_rankings = main_rankings[:top_n]
     top_sectors = []
     for r in top_rankings:
         cc = r["concept_code"]
         top10, total_cnt = _build_member_ranking(cc, 10, reverse=True)
         top_sectors.append({
             "concept_code": cc,
-            "concept_name": concept_names.get(cc, cc),
+            "concept_name": r.get("concept_name") or concept_names.get(cc, cc),
             "score": r.get("score_final", r.get("score_1d", 0)),
             "s1_return": r.get("s1_return", 0),
             "s2_breadth": r.get("s2_breadth", 0),
@@ -528,14 +535,14 @@ def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
         })
 
     # Bottom 板块（含成分股，跌幅最深前10）
-    bottom_rankings = rankings[-top_n:][::-1]
+    bottom_rankings = main_rankings[-top_n:][::-1]
     bottom_sectors = []
     for r in bottom_rankings:
         cc = r["concept_code"]
         top10, total_cnt = _build_member_ranking(cc, 10, reverse=False)
         bottom_sectors.append({
             "concept_code": cc,
-            "concept_name": concept_names.get(cc, cc),
+            "concept_name": r.get("concept_name") or concept_names.get(cc, cc),
             "score": r.get("score_final", r.get("score_1d", 0)),
             "s1_return": r.get("s1_return", 0),
             "s2_breadth": r.get("s2_breadth", 0),
@@ -543,9 +550,30 @@ def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
             "members_top10": top10,
         })
 
-    # 市场统计
+    zt_sectors = []
+    for r in zt_rankings:
+        cc = r["concept_code"]
+        top10, total_cnt = _build_member_ranking(cc, 10, reverse=True)
+        zt_sectors.append({
+            "concept_code": cc,
+            "concept_name": r["concept_name"],
+            "score": r["score_final"],
+            "s1_return": r["s1_return"],
+            "s2_breadth": r["s2_breadth"],
+            "member_count": total_cnt,
+            "members_top10": top10,
+        })
+
+    # 统计口径与当前页面范围一致，而不是整张 daily_kline 表。
     if not daily_df.empty:
-        chg_series = daily_df["change_ratio"].dropna()
+        if scope == "custom":
+            scope_codes = set(db.get_custom_all_stock_codes())
+        else:
+            scope_codes = set()
+            for cc in watched_codes:
+                scope_codes.update(m["stock_code"] for m in db.get_concept_members(cc))
+        scoped_df = daily_df[daily_df["code"].isin(scope_codes)]
+        chg_series = scoped_df["change_ratio"].dropna()
 
         def _is_limit(code, chg):
             pure = code.split(".")[0]
@@ -562,7 +590,7 @@ def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
             "down_count": int((chg_series < 0).sum()),
             "flat_count": int((chg_series == 0).sum()),
             "limit_up_count": int(sum(
-                1 for code, chg in zip(daily_df["code"], daily_df["change_ratio"])
+                1 for code, chg in zip(scoped_df["code"], scoped_df["change_ratio"])
                 if pd.notna(chg) and _is_limit(code, chg)
             )),
         }
@@ -574,6 +602,8 @@ def get_history_dashboard(date: str, top_n: int = 10, force_calc: bool = False):
         "market_stats": market_stats,
         "top_sectors": top_sectors,
         "bottom_sectors": bottom_sectors,
+        "zt_sectors": zt_sectors,
+        "scope": scope,
     }
 
 
@@ -623,6 +653,8 @@ def sector_manage_save(req: WatchedSaveRequest):
     :return: {ok, saved_count}
     """
     db.save_watched_concepts(req.concept_codes)
+    from realtime_engine import clear_cache
+    clear_cache()
     return {"ok": True, "saved_count": len(req.concept_codes)}
 
 
@@ -712,5 +744,3 @@ def rotation_analyze():
             yield f"data: {json.dumps({'type': 'error', 'text': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-

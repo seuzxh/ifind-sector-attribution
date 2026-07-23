@@ -53,7 +53,6 @@ config (leaf)
 ├─ intraday_fetcher ← config, kline_fetcher(外部)
 ├─ llm_agent ← config, mcp_proxy
 ├─ trade_calendar ← config (+ lazy database/kline_fetcher)
-├─ prescreen ← database, core_calculator
 ├─ sync_pipeline ← ifind_client, database, core_calculator
 ├─ realtime_engine ← database, intraday_fetcher, core_calculator, stock_scorer
 ├─ auction_engine ← database, intraday_fetcher, stock_scorer
@@ -87,13 +86,11 @@ config (leaf)
 | 数据 | GET | `/api/concept/list` / `/members` | 概念板块 |
 | 数据 | POST | `/api/attribution/stock` / `/portfolio` | 归因 |
 | 数据 | GET | `/api/dates` | 已入库日期 |
-| 数据 | GET | `/api/watchlist` | 盘前筛选 |
 | 数据 | GET | `/api/realtime/sector` | 最新板块 |
 | 操作 | POST | `/api/realtime/clear_cache` | 清分时缓存 |
 | 操作 | POST | `/api/auction/clear_cache` | 清竞价缓存 |
 | 操作 | POST | `/api/custom/check_reload` | 自选分组重导 |
-| 操作 | POST | `/api/prescreen` | 盘前筛选 |
-| 管理 | GET/POST | `/api/sector_manage/*` | 监控范围、后台刷新及状态 |
+| 管理 | GET/POST | `/api/sector_manage/*` | 监控范围、后台刷新及状态；保存后清看板缓存 |
 | 日历 | GET | `/api/trade_calendar` | 交易日(+today) |
 | 日历 | GET | `/api/session_status` | 交易时段 |
 | AI | GET | `/api/mcp/tools` | MCP工具列表 |

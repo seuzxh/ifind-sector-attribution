@@ -7,9 +7,9 @@
 
 用法（在生产环境，装了 kline_fetcher 的机器上）：
     cd /root/projects/2.monitor_940/ifind-sector-attribution
-    python3 probe_auction.py                  # 默认拉 watchlist 前 5 只股票
+    python3 probe_auction.py                  # 默认拉管理页监控范围前 5 只股票
     python3 probe_auction.py --codes 600519.SH 000001.SZ   # 指定股票
-    python3 probe_auction.py --count 10        # 拉 watchlist 前 10 只
+    python3 probe_auction.py --count 10        # 拉管理页监控范围前 10 只
 
 建议运行时机：
     - 9:15~9:25 集合竞价期间（核心验证目标）
@@ -76,8 +76,8 @@ def fmt_points(points: list, keys: list, n: int = 3) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="集合竞价数据探针")
-    parser.add_argument("--codes", nargs="*", default=None, help="股票代码列表（.SH/.SZ/.BJ），不传则用 watchlist")
-    parser.add_argument("--count", type=int, default=5, help="从 watchlist 取前 N 只（默认 5）")
+    parser.add_argument("--codes", nargs="*", default=None, help="股票代码列表（.SH/.SZ/.BJ），不传则用管理页监控范围")
+    parser.add_argument("--count", type=int, default=5, help="从管理页监控范围取前 N 只（默认 5）")
     args = parser.parse_args()
 
     # 取待探测的股票列表
@@ -86,14 +86,20 @@ def main():
         try:
             from database import Database
             db = Database()
-            wl_date = db.get_latest_watchlist_date()
-            if not wl_date:
-                print("无 watchlist，请先跑盘前筛选，或用 --codes 指定股票")
+            concept_codes = db.get_watched_concept_codes()
+            members_map = db.get_concept_members_map(concept_codes)
+            managed_codes = sorted({
+                member["stock_code"]
+                for members in members_map.values()
+                for member in members
+            })
+            if not managed_codes:
+                print("管理页监控范围为空，请先勾选板块，或用 --codes 指定股票")
                 return
-            codes = db.get_watchlist_stock_codes(wl_date)[:args.count]
-            print(f"从 watchlist({wl_date}) 取前 {len(codes)} 只：{codes}\n")
+            codes = managed_codes[:args.count]
+            print(f"从管理页监控范围取前 {len(codes)} 只：{codes}\n")
         except Exception as e:
-            print(f"读取 watchlist 失败：{e}\n请用 --codes 指定股票，如 --codes 600519.SH 000001.SZ")
+            print(f"读取管理页监控范围失败：{e}\n请用 --codes 指定股票，如 --codes 600519.SH 000001.SZ")
             return
 
     from datetime import datetime

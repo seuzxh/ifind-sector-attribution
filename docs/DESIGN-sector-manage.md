@@ -4,7 +4,7 @@
 
 ## 一、需求与设计
 
-让用户可视化勾选要监控的概念板块，勾选结果作为**全局监控范围的唯一真相源**，联动四条链路：板块强度监控、全市场强势归类、盘前筛选、daily 归因。
+让用户可视化勾选要监控的概念板块，勾选结果作为**全局监控范围的唯一真相源**，联动三条链路：板块强度监控、全市场强势归类、daily 归因。
 
 ### 展示与交互
 - Tab `🛠️ 监控板块管理`（路由 `/sector_manage`）
@@ -30,13 +30,12 @@ CREATE TABLE watched_concepts (
 ```
 首次建表若空，灌入 `config.SECTOR_POOL_CODES`（884×259）作种子，保证上线即有默认值。
 
-## 三、四链路联动
+## 三、三链路联动
 
 | 链路 | 数据来源 | 空集行为 |
 |---|---|---|
 | 板块强度监控 | `get_watched_concept_codes()`（`_ensure_maps`） | "未配置监控板块"提示 |
 | 全市场强势归类 | `self._members_map`（已由 watched 限定） | "未配置监控板块"提示 |
-| 盘前筛选 prescreen | `get_a_share_concept_codes()` → 读 watched | 退回 config 兜底 |
 | daily 归因 | `get_a_share_concept_codes()` → 读 watched | 退回 config 兜底（避免漏算） |
 
 ## 四、API
@@ -45,7 +44,7 @@ CREATE TABLE watched_concepts (
 |---|---|---|
 | GET | `/api/sector_manage/list` | 全部候选板块 + 多周期涨幅 + 勾选状态 |
 | GET | `/api/sector_manage/watched` | 当前勾选代码列表 |
-| POST | `/api/sector_manage/save` | 全量覆盖勾选清单 `{concept_codes:[...]}` |
+| POST | `/api/sector_manage/save` | 全量覆盖勾选清单并清看板缓存 `{concept_codes:[...]}` |
 
 ## 五、文件清单
 - 新增：`sector_manage.py`（多周期涨幅计算）、`frontend/src/api/sectorManage.ts`、`frontend/src/views/SectorManagePage.vue`

@@ -148,9 +148,9 @@ def is_in_sector_pool(concept_code: str) -> bool:
 
 # ========== 观察池（实时看板展示用） ==========
 # 观察池 = 884 三级行业 + 885/886 概念板块，用于看板展示更全的板块强度排名。
-# 与归因/筛选范围的区别：
-#   - daily/prescreen/scan：优先读取 watched_concepts，空表才回退 SECTOR_POOL_CODES。
-#   - realtime 看板：读取观察池 884+885/886 全集。
+# 与归因范围的区别：
+#   - daily/scan：优先读取 watched_concepts，空表才回退 SECTOR_POOL_CODES。
+#   - realtime 看板：直接读取 watched_concepts 及其完整成分股。
 OBSERVE_CONCEPT_PREFIXES = ("884", "885", "886")
 
 
@@ -158,15 +158,6 @@ def is_in_observe_pool(concept_code: str) -> bool:
     """观察池判定：884 三级行业 / 885 / 886 概念板块。用于看板展示，不参与归因。"""
     return concept_code is not None and concept_code[:3] in OBSERVE_CONCEPT_PREFIXES
 
-
-# ========== 盘前筛选配置 ==========
-# 盘前 watchlist 筛选参数
-PRESCREEN_PERIOD_DAYS = 5      # 用近 N 个交易日的累计涨幅筛选
-PRESCREEN_TOP_SECTOR = 30      # 选出的板块数
-PRESCREEN_TOP_STOCK = 30       # 每个板块选出的成分股数
-PRESCREEN_MIN_MEMBER = 6       # 板块最少成分股数（过滤迷你概念）
-# 服务端定时自动筛选（留空则不启用，格式 "HH:MM" 如 "09:20"）
-PRESCREEN_AUTO_TIME = ""
 
 # ========== 分时数据配置（kline-fetcher / 中焯行情 API） ==========
 # KLINE_API_BASE_URL 在文件顶部定义（走环境变量 + config_local.py 覆盖，敏感不入库）。

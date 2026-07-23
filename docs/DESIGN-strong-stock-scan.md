@@ -181,7 +181,7 @@
 | 维度 | scan（自选股归类） | market_scan（全市场归类） |
 |---|---|---|
 | 命中股来源 | 分时筛选（涨幅区间） | **iFinD MCP `search_stocks` 自然语言选股** |
-| 归类维度 | 自选分组（custom_group 表） | **884 概念板块**（`self._members_map`） |
+| 归类维度 | 自选分组（custom_group 表） | **管理页当前勾选板块**（`self._members_map`） |
 | 指标来源 | 分时 `_build_indicator_df` | **search_stocks 返回的 markdown**（涨跌幅） |
 | 分时依赖 | 是 | **否**（纯收盘数据，不占分时缓存） |
 | 时间条/播放/轮询 | 有 | **无**（收盘选股，非实时） |
@@ -192,7 +192,7 @@
 前端(预置条件/自定义输入) → GET /api/market/scan?query=...
   → mcp_proxy.call_tool("stock", "search_stocks", {"query": query})  [~4.5s]
   → _parse_search_stocks_md() 解析 markdown 表格 → {code: {name, change_ratio}}
-  → 按 884 概念板块归类（复用 _ensure_maps 的 members_map + concept_names）
+  → 按管理页当前勾选板块归类（复用 _ensure_maps 的 members_map + concept_names）
   → 统计命中数/覆盖率/平均涨幅 → 手风琴展示（复用 renderScan）
 ```
 

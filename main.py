@@ -7,7 +7,6 @@
   python main.py server                      # 启动 API 服务
   python main.py test                        # 运行接口测试
   python main.py purge --vacuum              # 删除海外数据，仅保留 A股
-  python main.py prescreen --date 20260612   # 盘前筛选，存入 watchlist
 """
 
 import sys
@@ -83,22 +82,6 @@ def cmd_purge(args):
             conn.execute("VACUUM")
         print("[PURGE] VACUUM 完成")
     print("[PURGE] 提示：建议提前备份数据库，此操作不可逆")
-
-
-def cmd_prescreen(args):
-    """盘前筛选：5日涨幅前20板块 + 各前30成分股，存入 watchlist"""
-    from prescreen import run_prescreen
-    db = Database()
-    date = args.date or datetime.now().strftime("%Y%m%d")
-    result = run_prescreen(
-        db, date,
-        top_sector=args.top_sector,
-        top_stock=args.top_stock,
-    )
-    if "error" in result:
-        print(f"\n[PRESCREEN] 失败: {result['error']}")
-    else:
-        print(f"\n[PRESCREEN] 完成：{result['sector_count']} 板块，{result['stock_count']} 只股票已存入 watchlist")
 
 
 def cmd_import_groups(args):
@@ -200,13 +183,6 @@ def main():
     purge_parser = subparsers.add_parser("purge", help="删除海外数据（仅保留 A股）")
     purge_parser.add_argument("--vacuum", action="store_true", help="删除后执行 VACUUM 回收空间")
     purge_parser.set_defaults(func=cmd_purge)
-
-    # prescreen
-    prescreen_parser = subparsers.add_parser("prescreen", help="盘前筛选（5日涨幅选板块+成分股）")
-    prescreen_parser.add_argument("--date", type=str, help="筛选日期 YYYYMMDD，默认今天")
-    prescreen_parser.add_argument("--top-sector", type=int, default=None, help="选出的板块数，默认20")
-    prescreen_parser.add_argument("--top-stock", type=int, default=None, help="每板块成分股数，默认30")
-    prescreen_parser.set_defaults(func=cmd_prescreen)
 
     # import-groups
     ig_parser = subparsers.add_parser("import-groups", help="导入同花顺自选股分组 JSON（幂等，可重复导入更新）")

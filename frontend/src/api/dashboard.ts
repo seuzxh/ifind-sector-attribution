@@ -6,7 +6,6 @@ export interface DashboardParams {
   trade_date?: string
   snapshot_time?: string
   top_n?: number
-  watchlist_mode?: boolean
 }
 
 /** 板块强度看板 */
@@ -25,6 +24,11 @@ export function getAuctionDashboard(params: { trade_date?: string } = {}): Promi
 }
 
 /** 历史看板（收盘数据，mode=history） */
-export function getHistoryDashboard(date: string, topN = 10, forceCalc = false): Promise<DashboardPayload> {
-  return http.get('/api/history/dashboard', { params: { date, top_n: topN, force_calc: forceCalc } })
+export function getHistoryDashboard(
+  date: string,
+  topN = 10,
+  forceCalc = false,
+  scope: 'sector' | 'custom' = 'sector',
+): Promise<DashboardPayload> {
+  return http.get('/api/history/dashboard', { params: { date, top_n: topN, force_calc: forceCalc, scope } })
 }

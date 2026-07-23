@@ -91,7 +91,7 @@ def compute_sector_multi_period_returns(
     stock_5d = _load_stock_period_returns(db, end_date, 5)
 
     # 过滤新股（上市不足5交易日），避免连板新股的累计涨幅严重污染板块均值。
-    # 与 prescreen 的过滤口径一致（get_new_stock_codes）。
+    # 过滤上市不足 5 个交易日的新股。
     new_stocks = db.get_new_stock_codes(end_date, min_days=5)
     if new_stocks:
         for d in (stock_3d, stock_5d):

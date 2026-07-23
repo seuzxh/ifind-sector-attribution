@@ -11,7 +11,7 @@
 - [5. L1 权重归因法](#5-l1-权重归因法)
 - [6. 数据流总览](#6-数据流总览)
 - [7. 盘中实时监控](#7-盘中实时监控)
-- [8. 盘前筛选与 watchlist](#8-盘前筛选与-watchlist)
+- [8. 已退役：盘前筛选与 watchlist](#8-已退役盘前筛选与-watchlist)
 - [9. 自选股分组看板与持仓标注](#9-自选股分组看板与持仓标注)
 
 ---
@@ -253,7 +253,7 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
         ├─ 命中 ─────────────────────→ 不拉网络，进入切片
         └─ 未命中（当日实时 TTL 过期 / 历史首次）
             ↓
-        intraday_fetcher.fetch_batch()  ← 32 线程并发拉 watchlist 279 只（1.5s）
+        intraday_fetcher.fetch_batch()  ← 32 线程并发拉勾选板块的全部去重成分股
             ↓
         缓存完整分时序列 + 时间轴 available_times
             ↓
@@ -275,7 +275,7 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 | 数据源 | 接口3 日K，入库 | **kline-fetcher 分时数据**（中焯 API），不入库 |
 | 板块强度 | 多周期融合（1d/5d/20d） | 仅 1d 实时强度（切片末点涨幅） |
 | 成分股排名 | L1 归因（贡献占比） | 四维加权评分（涨幅/涨速/body/涨停） |
-| 响应速度 | 入库后秒级 | watchlist 首次 ~1.5s，缓存命中 0.12s，切片毫秒级 |
+| 响应速度 | 入库后秒级 | 取决于勾选板块的去重成分股数；缓存命中与切片为毫秒级 |
 
 ### 成分股四维评分（stock_scorer.py）
 
@@ -301,7 +301,7 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 ### 缓存与切片策略
 
 **分时序列缓存**（`_series_cache`，按 `trade_date:mode_key` 键）：
-- 当日实时：TTL 5s（watchlist 1.5s 拉取，3s 轮询大部分命中缓存）
+- 当日实时：TTL 15s，过期时立即返回旧数据并后台刷新
 - 历史日期：全天缓存（数据不变，首次拉取后永久有效，直至进程重启）
 - 引擎实例（含成分股映射）全局复用
 
@@ -311,18 +311,20 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 - 应用场景：拖时间条观察任意时刻的板块排名，可看到板块轮动（如 9:50 半导体领涨、15:00 铜板块第一）
 - `POST /api/realtime/clear_cache` 可手动清空（切日/调试用）
 
-### watchlist 聚焦
+### 管理页监控范围
 
-实时模式默认 `watchlist_mode=True`（盘前筛出的 279 只股票）：
-- 拉取量从全市场 5530 只降到 279 只，响应 30s → 1.5s
-- 板块范围限定在 watchlist 的 20 个板块
-- watchlist 为空时返回提示"请先盘前筛选"
+实时模式以 `watched_concepts` 为唯一范围：
+- 板块集合来自“监控板块管理”的当前勾选项；
+- 行情池是这些板块全部成分股的去重并集；
+- 分组强度使用每个勾选板块中成功取得行情的全部成分股；
+- 未勾选板块时返回“未配置监控板块”，不会隐式回退到旧 watchlist 或全市场。
 
 ### 历史模式降级
 
-历史看板（`/api/history/dashboard`）读已入库的收盘数据：
-- 板块强度：读 `concept_strength` 表
-- 成分股排名：读 `daily_kline` 当日涨幅，**降级为纯涨幅排序**（无分时历史，无法算涨速/body）
+历史看板（`/api/history/dashboard`）按 `scope` 区分范围：
+- `scope=sector`：从 `concept_strength` 读取并按管理页当前勾选板块过滤；
+- `scope=custom`：用 `daily_kline` 按自选分组现场聚合；
+- 成分股排名读取 `daily_kline` 当日涨幅，**降级为纯涨幅排序**（无分时历史，无法算涨速/body）。
 - 页面标注"历史模式仅涨幅"
 
 > 注意：实时模式选历史日期（如 `trade_date=20260612`）走的是**分时数据链路**（拉该日全天分时），与历史看板（读 concept_strength 入库数据）是两条不同路径。
@@ -379,63 +381,12 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 
 ---
 
-## 8. 盘前筛选与 watchlist
+## 8. 已退役：盘前筛选与 watchlist
 
-### 目标
-
-盘前（如 9:15~9:25）从近 5 日强势标的中选出观察范围，开盘后实时监控聚焦这些标的，减少噪音和接口调用量。
-
-### 筛选算法（prescreen.py）
-
-**口径**：近 5 个交易日累计涨幅（`calc_period_return_df`，close_今日 / preClose_5天前 - 1）
-
-**步骤1：板块 5 日涨幅 → 前 20**
-```
-对每只 A 股股票算 5d 累计涨幅（复用 calc_period_return_df）
-    ↓
-对每个 A 股概念，取成分股 5d 涨幅均值 = 板块 5d 涨幅%
-    ↓
-按板块 5d 涨幅降序，取前 20（过滤 member_count < 6 的迷你概念）
-```
-
-**步骤2：板块成分股 5 日涨幅 → 各前 30**
-```
-对选出的 20 板块，分别取其成分股 5d 涨幅降序前 30
-```
-
-注意：板块 5d 涨幅是成分股**均值**（复用 `calc_sector_strength` 的 s1 逻辑，跳过 Z-score），**不是** `concept_strength` 表里的 `score_5d`（那是横截面 Z-score 相对分，有正有负）。
-
-### 新股过滤
-
-筛选前剔除上市不足 `period_days`（默认 5）个交易日的新股，避免连板新股（如北交所上市首日 +300%）撑高板块涨幅均值。
-
-判定方式（无需额外接口，从 `daily_kline` 反推）：
-```
-取 calc_date 及之前的交易日序列 [d1, d2, ..., dN]
-cutoff = d(N - min_days + 1)   # 第6个交易日（含）
-股票最早出现日期 > cutoff  →  视为新股，剔除
-```
-实测：6/12 筛选剔除 2 只新股（920206 首日 6/8、301669 首日 6/9），老股不受影响。
-
-### watchlist 持久化
-
-`watchlist` 表（PK: calc_date + concept_code + stock_code），每次 prescreen 用 `DELETE WHERE calc_date=?` + 批量插入覆盖当日。读取方法：
-- `get_watchlist(date)` — 完整板块+成分股
-- `get_watchlist_concepts(date)` — 板块代码列表
-- `get_watchlist_stock_codes(date)` — 成分股去重列表
-
-### 与实时监控的衔接
-
-实时监控（第 7 章）的 `compute_dashboard` 支持 `watchlist_mode=True`：
-1. 从 watchlist 表读当日 20 板块 + 去重成分股（约 290 只）
-2. `fetch_realtime_data` 只拉这 290 只（接口4 调用从 110 次降到 6 次，**响应 2 分钟 → 30 秒**）
-3. `calc_all_sectors_strength` 只对这 20 板块算强度
-
-前端实时模式有"watchlist聚焦"开关，默认开启（盘前已筛选时）；watchlist 为空时返回提示。
-
-### 复用的关键函数
-
-`calc_period_return_df(db, calc_date, days)` —— 从 `calc_multi_period_score` 闭包提取的模块级函数，算任意天数的累计涨幅。prescreen 用它算 5d 涨幅，多周期融合用它算 5d/20d。
+盘前筛选功能于 2026-07-24 退役。现役实时监控范围由“监控板块管理”的
+`watched_concepts` 唯一决定，不再创建、读取或依赖 `watchlist`。旧数据库中的
+`watchlist` 表可作为历史数据保留，但应用代码不会访问它；历史过程见
+[CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -466,11 +417,11 @@ GET /  → tabs.html（顶层 Tab 容器）
 |---|---|---|
 | members_map | `self._members_map`（概念板块成分股） | `db.get_custom_members_map()`（custom_group 表） |
 | 分组名 | `self._concept_names`（概念字典） | `db.get_custom_group_names()`（导入的 block_name） |
-| 缓存键 | `watchlist:{date}` / `market` | `custom_group`（独立） |
+| 缓存键 | `managed_concepts` | `custom_group`（独立） |
 | 数据源 | 分时数据（kline-fetcher） | 同左（完全复用） |
 | 计算 | `calc_all_sectors_strength` + 切片 | 同左（完全复用） |
 
-`compute_dashboard(custom_mode=True)` 在 watchlist 分支之前注入自定义 `members_map`，其余流程（`_ensure_series` → `_build_indicator_df` → `calc_all_sectors_strength` → `_build_sector_entry`）原样复用。
+`compute_dashboard(custom_mode=True)` 注入自定义 `members_map`，其余流程（`_ensure_series` → `_build_indicator_df` → `calc_all_sectors_strength` → `_build_sector_entry`）原样复用。
 
 ### 数据导入（import-groups）
 

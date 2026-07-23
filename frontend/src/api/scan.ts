@@ -35,7 +35,7 @@ export function scanCustomGroups(query: string): Promise<ScanPayload> {
   return http.get('/api/custom/scan', { params: { query } })
 }
 
-/** 全市场强势归类（命中 → 884 概念板块） */
+/** 全市场强势归类（全市场命中 → 当前勾选监控板块） */
 export function scanMarketGroups(query: string): Promise<ScanPayload> {
   return http.get('/api/market/scan', { params: { query } })
 }

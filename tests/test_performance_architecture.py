@@ -1,7 +1,9 @@
 """实时热路径的回归测试：保证优化不改变计算语义和缓存隔离。"""
 
 import os
+import sqlite3
 import sys
+import tempfile
 import unittest
 
 import pandas as pd
@@ -62,11 +64,30 @@ class PerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(row["amount"], 30.0)
 
     def test_result_cache_separates_different_top_n_requests(self):
-        common = ("20260710", "10:00", True, "20260710", False)
+        common = ("20260710", "10:00", False)
         self.assertNotEqual(
             _result_cache_key(*common, 5),
             _result_cache_key(*common, 10),
         )
+
+    def test_managed_scope_uses_all_unique_members(self):
+        engine = object.__new__(RealtimeEngine)
+        engine._members_map = {
+            "sector-a": ["000001.SZ", "000002.SZ"],
+            "sector-b": ["000002.SZ", "600001.SH"],
+        }
+        self.assertEqual(
+            engine._get_managed_stock_codes(),
+            ["000001.SZ", "000002.SZ", "600001.SH"],
+        )
+
+    def test_prescreen_routes_are_removed(self):
+        from api_server import app
+
+        paths = {route.path for route in app.routes}
+        self.assertIn("/api/realtime/dashboard", paths)
+        self.assertNotIn("/api/prescreen", paths)
+        self.assertNotIn("/api/watchlist", paths)
 
     def test_series_cache_is_bounded(self):
         original = RealtimeEngine._series_cache
@@ -86,6 +107,38 @@ class PerformanceArchitectureTests(unittest.TestCase):
         batched = db.get_concept_members_map(codes)
         for code in codes:
             self.assertEqual(batched.get(code, []), db.get_concept_members(code))
+
+    def test_strength_save_replaces_old_scope_for_same_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = object.__new__(Database)
+            db.db_path = os.path.join(tmp, "scope.db")
+            db._init_db()
+            make = lambda code: {
+                "calc_date": "20260724",
+                "concept_code": code,
+                "score_final": 1.0,
+                "rank_1d": 1,
+            }
+            db.save_concept_strength([make("old-a"), make("old-b")])
+            db.save_concept_strength([make("new-only")])
+            with sqlite3.connect(db.db_path) as conn:
+                codes = [
+                    row[0] for row in conn.execute(
+                        "SELECT concept_code FROM concept_strength WHERE calc_date = '20260724'"
+                    )
+                ]
+            self.assertEqual(codes, ["new-only"])
+
+    def test_auction_cache_clear_rebuilds_engine(self):
+        import auction_engine
+
+        auction_engine._engine_instance = object()
+        auction_engine._last_result["today"] = {"ok": True}
+        auction_engine._last_result_time["today"] = 1.0
+        auction_engine.clear_cache()
+        self.assertIsNone(auction_engine._engine_instance)
+        self.assertEqual(auction_engine._last_result, {})
+        self.assertEqual(auction_engine._last_result_time, {})
 
 
 if __name__ == "__main__":

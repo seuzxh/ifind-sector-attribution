@@ -2,6 +2,14 @@
 
 本文件记录 ifind-sector-attribution 项目的版本改动，与 git commit 历史对应。
 
+## [Unreleased] - 2026-07-24
+
+### 变更：实时板块监控改用管理页勾选全集
+- `/api/realtime/dashboard` 不再接受或读取 `watchlist_mode` / `watchlist_date`，直接拉取 `watched_concepts` 勾选板块的全部去重成分股。
+- 删除盘前筛选页面模式、按钮、弹窗、前端接口封装、后端 `/api/prescreen` 与 `/api/watchlist`、CLI `prescreen` 及实现文件。
+- 新建数据库不再创建 `watchlist` 表；旧数据库中的历史表保留但应用不再读写。
+- 集合竞价探针的默认样本改为管理页监控范围。
+
 ## [Unreleased] - 2026-06-15
 
 ### 新增：自选股分组强弱看板（双 Tab 隔离）

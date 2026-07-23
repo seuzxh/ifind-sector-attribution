@@ -104,7 +104,6 @@ frontend/
     │   ├── scan.ts         # 强势归类接口
     │   ├── chat.ts         # AI/MCP/LLM 接口
     │   ├── custom.ts       # 自选分组 reload
-    │   ├── prescreen.ts    # 盘前筛选（触发 + watchlist 读取）
     │   ├── calendar.ts     # 交易日历
     │   └── session.ts      # 交易时段状态
     ├── utils/
@@ -195,7 +194,6 @@ const http = axios.create({ timeout: 60000 })
 | `auction.ts` | `/api/auction/*` | 集合竞价 |
 | `scan.ts` | `/api/custom/scan`, `/api/market/scan` | 强势归类 |
 | `custom.ts` | `/api/custom/check_reload` | 自选分组热更新 |
-| `prescreen.ts` | `/api/prescreen`, `/api/watchlist` | 盘前筛选（触发 + 读 watchlist） |
 | `calendar.ts` | `/api/trade_calendar`, `/api/dates` | 交易日历 |
 | `session.ts` | `/api/session_status` | 交易时段 |
 
@@ -333,7 +331,7 @@ const { start, stop, currentSeq, triggerNow } = usePolling(async (mySeq) => {
 - **前端唯一入口**：`frontend/` 源码 → `npm run build` → `static/` 产物。
 - **后端唯一入口路由** `api_server.py:root()`：`GET /` 返回 `static/index.html`（Vue SPA）并设置 `Cache-Control: no-cache, no-store, must-revalidate`，避免新构建后旧入口继续引用已不存在的 hash asset；SPA 未构建时返回构建提示（不再回退旧版）。
 - 已删除：`templates/`（旧版 `index.html` / `tabs.html` / `chat.html`）、`root()` 的 `legacy` / `board` 参数。
-- **盘前筛选功能**已迁入新版 `DashboardPage`（第三种模式 `watchlist` + 🔍 按钮 + 结果弹窗），无功能缺口。
+- `DashboardPage` 的板块实时模式直接使用“监控板块管理”勾选集及其全部去重成分股；不再提供盘前筛选或 watchlist 模式。
 
 ---
 

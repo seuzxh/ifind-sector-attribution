@@ -218,9 +218,6 @@ PY=/root/Projects/5.test-autoresearch/qlib/miniconda3/envs/vibe-trading/bin/pyth
 # 每日盘后（约 16:00）同步数据
 PYTHONPATH=. "$PY" main.py daily --date $(date +%Y%m%d)
 
-# 盘前（约 9:15）筛选 watchlist
-PYTHONPATH=. "$PY" main.py prescreen --date $(date +%Y%m%d)
-
 # 定期清理海外数据（如有）
 PYTHONPATH=. "$PY" main.py purge --vacuum
 ```
@@ -228,9 +225,6 @@ PYTHONPATH=. "$PY" main.py purge --vacuum
 建议用 crontab 自动化（`crontab -e`）：
 
 ```cron
-# 盘前筛选（周一至周五 9:15）
-15 9 * * 1-5 cd /root/projects/2.monitor_940/ifind-sector-attribution && PYTHONPATH=. /root/Projects/5.test-autoresearch/qlib/miniconda3/envs/vibe-trading/bin/python main.py prescreen --date $(date +\%Y\%m\%d) >> /var/log/ifind-prescreen.log 2>&1
-
 # 盘后同步（周一至周五 16:30）
 30 16 * * 1-5 cd /root/projects/2.monitor_940/ifind-sector-attribution && PYTHONPATH=. /root/Projects/5.test-autoresearch/qlib/miniconda3/envs/vibe-trading/bin/python main.py daily --date $(date +\%Y\%m\%d) >> /var/log/ifind-daily.log 2>&1
 ```
@@ -318,13 +312,13 @@ sudo systemctl restart ifind-monitor
 
 - **非交易时段**：分时数据 API 在非交易时段（周末/夜间/< 9:15）返回空，属正常。前端会通过 `/api/session_status` 判断时段，盘前(`pre_open`)和收盘后(`closed`)自动停止轮询并显示友好提示，9:15 集合竞价开始自动恢复。
 - **集合竞价阶段（9:15~9:25）**：此阶段 `trading` 为空但 `pre_market` 有 ref_price，系统用末点 ref_price 算涨跌幅（speed/body/acceleration 置 0），监控从 9:15 就开始。进度条自动从 09:15 起。
-- **watchlist 为空**：若开 watchlist 聚焦但当日未跑 prescreen，会提示"请先盘前筛选"。
+- **监控范围为空**：到“监控板块管理”勾选板块；实时看板不会自动退回全市场。
 
 ### 性能问题
 
 | 现象 | 原因 | 解决 |
 |---|---|---|
-| 实时模式响应慢（2分钟+） | 全市场模式拉 5500 只 | 开启 watchlist 聚焦（290 只，30秒） |
+| 实时模式响应慢 | 管理页勾选板块过多、去重成分股规模大 | 减少勾选板块或提高行情服务容量；页面统计栏可核对实际股票数 |
 | daily 同步慢 | 全市场 K 线同步 | 正常，约 2 分钟 |
 | init 慢 | 1121 概念成分股并发拉取 | 正常，约 1-2 分钟 |
 

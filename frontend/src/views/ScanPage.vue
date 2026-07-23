@@ -62,7 +62,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { scanCustomGroups, scanMarketGroups, type ScanPayload, type ScanGroup } from '@/api/scan'
@@ -112,7 +112,7 @@ const groups = computed<ScanGroup[]>(() => payload.value?.groups || [])
 const groupName = computed(() => isMarket.value ? '板块' : '分组')
 const boardHint = computed(() =>
   isMarket.value
-    ? '（全市场强势归类：自然语言选股 → 按 884 概念板块归类，点"选股归类"触发）'
+    ? '（全市场选股 → 仅按“监控板块管理”已勾选板块归类，点“选股归类”触发）'
     : '（自选强势归类：自然语言选股 → 取自选交集 → 按自选分组归类，点"选股归类"触发）'
 )
 
@@ -137,7 +137,9 @@ async function applyScan() {
     if (data.error) { error.value = data.error; statusText.value = ''; }
     else {
       payload.value = data
-      statusText.value = `${isMarket.value ? '全市场' : '自选'} · 命中 ${data.hit_total ?? 0} 只 → ${data.group_hit_count ?? 0} 个${groupName.value}`
+      statusText.value = isMarket.value
+        ? `全市场筛出 ${data.pool_size ?? 0} 只 · 勾选板块内归类 ${data.hit_total ?? 0} 只 → ${data.group_hit_count ?? 0} 个板块`
+        : `自选 · 命中 ${data.hit_total ?? 0} 只 → ${data.group_hit_count ?? 0} 个分组`
       statusCls.value = 'live'
     }
   } catch (e: any) {
@@ -210,6 +212,13 @@ function toggle(gid: string) {
 onMounted(() => {
   // 切到 scan 看板时用默认条件（第 3 条预置）自动查一次，与旧版行为一致，
   // 避免用户看到空白以为没数据。查询框已预填该条件，用户可改后点「选股归类」。
+  applyScan()
+})
+
+// scan/market_scan 复用同一组件；切换标签后必须按新范围重新归类。
+watch(() => route.name, (name, oldName) => {
+  if (name === oldName || !['scan', 'market_scan'].includes(String(name))) return
+  expanded.value = new Set()
   applyScan()
 })
 </script>

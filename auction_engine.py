@@ -389,6 +389,8 @@ def compute_auction_dashboard(trade_date: str = None, snapshot_time: str = None,
 
 
 def clear_cache():
-    """清空竞价看板缓存"""
+    """清空竞价结果及分组派生缓存；下次请求从数据库重建完整引擎。"""
+    global _engine_instance
     _last_result.clear()
     _last_result_time.clear()
+    _engine_instance = None

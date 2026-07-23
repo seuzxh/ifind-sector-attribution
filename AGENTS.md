@@ -9,7 +9,7 @@
 ## 当前状态（2026-07-24 核对）
 
 - 观察池已覆盖 884/885/886；管理页通过 `POST /api/sector_manage/refresh` 启动后台刷新，并轮询 `/api/sector_manage/refresh/status`。无定时自动刷新。
-- `watched_concepts` 是 daily、prescreen、scan 的监控范围真相源；实时板块看板使用 884/885/886 观察池全集。两者不要混用。
+- `watched_concepts` 是 realtime、daily 和 scan 的监控范围真相源；实时板块看板拉取全部勾选板块的去重成分股，不再经过盘前 watchlist。
 - 轮动分析采用行情并发采集、分批 LLM 流式分析、对抗审查与综合结论；`LLM_MODEL_BATCH` 可为批次分析指定轻量模型，留空时使用 `LLM_MODEL`。
 - 两个 token 别混：成分股接口使用 `ACCESS_TOKEN`（401 时自动刷新），MCP 使用 `IFIND_MCP_TOKEN`（JWT）。
 
@@ -36,7 +36,7 @@
 | iFinD token | `ACCESS_TOKEN` / `REFRESH_TOKEN`：读 `config_local.py` 或环境变量 `IFIND_ACCESS_TOKEN` / `IFIND_REFRESH_TOKEN` |
 | **分时数据依赖** | **`kline-fetcher` 本地包（不在 PyPI，须单独装）**：`pip install -e /root/Projects/kline-fetcher`，或 `pip install git+https://github.com/seuzxh/kline-fetcher.git` |
 | **kline API 地址** | `KLINE_API_BASE_URL`（中焯行情 API，盘中实时监控用）：配在 `config_local.py` 或环境变量，**不配则实时链路不可用** |
-| 数据库 | `data/sector_attribution.db`（SQLite，10 张表） |
+| 数据库 | `data/sector_attribution.db`（SQLite，9 张现役表；旧库可能残留退役 `watchlist` 表） |
 | 交易日历缓存 | `data/trade_calendar.txt`（`trade_calendar.py` 三级缓存的本地落盘，缺失会自动重建） |
 | 服务器 / 部署 | **115.191.14.82:8000**；systemd 服务 `ifind-monitor`，一键装 `sudo bash install_service.sh`（详见 `docs/DEPLOYMENT.md`） |
 | **轮动分析 LLM** | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_MODEL_BATCH`（火山方舟 Coding Plan）：base_url **必须用 `/api/coding/v3`**（`/api/v3` 不消耗 Plan 额度会产生额外费用）。批次模型留空则跟随主模型。 |
@@ -51,7 +51,6 @@
 |---|---|---|
 | `init` | 首次部署：拉字典+成分股+映射，补全概念板块全集 | 耗时较长（并发拉取全市场） |
 | `daily --date YYYYMMDD` | 每日盘后：同步日K → 板块强度 → 个股归因 | 日期须为交易日；不传 `--codes` 自动反查全市场 |
-| `prescreen --date YYYYMMDD` | 盘前筛选：5日涨幅选 top 板块+成分股，写入 `watchlist` | 可 `--top-sector` / `--top-stock` 调数量 |
 | `server [--host H] [--port P] [--reload]` | 启动 FastAPI（API + 可视化看板），默认 `0.0.0.0:8000` | 生产用 systemd，调试加 `--reload` |
 | `import-groups [--json FILE]` | 导入同花顺自选股分组 JSON → `custom_group` 表（幂等覆盖） | 默认读 `ths-custom-block-data/同花顺自选分组导出.json`；自动过滤指数/ETF/可转债等非 A 股标的 |
 | `purge [--vacuum]` | 删除海外数据，仅留 A 股 | **破坏性**：执行前备份数据库；幂等可重跑 |
@@ -68,7 +67,6 @@
 | `database.py` | SQLite 封装；所有表的读写方法都在这 | 中 |
 | `sync_pipeline.py` | 数据同步与计算管线（init/daily 编排） | 中 |
 | `core_calculator.py` | 板块强度 + 多周期融合 + L1 归因算法 | 中（改算法看这） |
-| `prescreen.py` | 盘前筛选 | 低 |
 | `stock_scorer.py` | 盘中成分股四维评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速 | 低 |
 | `realtime_engine.py` | 盘中实时引擎（分时序列缓存 + 时刻切片 + 内存计算，**不入库**） | 低 |
 | `trade_calendar.py` | 交易日历模块（`TradeCalendar` 单例，三级缓存：内存→`data/trade_calendar.txt`→网络→DB 兜底；复用 `kline_fetcher.fetch_trade_calendar`） | 低 |
@@ -86,7 +84,7 @@
 
 完整结构见 **`data/DATABASE_MANIFEST.json`**（机器可读，包含每张表的列定义、行数、日期范围、样本数据、常见查询 SQL、caveats）。智能体查询数据库前应先读这个文件。
 
-9 张表：`ths_concept_dict` / `stock_concept_map` / `concept_members` / `daily_kline` / `min1_kline`（空）/ `concept_strength` / `stock_attribution` / `watchlist` / **`custom_group`**（自选股分组，`import-groups` 导入）。
+9 张现役表：`ths_concept_dict` / `stock_concept_map` / `concept_members` / `daily_kline` / `min1_kline`（空）/ `concept_strength` / `stock_attribution` / **`custom_group`** / `watched_concepts`。旧数据库可能保留不再读写的 `watchlist` 历史表。
 
 **最容易踩的坑**：
 1. **日期格式跨表不一致** — `ths_concept_dict`/`stock_concept_map` 用 `YYYY-MM-DD`，其余表用 `YYYYMMDD`。跨表 JOIN 前必须格式归一，否则键对不上。
@@ -103,7 +101,7 @@
 - **海外前缀** `861/864/865/871/875` 是美股/港股行业指数，会污染股票池，必须排除。
 - **双概念编码体系**：行业码（700xxx/881xxx，来自 `config.ALL_CONCEPT_CODES`）与概念板块码（885xxx/886xxx，来自接口1）**交集为 0**。归因链路靠 `init_concept_universe` 补全后者后才能 JOIN 打通。详见 ARCHITECTURE.md §1。
 - **日期须为交易日**：`daily --date` 传非交易日会因当日无数据返回空。
-- **监控板块由 watched_concepts 表驱动**：管理页勾选的板块存 `watched_concepts` 表，是看板/scan/prescreen/daily 归因的**全局监控范围唯一真相源**。`get_a_share_concept_codes()` / `realtime_engine._ensure_maps()` 都读它；表空时看板/scan 提示"未配置"，daily 归因退回 `config.SECTOR_POOL_CODES` 兜底（避免漏算）。`config.SECTOR_POOL_CODES` 保留作种子 + 兜底，不再是运行时主来源。改监控范围走管理页，**不要改 config**。
+- **监控板块由 watched_concepts 表驱动**：管理页勾选的板块存 `watched_concepts` 表，是看板/scan/daily 归因的**全局监控范围唯一真相源**。实时看板拉取勾选板块的全部去重成分股；表空时看板/scan 提示“未配置”，daily 归因退回 `config.SECTOR_POOL_CODES` 兜底。改监控范围走管理页，**不要改 config**。
 
 ## 两套数据链路
 
@@ -113,7 +111,7 @@
 | 板块强度 | 多周期融合（1d/5d/20d） | 仅 1d 实时强度（切片末点涨幅） |
 | 成分股排名 | L1 归因（贡献占比） | 四维加权评分（涨幅/涨速/开盘至今涨幅/涨停） |
 | 缓存 | 持久化 `concept_strength` / `stock_attribution` | 分时序列内存缓存（TTL 5s，历史日期全天缓存） |
-| 拉取范围 | 全市场 A 股 | **默认 watchlist 聚焦**（~279 只，1.5s） |
+| 拉取范围 | 全市场 A 股 | 管理页勾选板块的全部去重成分股 |
 
 ## 盘中实时链路补充（易忽略）
 
@@ -157,10 +155,10 @@
 | `GET /api/sector/rankings` | — | 板块强度排名（含多周期融合分） |
 | `POST /api/attribution/stock` | — | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
-| `GET /api/realtime/dashboard` | — | **板块实时看板**（分时切片，`trade_date`/`snapshot_time`/`watchlist_mode`） |
+| `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页勾选板块全集，分时切片） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回 `holding_stocks`/`holding_in_group`） |
 | `GET /api/custom/scan` | — | **自选强势归类**（分时筛选命中 → 按自选分组归类，手风琴） |
-| `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → 按 884 概念板块归类，不碰分时；入参 `query`） |
+| `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → 按管理页当前勾选板块归类，不碰分时；入参 `query`） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（指定日期，读入库 `concept_strength`，降级纯涨幅） |
 | `GET /api/auction/dashboard` | — | 集合竞价看板 |
@@ -170,8 +168,6 @@
 | `POST /api/sector_manage/save` | — | 全量保存监控板块 |
 | `POST /api/sector_manage/refresh` | — | 后台刷新 884/885/886 字典与成分股 |
 | `GET /api/sector_manage/refresh/status` | — | 查询刷新状态 |
-| `POST /api/prescreen` | — | 盘前筛选（5日涨幅选板块+成分股 → `watchlist`） |
-| `GET /api/watchlist` | — | 读当日 watchlist |
 | `GET /api/dates` | — | 已入库的板块强度日期列表 |
 | `GET /api/concept/list` | — | 全部 A 股概念板块列表 |
 | `GET /api/concept/members` | — | 概念成分股（`date` 不传则取最新缓存） |
@@ -189,7 +185,7 @@
 | 查数据库结构/样本/查询模板 | 读 `data/DATABASE_MANIFEST.json`，别猜 |
 | 盘中实时拉取失败 / `ImportError: kline_fetcher` | 检查 kline-fetcher 是否 `pip install -e` 装好 + `KLINE_API_BASE_URL` 是否配置 |
 | 接入自选股分组监控 | `main.py import-groups` 导入 JSON → 调 `GET /api/custom/dashboard` |
-| 改盘前筛选/时段判定 | `prescreen.py`（筛选）/ `trade_calendar.py`（`session_phase`、交易日历） |
+| 改交易时段判定 | `trade_calendar.py`（`session_phase`、交易日历） |
 | 改持仓分组（自选看板金色标注） | `config.HOLDING_GROUP_NAME` 改分组名（默认 "CC"），无需改代码 |
 | 改前端（加 Tab / 改看板） | `frontend/src/`（Vue SPA）：`views/` 加页 + `router/index.ts` 加路由 + `AppLayout.vue` 加 Tab；接口在 `api/<域>.ts` 封装。详见 `docs/FRONTEND.md` |
 | 时间条播放异常（时刻跳变） | 检查 `refreshSeq` 请求序号守卫是否被破坏（防异步乱序覆盖） |
@@ -204,6 +200,6 @@
 |---|---|
 | `data/DATABASE_MANIFEST.json` | 数据库结构清单（机器可读，列定义/行数/日期范围/样本/常见 SQL/caveats） |
 | `README.md` | 系统总览、快速开始、命令、API、配置项（面向人类） |
-| `docs/ARCHITECTURE.md` | 双概念编码体系、永久缓存语义、多周期融合、A股过滤、实时监控、盘前筛选（设计决策） |
+| `docs/ARCHITECTURE.md` | 双概念编码体系、永久缓存语义、多周期融合、A股过滤、实时监控（含部分历史实现记录） |
 | `docs/DEPLOYMENT.md` | systemd 服务、外网访问、运维命令、故障排查 |
 | `docs/CHANGELOG.md` | 版本改动记录 |

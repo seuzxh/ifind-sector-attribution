@@ -134,20 +134,6 @@ class Database:
             PRIMARY KEY (stock_code, calc_date)
         );
 
-        CREATE TABLE IF NOT EXISTS watchlist (
-            calc_date       TEXT NOT NULL,
-            concept_code    TEXT NOT NULL,
-            concept_name    TEXT,
-            sector_5d_return REAL,
-            rank_sector     INTEGER,
-            stock_code      TEXT NOT NULL,
-            stock_name      TEXT,
-            stock_5d_return REAL,
-            rank_stock      INTEGER,
-            PRIMARY KEY (calc_date, concept_code, stock_code)
-        );
-        CREATE INDEX IF NOT EXISTS idx_wl_date ON watchlist(calc_date);
-
         -- 自选股分组（同花顺 custom_block 导入，静态手动分组）
         CREATE TABLE IF NOT EXISTS custom_group (
             group_id    TEXT NOT NULL,
@@ -164,7 +150,7 @@ class Database:
         );
         """
         with self._connect() as conn:
-            # 读多写少的看板服务使用 WAL：读请求不再被 daily/prescreen 写事务阻塞。
+            # 读多写少的看板服务使用 WAL：读请求不再被 daily 写事务阻塞。
             # synchronous=NORMAL 是连接级配置，已在 _connect 中为每个连接设置。
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(ddl)
@@ -209,7 +195,7 @@ class Database:
 
     def get_a_share_concept_codes(self) -> List[str]:
         """
-        获取参与 daily 归因/盘前筛选的概念代码。
+        获取参与 daily 归因的概念代码。
         优先读 watched_concepts 表（管理页勾选的全局监控范围，唯一真相源）；
         表空时退回 config 板块池兜底（避免 daily 漏算）。
         """
@@ -243,7 +229,7 @@ class Database:
     def get_watched_concept_codes(self) -> List[str]:
         """
         读取监控板块勾选清单（watched_concepts 表）。
-        作为全局监控范围的唯一真相源，联动 看板/scan/prescreen/daily 归因。
+        作为全局监控范围的唯一真相源，联动看板、scan 和 daily 归因。
         表空返回空列表（由调用方决定兜底策略：看板/scan 提示未配置，daily 退回 config）。
         """
         with self._connect() as conn:
@@ -554,20 +540,26 @@ class Database:
 
     # ========== 板块强度操作 ==========
     def save_concept_strength(self, records: List[Dict]):
-        """保存板块强度评分"""
+        """全量保存某日板块强度评分，先清理该日旧范围，避免残留板块混入。"""
+        if not records:
+            return
+        calc_dates = sorted({r["calc_date"] for r in records})
         with self._connect() as conn:
-            for r in records:
-                conn.execute("""
+            conn.executemany(
+                "DELETE FROM concept_strength WHERE calc_date = ?",
+                [(d,) for d in calc_dates],
+            )
+            conn.executemany("""
                     INSERT OR REPLACE INTO concept_strength
                     (calc_date, concept_code, s1_return, s2_breadth, s4_relative,
                      score_1d, score_5d, score_20d, score_final, rank_1d, coherency)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
+                """, [(
                     r["calc_date"], r["concept_code"], r.get("s1_return"),
                     r.get("s2_breadth"), r.get("s4_relative"),
                     r.get("score_1d"), r.get("score_5d"), r.get("score_20d"),
                     r.get("score_final"), r.get("rank_1d"), r.get("coherency")
-                ))
+                ) for r in records])
 
     def get_sector_rankings(self, calc_date: str, top_n: int = None) -> List[Dict]:
         """获取某日的板块强度排名"""
@@ -649,62 +641,6 @@ class Database:
             except Exception:
                 conn.rollback()
                 raise
-
-    # ========== watchlist（盘前筛选结果） ==========
-    def save_watchlist(self, calc_date: str, records: List[Dict]):
-        """
-        保存盘前筛选结果（覆盖当日）。
-        :param calc_date: 筛选日期
-        :param records: [{concept_code, concept_name, sector_5d_return, rank_sector,
-                          stock_code, stock_name, stock_5d_return, rank_stock}, ...]
-        """
-        with self._connect() as conn:
-            conn.execute("DELETE FROM watchlist WHERE calc_date = ?", (calc_date,))
-            if records:
-                conn.executemany("""
-                    INSERT OR REPLACE INTO watchlist
-                    (calc_date, concept_code, concept_name, sector_5d_return, rank_sector,
-                     stock_code, stock_name, stock_5d_return, rank_stock)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, [(
-                    calc_date, r["concept_code"], r.get("concept_name"),
-                    r.get("sector_5d_return"), r.get("rank_sector"),
-                    r["stock_code"], r.get("stock_name"),
-                    r.get("stock_5d_return"), r.get("rank_stock")
-                ) for r in records])
-
-    def get_watchlist(self, calc_date: str) -> List[Dict]:
-        """读取当日 watchlist（含板块和成分股明细）"""
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT * FROM watchlist WHERE calc_date = ? ORDER BY rank_sector, rank_stock",
-                (calc_date,)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_watchlist_concepts(self, calc_date: str) -> List[str]:
-        """读取当日 watchlist 的板块代码列表（去重，按板块排名）"""
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT DISTINCT concept_code FROM watchlist WHERE calc_date = ? ORDER BY rank_sector",
-                (calc_date,)
-            )
-            return [row["concept_code"] for row in cursor.fetchall()]
-
-    def get_watchlist_stock_codes(self, calc_date: str) -> List[str]:
-        """读取当日 watchlist 的全部成分股代码（去重）"""
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT DISTINCT stock_code FROM watchlist WHERE calc_date = ?",
-                (calc_date,)
-            )
-            return [row["stock_code"] for row in cursor.fetchall()]
-
-    def get_latest_watchlist_date(self) -> str:
-        """获取最近一次 watchlist 的日期"""
-        with self._connect() as conn:
-            row = conn.execute("SELECT MAX(calc_date) FROM watchlist").fetchone()
-            return row[0] if row else None
 
     def get_new_stock_codes(self, calc_date: str, min_days: int = 5) -> set:
         """

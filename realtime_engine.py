@@ -15,7 +15,7 @@
      - body（开盘至今）= (last - open) / open × 100，open = pre_market[-1].ref_price
      - 涨速 speed（1min 滚动末点）= (last[-1] - last[-2]) / last[-2] × 100
      - 加速 acceleration = speed[-1] - speed[-2]
-  4. watchlist 模式：仅拉盘前筛出的成分股（~279 只，1.5s），聚焦监控
+  4. 板块监控范围：管理页 watched_concepts 勾选集及其全部成分股
 """
 
 import os
@@ -86,11 +86,19 @@ class RealtimeEngine:
                     self._stock_names[row["stock_code"]] = row["stock_name"]
         print(f"[REALTIME] 缓存就绪：{len(members_map)} 个概念")
 
+    def _get_managed_stock_codes(self) -> List[str]:
+        """返回管理页勾选板块的全部去重成分股。"""
+        return sorted({
+            code
+            for members in (self._members_map or {}).values()
+            for code in members
+        })
+
     # ========== 序列缓存 ==========
     # _series_cache[cache_key] = {
     #     "trade_date": "20260612",
     #     "series": { code: {pre_close, open, trading:[...]}, ... },
-    #     "codes": [...],            # 拉取时的代码范围（watchlist 或全市场）
+    #     "codes": [...],            # 拉取时的去重股票范围
     #     "fetched_at": timestamp,
     #     "latest_time": "15:00",    # 序列中最新的分钟点
     #     "available_times": ["09:30", "09:31", ...],  # 时间轴（去重升序）
@@ -323,8 +331,6 @@ class RealtimeEngine:
         trade_date: str = None,
         snapshot_time: str = None,
         top_n: int = 10,
-        watchlist_mode: bool = True,
-        watchlist_date: str = None,
         custom_mode: bool = False,
     ) -> Dict:
         """
@@ -333,10 +339,7 @@ class RealtimeEngine:
         :param trade_date: 交易日 YYYYMMDD（默认今天）
         :param snapshot_time: 截止时刻 HH:MM（如 "09:50"），None=最新
         :param top_n: 返回前/后 N 个板块
-        :param watchlist_mode: 是否聚焦 watchlist（默认 True）
-        :param watchlist_date: watchlist 日期，默认最近一次
-        :param custom_mode: 自选股分组模式（优先级高于 watchlist_mode），
-                            用 custom_group 表的分组替代概念板块
+        :param custom_mode: 自选股分组模式，用 custom_group 表替代管理页勾选板块
         """
         self._ensure_maps()
 
@@ -348,7 +351,7 @@ class RealtimeEngine:
 
         # active_* 变量：当前看板实际使用的分组映射与名称
         # 默认沿用概念板块体系；custom 模式覆盖为自选股分组
-        active_members_map = None    # None 表示第4步再用 self._members_map（或 watchlist 过滤）
+        active_members_map = None    # None 表示使用管理页勾选板块
         active_concept_names = self._concept_names
         holding_stocks = []          # 持仓股清单（仅 custom 模式填，供前端醒目标注）
 
@@ -368,20 +371,14 @@ class RealtimeEngine:
                     break
             print(f"[REALTIME] 自选分组模式：{len(active_members_map)} 分组，{len(codes)} 只股票"
                   f"{f'，持仓分组 {holding_name}={len(holding_stocks)} 只' if holding_stocks else ''}")
-        # watchlist 模式：限定拉取范围 + 板块范围
-        elif watchlist_mode:
-            wl_date = watchlist_date or self.db.get_latest_watchlist_date()
-            if not wl_date:
-                return {"error": "watchlist 模式但当日未跑 prescreen，请先盘前筛选", "trade_date": trade_date}
-            watchlist_concepts = self.db.get_watchlist_concepts(wl_date)
-            codes = self.db.get_watchlist_stock_codes(wl_date)
-            if not watchlist_concepts or not codes:
-                return {"error": f"watchlist 为空（{wl_date}），请先盘前筛选", "trade_date": trade_date}
-            mode_key = f"watchlist:{wl_date}"
-            print(f"[REALTIME] watchlist 模式：{len(watchlist_concepts)} 板块，{len(codes)} 只股票")
         else:
-            codes = self.db.get_all_member_stock_codes()
-            mode_key = "market"
+            if not self._members_map:
+                return {"error": "未配置监控板块，请到「监控板块管理」勾选", "trade_date": trade_date}
+            codes = self._get_managed_stock_codes()
+            if not codes:
+                return {"error": "已勾选板块没有有效成分股，请刷新板块信息", "trade_date": trade_date}
+            mode_key = "managed_concepts"
+            print(f"[REALTIME] 管理页监控范围：{len(self._members_map)} 板块，{len(codes)} 只股票")
 
         # 1. 确保序列缓存
         cache_rec = self._ensure_series(trade_date, codes, mode_key, is_today)
@@ -405,15 +402,11 @@ class RealtimeEngine:
 
         # 4. 算板块强度
         # watched_concepts 表空（用户清空所有勾选）→ 提示去管理页配置
-        if active_members_map is None and not (watchlist_mode and watchlist_concepts) \
-                and not self._members_map:
+        if active_members_map is None and not self._members_map:
             return {"error": "未配置监控板块，请到「监控板块管理」勾选", "trade_date": trade_date}
         if active_members_map is not None:
             # custom 模式已设置完整的自定义分组映射
             members_map = active_members_map
-        elif watchlist_mode and watchlist_concepts:
-            members_map = {cc: self._members_map.get(cc, []) for cc in watchlist_concepts
-                           if cc in self._members_map}
         else:
             members_map = self._members_map
         strength_df = calc_all_sectors_strength(rt_df, members_map)
@@ -505,7 +498,6 @@ class RealtimeEngine:
             "latest_time": latest_time,
             "available_times": available_times,
             "is_today": is_today,
-            "watchlist_mode": watchlist_mode,
             "custom_mode": custom_mode,
             "market_stats": market_stats,
             "top_sectors": top_sectors,
@@ -620,15 +612,15 @@ class RealtimeEngine:
         }
 
 
-    # ========== 全市场强势归类（MCP 选股 + 884 概念归类，不碰分时） ==========
+    # ========== 全市场强势归类（MCP 选股 + 当前勾选概念归类，不碰分时） ==========
     def scan_market_groups(self, query: str) -> Dict:
         """
         全市场强势股概念板块归类：用 iFinD MCP search_stocks 自然语言选股，
-        把选出的股票按 884 概念板块归类统计。
+        把选出的股票按「监控板块管理」当前勾选板块归类统计。
 
         与 scan_custom_groups 的差异：
           - 命中股来自 MCP search_stocks（收盘数据），非分时筛选
-          - 归类维度是 884 概念板块（self._members_map），非自选分组
+          - 归类维度是当前勾选概念板块（self._members_map），非自选分组
           - 不依赖分时序列缓存，纯收盘 → 更轻量
           - hits 指标只有 change_ratio（search_stocks 返回的涨跌幅）
 
@@ -690,11 +682,16 @@ class RealtimeEngine:
             })
 
         groups_out.sort(key=lambda x: (x["hit_count"], x["hit_avg_change"]), reverse=True)
+        classified_codes = {
+            hit["code"]
+            for group in groups_out
+            for hit in group["hits"]
+        }
 
         return {
             "query": query,
-            "pool_size": int(len(hit_codes)),
-            "hit_total": int(len(hit_codes)),
+            "pool_size": int(len(hit_codes)),          # 全市场选股命中
+            "hit_total": int(len(classified_codes)),   # 当前勾选板块内可归类的去重命中
             "group_hit_count": len(groups_out),
             "groups": groups_out,
         }
@@ -797,9 +794,9 @@ def _parse_search_stocks_md(md: str) -> Dict[str, dict]:
 _engine_instance = None
 
 
-def _result_cache_key(trade_date, snapshot_time, watchlist_mode, watchlist_date, custom_mode, top_n):
+def _result_cache_key(trade_date, snapshot_time, custom_mode, top_n):
     """构造看板结果缓存的 key（同一看板+同一时刻的多人请求命中同一 key）"""
-    mode = "custom" if custom_mode else ("wl:" + (watchlist_date or "") if watchlist_mode else "market")
+    mode = "custom" if custom_mode else "managed"
     st = snapshot_time if snapshot_time else "latest"
     return f"{mode}:{trade_date or 'today'}:{st}:top{top_n}"
 
@@ -837,8 +834,6 @@ def _result_cache_set(rk: str, data: dict):
 def get_realtime_dashboard(
     trade_date: str = None,
     snapshot_time: str = None,
-    watchlist_mode: bool = True,
-    watchlist_date: str = None,
     top_n: int = 10,
     custom_mode: bool = False,
 ) -> Dict:
@@ -854,7 +849,7 @@ def get_realtime_dashboard(
 
     # —— 第1层：result_cache 快速路径 ——
     rk = _result_cache_key(
-        trade_date, snapshot_time, watchlist_mode, watchlist_date, custom_mode, top_n
+        trade_date, snapshot_time, custom_mode, top_n
     )
     cached = _result_cache_get(rk)
     if cached is not None:
@@ -872,8 +867,6 @@ def get_realtime_dashboard(
             trade_date=trade_date,
             snapshot_time=snapshot_time,
             top_n=top_n,
-            watchlist_mode=watchlist_mode,
-            watchlist_date=watchlist_date,
             custom_mode=custom_mode,
         )
         # 只缓存成功结果（不缓存 error）
@@ -891,7 +884,7 @@ def scan_custom_groups(query: str) -> Dict:
 
 
 def scan_market_groups(query: str) -> Dict:
-    """全市场强势归类扫描（全局入口，复用 engine 单例）。MCP 选股 + 884 概念归类。"""
+    """全市场强势归类扫描（全局入口）。MCP 选股 + 当前勾选概念归类。"""
     global _engine_instance
     if _engine_instance is None:
         _engine_instance = RealtimeEngine()

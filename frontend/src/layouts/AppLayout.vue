@@ -49,9 +49,9 @@ function onTabClick(name: string) {
   router.push({ name })
 }
 
-// 切到 custom/scan 时检查自选分组 JSON 是否变更（迁移自 tabs.html checkAndReload）
+// 所有依赖自选分组的页面进入前都检查 JSON，避免直接打开竞价/轮动时使用旧范围。
 watch(activeTab, async (name) => {
-  if (name === 'custom' || name === 'scan') {
+  if (name === 'custom' || name === 'scan' || name === 'auction' || name === 'rotation') {
     try {
       const d = await checkCustomReload()
       if (d.reloaded) {
