@@ -62,11 +62,15 @@ def root():
     """
     可视化看板入口：返回 Vue 3 SPA（static/index.html，Hash 路由）。
     所有看板/Tab 在前端切换。SPA 未构建时返回构建提示。
+    注意：index.html 必须 no-cache（否则浏览器缓存旧入口，引用的旧 hash js
+    在新 build 后 404，导致 SPA 白屏）。assets 文件本身带内容 hash 可长缓存。
     """
+    from fastapi.responses import HTMLResponse as _HTML
     spa_path = os.path.join(_STATIC_DIR, "index.html")
     if os.path.exists(spa_path):
         with open(spa_path, "r", encoding="utf-8") as f:
-            return f.read()
+            content = f.read()
+        return _HTML(content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     return ("<h1>前端未构建</h1>"
             "<p>运行 <code>cd frontend &amp;&amp; npm run build</code> 后刷新。</p>"
             "<!-- static/index.html 缺失：Vue SPA 未构建 -->")

@@ -13,7 +13,7 @@
   - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
   - **强势股归类**：按筛选条件（涨幅/成交额/实体涨幅）扫描自选股池，按分组归类统计命中，发现哪个分组批量冒强势股
   - **全市场强势归类**：自然语言选股（iFinD MCP `search_stocks`，4 组预置 + 自定义条件可存/重命名）→ 按 884 概念板块归类，发现全市场强势股集中在哪些行业
-  - **板块轮动分析**：Loop Engine 三阶段智能体（数据采集 → 第一性原理分析 → 对抗审查），SSE 流式推送
+  - **板块轮动分析**：并发行情采集 → 分批 LLM 流式分析 → 对抗审查 → 综合结论；采集进度覆盖更新
   - 顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
 
 ## 5 个 iFinD 接口
@@ -23,7 +23,7 @@
 | 1 | `basic_data_service` (ths_the_ths_concept_index_stock) | 个股所属同花顺概念 | 一次性永久缓存 |
 | 2 | `data_pool` (p03473) | 概念板块成分股 | 一次性永久缓存 |
 | 3 | `cmd_history_quotation` | 历史行情日K | 按 (code, date) 缓存 |
-| 4 | `high_frequency` | 1min K线 | 实时监控用（盘中拉取，不入库） |
+| 4 | `high_frequency` | 1min K线 | 客户端保留接口；当前实时看板改用 kline-fetcher |
 | 5 | `basic_data_service` (ths_index_short_name_index) | 概念基本信息字典 | 一次性永久缓存 |
 
 ## 项目结构
@@ -266,14 +266,15 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `PRESCREEN_TOP_STOCK` | 30 | 每个板块选出的成分股数 |
 | `INTRADAY_WORKERS` | 32 | 分时数据多线程拉取并发数 |
 | `INTRADAY_CACHE_TTL` | 5 | 分时序列缓存 TTL（秒） |
-| `SECTOR_POOL_ENABLED` / `SECTOR_POOL_CODES` | True / 884(259个) | 板块池白名单（限定观察的概念范围，当前 884 行业分类码） |
+| `SECTOR_POOL_ENABLED` / `SECTOR_POOL_CODES` | True / 884(259个) | `watched_concepts` 为空时的归因/筛选种子与兜底 |
 | `HOLDING_GROUP_NAME` | "CC" | 持仓分组名（自选看板金色标注用，按 block_name 精确匹配） |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | （空）/ `.../api/coding/v3` / `doubao-seed-2.0-pro` | 轮动分析智能体 LLM（火山方舟 Coding Plan），用 `config_local.py` 覆盖 |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | （空）/ `.../api/coding/v3` / `doubao-seed-2.0-pro` | 轮动分析主模型（火山方舟 Coding Plan），用 `config_local.py` 覆盖 |
+| `LLM_MODEL_BATCH` | （空，跟随主模型） | 轮动分析分批阶段的轻量模型 |
 | `IFIND_MCP_TOKEN` | （空） | iFinD MCP server JWT（轮动分析/实时引擎调工具用），用 `config_local.py` 覆盖 |
 
 ## 数据模型
 
-SQLite 数据库（`data/sector_attribution.db`）包含 7 张表：
+SQLite 数据库（`data/sector_attribution.db`）包含 10 张表：
 
 | 表 | 说明 | A 股过滤 |
 |---|---|---|
@@ -285,6 +286,8 @@ SQLite 数据库（`data/sector_attribution.db`）包含 7 张表：
 | `concept_strength` | 板块强度评分（含 score_1d/5d/20d/final） | 仅 A 股概念 |
 | `stock_attribution` | 个股归因结果（含明细 JSON） | 仅 A 股代码 |
 | `watchlist` | 盘前筛选结果（板块+成分股，按日期） | 仅 A 股 |
+| `custom_group` | 导入的同花顺自选分组 | 导入时仅留 A 股 |
+| `watched_concepts` | 管理页保存的全局监控范围 | 仅 A 股概念 |
 
 **永久缓存语义**：`stock_concept_map` / `concept_members` 是一次性缓存，查询时不传日期则取最新一份（`MAX(date)`），与 init 日期解耦。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 

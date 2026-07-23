@@ -85,9 +85,9 @@ def is_a_share_concept(concept_code: str) -> bool:
     return concept_code is not None and concept_code[:3] in A_SHARE_CONCEPT_PREFIXES
 
 
-# ========== 板块池白名单（限定观察的概念板块范围）==========
-# 启用后，板块强度与个股归因只处理这些概念；为空/未启用则用全量 A 股概念。
-# 当前限定为 884 行业分类码（有成分股数据，可用于板块强度和归因）。
+# ========== 板块池白名单（归因/筛选的种子与空表兜底）==========
+# 正常运行时 watched_concepts 是监控范围真相源；表空时才回退本集合。
+# is_in_sector_pool 还放行 885/886，以支持扩展概念归因。
 # 注意：884 不在 stock_concept_map（个股从不被 API 打 884 标签），
 # 所以归因改从 concept_members 反推个股所属 884 板块。
 SECTOR_POOL_ENABLED = True
@@ -146,12 +146,11 @@ def is_in_sector_pool(concept_code: str) -> bool:
     return concept_code is not None and concept_code[:3] in ("885", "886")
 
 
-# ========== 观察池（看板展示用，不进 daily 归因） ==========
+# ========== 观察池（实时看板展示用） ==========
 # 观察池 = 884 三级行业 + 885/886 概念板块，用于看板展示更全的板块强度排名。
-# 与"归因池"（SECTOR_POOL_CODES，仅 884）区别：
-#   - 归因池：daily 盘后归因/多周期强度计算用，受 is_in_sector_pool 过滤（get_a_share_concept_codes）。
-#   - 观察池：看板（realtime_engine）展示用，不参与归因，取 884+885/886 全集。
-# 两者隔离：改观察池不影响归因链路。
+# 与归因/筛选范围的区别：
+#   - daily/prescreen/scan：优先读取 watched_concepts，空表才回退 SECTOR_POOL_CODES。
+#   - realtime 看板：读取观察池 884+885/886 全集。
 OBSERVE_CONCEPT_PREFIXES = ("884", "885", "886")
 
 

@@ -173,6 +173,10 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 - `ScanPage` 同时服务 `scan` 和 `market_scan` —— 同理按路由名切换。
 - `AppLayout` 用 `<keep-alive>` 包裹 `<router-view>`，切 Tab 保留各页状态。
 
+`RotationPage` 解析 `/api/rotation/analyze` 的 SSE：行情采集的
+`[PROGRESS]collect|done|total|pct` 标记只覆盖更新进度条，不写入结果卡片；
+分批分析结果逐批形成卡片，阶段分隔符必须是独立一行的 `---`。
+
 ---
 
 ## 6. 数据流：API 层
@@ -327,7 +331,7 @@ const { start, stop, currentSeq, triggerNow } = usePolling(async (mySeq) => {
 项目已完成从「旧版原生 JS 单文件」到 **Vue 3 SPA** 的迁移，旧版已删除，前后端架构统一：
 
 - **前端唯一入口**：`frontend/` 源码 → `npm run build` → `static/` 产物。
-- **后端唯一入口路由** `api_server.py:root()`：`GET /` 返回 `static/index.html`（Vue SPA）；SPA 未构建时返回构建提示（不再回退旧版）。
+- **后端唯一入口路由** `api_server.py:root()`：`GET /` 返回 `static/index.html`（Vue SPA）并设置 `Cache-Control: no-cache, no-store, must-revalidate`，避免新构建后旧入口继续引用已不存在的 hash asset；SPA 未构建时返回构建提示（不再回退旧版）。
 - 已删除：`templates/`（旧版 `index.html` / `tabs.html` / `chat.html`）、`root()` 的 `legacy` / `board` 参数。
 - **盘前筛选功能**已迁入新版 `DashboardPage`（第三种模式 `watchlist` + 🔍 按钮 + 结果弹窗），无功能缺口。
 

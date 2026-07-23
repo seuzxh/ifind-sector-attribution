@@ -36,7 +36,7 @@
 ### 部署
 - 后端：`python main.py server`，systemd 守护，`Restart=always`
 - 前端：`cd frontend && npm run build` → 输出到 `static/`，FastAPI `/` 直接 serve
-- `/` 默认 Vue SPA；`/?legacy=1` 回退旧版原生 JS（templates/）
+- `/` 只返回 Vue SPA；旧版 `templates/` 与 `?legacy=1` 回退已删除
 
 ---
 
@@ -75,7 +75,7 @@ config (leaf)
 ### 后端接口清单（30 个）
 | 类别 | 方法 | 路径 | 用途 |
 |------|------|------|------|
-| 页面 | GET | `/` | SPA 入口（?legacy=1 旧版） |
+| 页面 | GET | `/` | SPA 入口；入口 no-cache，hash assets 可长缓存 |
 | 看板 | GET | `/api/realtime/dashboard` | 板块强度实时 |
 | 看板 | GET | `/api/custom/dashboard` | 自选分组实时 |
 | 看板 | GET | `/api/auction/dashboard` | 集合竞价 |
@@ -93,6 +93,7 @@ config (leaf)
 | 操作 | POST | `/api/auction/clear_cache` | 清竞价缓存 |
 | 操作 | POST | `/api/custom/check_reload` | 自选分组重导 |
 | 操作 | POST | `/api/prescreen` | 盘前筛选 |
+| 管理 | GET/POST | `/api/sector_manage/*` | 监控范围、后台刷新及状态 |
 | 日历 | GET | `/api/trade_calendar` | 交易日(+today) |
 | 日历 | GET | `/api/session_status` | 交易时段 |
 | AI | GET | `/api/mcp/tools` | MCP工具列表 |

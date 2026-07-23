@@ -6,32 +6,12 @@
 
 基于同花顺 iFinD API 的 **A股行业归因 + 板块强度检测** 系统。**仅处理沪深北交易所 A 股**（.SH/.SZ/.BJ），全链路过滤海外代码。输出：哪个板块最强、每只股票被哪个概念带涨。盘中实时监控基于 kline-fetcher 分时数据，**从 9:15 集合竞价即可开始**（ref_price 推算涨跌）。
 
-## ⏳ 待办（2026-06-29 更新）
+## 当前状态（2026-07-24 核对）
 
-**目标**：扩展板块分类，从「仅 884 三级行业」扩展为「884 + 885/886 概念板块」全集观察；提供「更新指数成分」按钮，点击才刷新成分股。
-
-### 已完成 ✅
-- [x] **字典更新**：`ths_concept_dict` 表从 259 → **647 个**（884×259 + 885×293 + 886×95）。舍弃 864（非白名单且与885重名）、883（宽基样本股）。备份 `data/sector_attribution.db.bak.before_dict_update.20260628_195652`。
-- [x] **885/886 成分股拉取**：388 个概念全部成功，入库 **69499 条**（885→54813 / 886→14686），A股过滤后**0 条非A股残留**。备份 `data/sector_attribution.db.bak.before_members_fetch.20260629_004535`。
-- [x] **access_token 自动刷新**：`ifind_client.py` 加了 `refresh_access_token()` + `_post` 遇 401 自动刷新重试。**详见下方运维知识，access_token 过期不再是问题**。
-
-### 待做（按优先级）⬇️
-1. **🟡 新增「更新指数成分」按钮**（前端 + 后端）
-   - 前端：`frontend/src/views/DashboardPage.vue` 控制栏加按钮，仿 `runPrescreen()` 范式（POST + ElMessage 反馈）
-   - 后端：`api_server.py` 加 `POST /api/observe/refresh`，仿 `/api/custom/check_reload` 模式（同步执行 + 返回 stats + 清 realtime 缓存）
-   - 同步 `sync_pipeline.py` 加 `refresh_observe_members()`（遍历 884+885/886 全集，复用 `_fetch_concept_members_batch`）
-
-2. **🟡 新增观察池，与归因池隔离**
-   - `config.py`：加 `OBSERVE_CONCEPT_PREFIXES = ("884","885","886")` + `is_in_observe_pool()`
-   - `database.py`：加 `get_observe_concept_codes()`（取全集，**不过滤板块池**）—— 不能改 `get_a_share_concept_codes()`（它被 daily 归因和看板共用，含 884 池过滤）
-   - `realtime_engine.py:62` `_ensure_maps` 板块列表来源改 `get_observe_concept_codes()`（仅此一处改动，让看板能看到 885/886）
-
-3. **🟡 member_date 不一致**：884 成分股是 20260614、885/886 是 20260629。`get_concept_members` 取 `MAX(member_date)`，会导致 884 在最新快照里"消失"。需在观察池改造时统一处理（或把 884 也刷到最新日期）。
-
-### 关键约束（避免踩坑）
-- **不动 daily 归因链路**：归因池 `SECTOR_POOL_CODES`（884×259）一字不改，`get_a_share_concept_codes()` 不改
-- **两个 token 别混**：拉成分股用 `ACCESS_TOKEN`（会过期，已自动刷新），MCP/自选股用 `IFIND_MCP_TOKEN`（JWT）
-- **更新机制**：只有点击按钮才更新，无定时无自动
+- 观察池已覆盖 884/885/886；管理页通过 `POST /api/sector_manage/refresh` 启动后台刷新，并轮询 `/api/sector_manage/refresh/status`。无定时自动刷新。
+- `watched_concepts` 是 daily、prescreen、scan 的监控范围真相源；实时板块看板使用 884/885/886 观察池全集。两者不要混用。
+- 轮动分析采用行情并发采集、分批 LLM 流式分析、对抗审查与综合结论；`LLM_MODEL_BATCH` 可为批次分析指定轻量模型，留空时使用 `LLM_MODEL`。
+- 两个 token 别混：成分股接口使用 `ACCESS_TOKEN`（401 时自动刷新），MCP 使用 `IFIND_MCP_TOKEN`（JWT）。
 
 ## 🔑 运维知识：access_token 过期自动刷新（重要，别再踩）
 
@@ -48,8 +28,6 @@
 
 ## 运行环境（关键，别猜）
 
-## 运行环境（关键，别猜）
-
 | 项 | 值 |
 |---|---|
 | 项目根目录 | `/root/projects/2.monitor_940/ifind-sector-attribution` |
@@ -58,10 +36,10 @@
 | iFinD token | `ACCESS_TOKEN` / `REFRESH_TOKEN`：读 `config_local.py` 或环境变量 `IFIND_ACCESS_TOKEN` / `IFIND_REFRESH_TOKEN` |
 | **分时数据依赖** | **`kline-fetcher` 本地包（不在 PyPI，须单独装）**：`pip install -e /root/Projects/kline-fetcher`，或 `pip install git+https://github.com/seuzxh/kline-fetcher.git` |
 | **kline API 地址** | `KLINE_API_BASE_URL`（中焯行情 API，盘中实时监控用）：配在 `config_local.py` 或环境变量，**不配则实时链路不可用** |
-| 数据库 | `data/sector_attribution.db`（SQLite，~92MB，9 张表） |
+| 数据库 | `data/sector_attribution.db`（SQLite，10 张表） |
 | 交易日历缓存 | `data/trade_calendar.txt`（`trade_calendar.py` 三级缓存的本地落盘，缺失会自动重建） |
 | 服务器 / 部署 | **115.191.14.82:8000**；systemd 服务 `ifind-monitor`，一键装 `sudo bash install_service.sh`（详见 `docs/DEPLOYMENT.md`） |
-| **轮动分析 LLM** | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`（火山方舟 Coding Plan）：base_url **必须用 `/api/coding/v3`**（`/api/v3` 不消耗 Plan 额度会产生额外费用）。配在 `config_local.py` 或环境变量，供 rotation_agent 使用。文档 `https://www.volcengine.com/docs/82379/1928261` |
+| **轮动分析 LLM** | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_MODEL_BATCH`（火山方舟 Coding Plan）：base_url **必须用 `/api/coding/v3`**（`/api/v3` 不消耗 Plan 额度会产生额外费用）。批次模型留空则跟随主模型。 |
 | **MCP（轮动/实时用）** | `IFIND_MCP_TOKEN`（iFinD MCP server 的 JWT 鉴权）：配在 `config_local.py` 或环境变量，供 rotation_agent / realtime_engine 调 iFinD 工具 |
 | **可用模型** | Coding Plan 白名单 10 个（`llm_agent._CODING_PLAN_MODELS`）：doubao-seed-2.0-pro/code/lite、doubao-seed-code、minimax-latest、glm-latest、deepseek-v4-flash/pro、kimi-k2.6/k2.7-code |
 
@@ -185,8 +163,13 @@
 | `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → 按 884 概念板块归类，不碰分时；入参 `query`） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（指定日期，读入库 `concept_strength`，降级纯涨幅） |
-| `GET /api/trade_calendar` | — | 交易日列表（供前端日期选择器过滤非交易日） |
-| `GET /api/session_status` | — | 交易时段状态（盘前/盘中/盘后，前端据此控制轮询） |
+| `GET /api/auction/dashboard` | — | 集合竞价看板 |
+| `GET /api/rotation/analyze` | — | 板块轮动分析 SSE |
+| `GET /api/sector_manage/list` | — | 可管理板块列表 |
+| `GET /api/sector_manage/watched` | — | 当前监控板块 |
+| `POST /api/sector_manage/save` | — | 全量保存监控板块 |
+| `POST /api/sector_manage/refresh` | — | 后台刷新 884/885/886 字典与成分股 |
+| `GET /api/sector_manage/refresh/status` | — | 查询刷新状态 |
 | `POST /api/prescreen` | — | 盘前筛选（5日涨幅选板块+成分股 → `watchlist`） |
 | `GET /api/watchlist` | — | 读当日 watchlist |
 | `GET /api/dates` | — | 已入库的板块强度日期列表 |
@@ -210,7 +193,7 @@
 | 改持仓分组（自选看板金色标注） | `config.HOLDING_GROUP_NAME` 改分组名（默认 "CC"），无需改代码 |
 | 改前端（加 Tab / 改看板） | `frontend/src/`（Vue SPA）：`views/` 加页 + `router/index.ts` 加路由 + `AppLayout.vue` 加 Tab；接口在 `api/<域>.ts` 封装。详见 `docs/FRONTEND.md` |
 | 时间条播放异常（时刻跳变） | 检查 `refreshSeq` 请求序号守卫是否被破坏（防异步乱序覆盖） |
-| 改轮动分析 LLM 模型 | `llm_agent._CODING_PLAN_MODELS` 白名单（静态 10 个）；或 `config.LLM_MODEL` 改默认。**base_url 必须用 `/api/coding/v3`** |
+| 改轮动分析 LLM 模型 | `llm_agent._CODING_PLAN_MODELS` 白名单；`config.LLM_MODEL` 改主模型，`config.LLM_MODEL_BATCH` 改批次模型。**base_url 必须用 `/api/coding/v3`** |
 | 轮动分析报错 / 不调工具 | 检查 `LLM_API_KEY` + `IFIND_MCP_TOKEN` 是否配在 `config_local.py`；rotation_agent 依赖 llm_agent + mcp_proxy |
 | 改全市场选股预置条件 | `frontend/src/views/ScanPage.vue` 的预置条件数组；自定义条件存浏览器 localStorage（`market_scan_custom_queries`，结构 `{label,query}`），页面可存/重命名/删除 |
 | 全市场选股归类慢 / 报错 | `/api/market/scan` 调 MCP `search_stocks` 约 4.5s；报错看 `IFIND_MCP_TOKEN` 是否配置、query 表达是否被 MCP 理解 |

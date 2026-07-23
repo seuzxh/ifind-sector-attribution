@@ -439,9 +439,12 @@ cutoff = d(N - min_days + 1)   # 第6个交易日（含）
 
 ---
 
-## 9. 自选股分组看板与持仓标注
+## 9. 自选股分组看板与持仓标注（旧版实现记录）
 
-### 双看板 Tab 隔离架构
+> 本节记录 2026-06 的 iframe 版本，仅作历史背景；现役前端见
+> [ARCHITECTURE-V2.md](ARCHITECTURE-V2.md) 和 [FRONTEND.md](FRONTEND.md)。
+
+### 当时的双看板 Tab 隔离架构
 
 可视化看板采用**顶层 Tab + iframe 隔离**，两套看板状态完全独立：
 
