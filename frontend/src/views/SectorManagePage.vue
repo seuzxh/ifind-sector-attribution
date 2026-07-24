@@ -239,7 +239,10 @@ async function onSave() {
     const codes = allSectors.value.filter(s => s.watched).map(s => s.concept_code)
     const res = await saveWatchedSectors({ concept_codes: codes })
     if (res.ok) {
-      ElMessage.success(`已保存 ${res.saved_count} 个监控板块`)
+      const excluded = res.excluded_count || 0
+      ElMessage.success(
+        `已保存 ${res.saved_count} 个监控板块${excluded ? `，剔除 ${excluded} 个成分股数越界板块` : ''}`,
+      )
       dirty.value = 0
       statusText.value = `✅ 已保存 ${res.saved_count} 个监控板块`; statusCls.value = 'live'
     } else {

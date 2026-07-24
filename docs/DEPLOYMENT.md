@@ -295,7 +295,6 @@ curl http://127.0.0.1:8000/api/dates
 # 应返回 JSON 日期列表
 
 # 2. 浏览器缓存 → 强制刷新 Ctrl+Shift+R
-# 3. plotly.js CDN 被墙 → 换 CDN 或本地 vendored（见下）
 ```
 
 ### iFinD API 调用失败（401/403）
@@ -310,7 +309,7 @@ sudo systemctl restart ifind-monitor
 
 ### 实时模式无数据
 
-- **非交易时段**：分时数据 API 在非交易时段（周末/夜间/< 9:15）返回空，属正常。前端会通过 `/api/session_status` 判断时段，盘前(`pre_open`)和收盘后(`closed`)自动停止轮询并显示友好提示，9:15 集合竞价开始自动恢复。
+- **非交易时段**：分时数据 API 在周末、夜间或 9:15 前可能返回空，属正常。前端会通过 `/api/session_status` 判断时段：非交易日和盘前 `pre_open` 停止轮询，9:15 集合竞价开始自动恢复；交易日收盘后 `closed` 仍保留轮询，便于回看当日完整分时。
 - **集合竞价阶段（9:15~9:25）**：此阶段 `trading` 为空但 `pre_market` 有 ref_price，系统用末点 ref_price 算涨跌幅（speed/body/acceleration 置 0），监控从 9:15 就开始。进度条自动从 09:15 起。
 - **监控范围为空**：到“监控板块管理”勾选板块；实时看板不会自动退回全市场。
 

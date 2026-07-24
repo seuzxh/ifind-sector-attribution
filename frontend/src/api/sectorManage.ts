@@ -48,7 +48,11 @@ export function getWatchedSectors(): Promise<WatchedPayload> {
 }
 
 /** 全量覆盖保存勾选清单 */
-export function saveWatchedSectors(payload: SaveWatchedPayload): Promise<{ ok: boolean; saved_count: number }> {
+export function saveWatchedSectors(payload: SaveWatchedPayload): Promise<{
+  ok: boolean
+  saved_count: number
+  excluded_count?: number
+}> {
   return http.post('/api/sector_manage/save', payload)
 }
 

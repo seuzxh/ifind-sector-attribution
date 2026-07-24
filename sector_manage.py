@@ -2,11 +2,12 @@
 """
 监控板块管理：多周期涨幅计算 + 候选板块列表组装。
 
-数据源全部走日K（daily_kline），供管理页展示每个候选板块的：
-  当日涨幅 / 实体涨幅 / 3日累计涨幅 / 5日累计涨幅
+现役管理页优先使用 iFinD 概念指数实时行情展示当日涨幅、实体、涨跌家数和涨停家数，
+并用 iFinD 历史行情补充 3日/5日累计涨幅及实时缺项 fallback。
+本模块保留基于本地 daily_kline 的离线聚合函数，供计算/测试复用。
 
-候选板块范围 = 观察池全集（884 三级行业 + 885/886 概念板块，约 636 个），
-即 ths_concept_dict 中所有 A 股前缀且在观察池内的概念。勾选状态单独读 watched_concepts 表。
+候选板块范围 = 观察池内成分股数 10~500（含边界）的 884/885/886 板块。
+勾选状态单独读 watched_concepts 表，保存时同样执行数量边界校验。
 """
 
 import os
@@ -17,6 +18,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import config
 from database import Database
 
 
@@ -63,7 +65,7 @@ def compute_sector_multi_period_returns(
     calc_date: Optional[str] = None,
 ) -> List[Dict]:
     """
-    计算所有候选板块（观察池全集）的多周期涨幅，组装管理页列表。
+    计算所有有效候选板块（观察池 + 成分股数量边界）的多周期涨幅，组装管理页列表。
 
     :param db: Database 实例
     :param calc_date: 基准日 YYYYMMDD，默认取 DB 最新交易日
@@ -80,6 +82,11 @@ def compute_sector_multi_period_returns(
     if not concept_codes:
         return []
     members_map = db.get_concept_members_map(concept_codes)
+    concept_codes = [
+        cc for cc in concept_codes
+        if config.is_monitorable_member_count(len(members_map.get(cc, [])))
+    ]
+    members_map = {cc: members_map[cc] for cc in concept_codes}
     concept_names = _load_concept_names(db)
     watched = set(db.get_watched_concept_codes())
 
@@ -147,6 +154,11 @@ def compute_sector_quotes_from_ifind(db: Database) -> List[Dict]:
     if not concept_codes:
         return []
     members_map = db.get_concept_members_map(concept_codes)
+    concept_codes = [
+        cc for cc in concept_codes
+        if config.is_monitorable_member_count(len(members_map.get(cc, [])))
+    ]
+    members_map = {cc: members_map[cc] for cc in concept_codes}
     concept_names = _load_concept_names(db)
     watched = set(db.get_watched_concept_codes())
 

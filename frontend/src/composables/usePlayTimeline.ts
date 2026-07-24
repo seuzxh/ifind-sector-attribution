@@ -38,7 +38,8 @@ export function usePlayTimeline(opts: PlayTimelineOptions) {
   function start() {
     if (playing.value) return
     playing.value = true
-    timer = setInterval(step, speedMs.value)
+    step()
+    if (playing.value) timer = setInterval(step, speedMs.value)
   }
 
   function stop() {
@@ -52,8 +53,8 @@ export function usePlayTimeline(opts: PlayTimelineOptions) {
   function setSpeed(ms: number) {
     speedMs.value = ms
     if (playing.value) {
-      stop()
-      start() // 重启以应用新速度
+      if (timer) clearInterval(timer)
+      timer = setInterval(step, speedMs.value)
     }
   }
 

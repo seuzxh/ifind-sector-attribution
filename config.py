@@ -210,6 +210,17 @@ PERIOD_WEIGHTS = {
 # 低于此值的概念不参与排名（样本过小导致 Z-score 失真）。
 MIN_MEMBER_COUNT = 6
 
+# 监控板块候选的静态成分股数量范围（含边界）。
+# 过小的概念缺乏代表性，过大的宽基概念会稀释强度并显著扩大分时拉取范围。
+MONITORED_CONCEPT_MIN_MEMBERS = 10
+MONITORED_CONCEPT_MAX_MEMBERS = 500
+
+
+def is_monitorable_member_count(member_count: int) -> bool:
+    """成分股数量是否满足板块监控范围。"""
+    return MONITORED_CONCEPT_MIN_MEMBERS <= member_count <= MONITORED_CONCEPT_MAX_MEMBERS
+
+
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 BATCH_SIZE = 100
