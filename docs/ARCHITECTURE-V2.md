@@ -140,6 +140,8 @@ frontend/src/
 ### 关键交互模式
 - **3s 轮询 + 竞态守卫**：`usePolling` 统一序号，仅最新响应允许渲染
 - **会话感知**：盘前/非交易日停轮询，10s 探测到点恢复
+- **刷新可观察**：状态栏同时展示行情分钟与最近响应秒数；分钟不变不等于 3s 轮询停止
+- **全量成员按需排序**：主看板只返 `members_top10`，点击字段后由 `/api/dashboard/members` 对全部有效成员排序再返前 10
 - **红涨绿跌**：A 股惯例，全局 `.up{#ef4444}/.down{#10b981}`
 - **SSE 流式**：rotation 用 fetch ReadableStream 解析
 - **keep-alive**：tab 切换保留状态；DashboardPage 和 ScanPage 监听共享组件的路由切换并按新范围重拉

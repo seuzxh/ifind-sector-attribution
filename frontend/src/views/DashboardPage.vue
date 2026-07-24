@@ -74,7 +74,15 @@
         <button v-if="isCustom && (payload?.zt_sectors?.length || 0) > 0"
                 :class="{ active: membersTab === 'zt' }" @click="membersTab = 'zt'">🔥 涨停分组成分股</button>
       </div>
-      <MemberCardGrid ref="memberGrid" :sectors="currentMembers" :tab="membersTab" :is-custom="isCustom" />
+      <MemberCardGrid
+        ref="memberGrid"
+        :sectors="currentMembers"
+        :tab="membersTab"
+        :is-custom="isCustom"
+        :realtime="mode === 'realtime'"
+        :trade-date="getDateVal()"
+        :snapshot-time="payload?.snapshot_time || payload?.latest_time"
+      />
     </div>
 
   </div>
@@ -120,6 +128,7 @@ const membersTab = ref<'top' | 'bottom' | 'zt'>('top')
 const activeCode = ref('')
 const statusText = ref('加载中...')
 const statusCls = ref('')
+const lastRefreshAt = ref('')
 
 // 成分股网格 ref（用于高亮滚动）
 const memberGrid = ref<InstanceType<typeof MemberCardGrid>>()
@@ -212,6 +221,12 @@ async function loadDashboard(mySeq: number) {
 
   canCalc.value = false
   payload.value = data
+  lastRefreshAt.value = new Date().toLocaleTimeString('zh-CN', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
 
   // 更新时间轴（仅实时模式有 available_times；历史模式无）
   if (mode.value === 'realtime') {
@@ -231,7 +246,7 @@ async function loadDashboard(mySeq: number) {
     statusText.value = `历史 · ${data.date || data.trade_date || getDateVal()}`
   } else {
     const ts = data.snapshot_time || data.latest_time || '--:--'
-    statusText.value = `${data.is_today ? '实时' : '历史回看'} · ${ts} · 自动${POLL_INTERVAL / 1000}s`
+    statusText.value = `${data.is_today ? '实时' : '历史回看'} · 行情 ${ts} · 刷新 ${lastRefreshAt.value} · 自动${POLL_INTERVAL / 1000}s`
   }
   statusCls.value = 'live'
 }

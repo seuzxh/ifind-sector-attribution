@@ -11,7 +11,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core_calculator import calc_all_sectors_strength
 from database import Database
-from realtime_engine import RealtimeEngine, _result_cache_key
+from realtime_engine import (
+    RealtimeEngine,
+    _invalidate_result_cache,
+    _result_cache_key,
+)
 
 
 class PerformanceArchitectureTests(unittest.TestCase):
@@ -139,6 +143,70 @@ class PerformanceArchitectureTests(unittest.TestCase):
             self.assertNotIn("0", RealtimeEngine._series_cache)
         finally:
             RealtimeEngine._series_cache = original
+
+    def test_new_series_invalidates_only_matching_dashboard_results(self):
+        original = RealtimeEngine._result_cache
+        try:
+            RealtimeEngine._result_cache = {
+                "managed:20260724:latest:top10": {"data": {}, "fetched_at": 1},
+                "managed:today:latest:top10": {"data": {}, "fetched_at": 1},
+                "custom:20260724:latest:top10": {"data": {}, "fetched_at": 1},
+                "managed:20260723:latest:top10": {"data": {}, "fetched_at": 1},
+            }
+            _invalidate_result_cache("20260724", "managed_concepts")
+            self.assertNotIn(
+                "managed:20260724:latest:top10",
+                RealtimeEngine._result_cache,
+            )
+            self.assertNotIn(
+                "managed:today:latest:top10",
+                RealtimeEngine._result_cache,
+            )
+            self.assertIn(
+                "custom:20260724:latest:top10",
+                RealtimeEngine._result_cache,
+            )
+            self.assertIn(
+                "managed:20260723:latest:top10",
+                RealtimeEngine._result_cache,
+            )
+        finally:
+            RealtimeEngine._result_cache = original
+
+    def test_member_field_sort_uses_all_group_members_before_top_ten(self):
+        engine = object.__new__(RealtimeEngine)
+        codes = [f"{i:06d}.SZ" for i in range(12)]
+        engine._members_map = {"group-a": codes}
+        engine._concept_names = {"group-a": "测试分组"}
+        engine._stock_names = {code: code for code in codes}
+        engine.db = None
+        engine._ensure_series = lambda *_args: {
+            "series": {},
+            "latest_time": "14:00",
+        }
+        engine._build_indicator_df = lambda *_args: pd.DataFrame([
+            {
+                "code": code,
+                "change_ratio": float(i),
+                "speed": float(i),
+                "body": float(i),
+                "acceleration": float(i),
+            }
+            for i, code in enumerate(codes)
+        ])
+
+        result = engine.get_member_ranking(
+            concept_code="group-a",
+            trade_date="20260724",
+            sort_key="speed",
+            descending=True,
+            limit=10,
+        )
+
+        self.assertEqual(result["member_count"], 12)
+        self.assertEqual(len(result["members"]), 10)
+        self.assertEqual(result["members"][0]["code"], codes[-1])
+        self.assertEqual(result["members"][-1]["code"], codes[2])
 
     def test_batch_member_query_matches_single_queries(self):
         db = Database()

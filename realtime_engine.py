@@ -115,6 +115,7 @@ class RealtimeEngine:
     _result_cache: Dict[str, dict] = {}
     _result_locks: Dict[str, "threading.Lock"] = {}
     _result_locks_guard = threading.Lock()
+    _result_cache_guard = threading.Lock()
     _RESULT_TTL = 10            # 看板结果 TTL（秒），略小于 series TTL，保证新鲜
     _RESULT_MAX_ENTRIES = 60    # result_cache 最大条数（LRU 防膨胀，拖滑块产生多个时刻）
 
@@ -179,6 +180,10 @@ class RealtimeEngine:
         }
         self._series_cache[cache_key] = rec
         self._trim_series_cache()
+        # 新行情一旦落入序列缓存，立即淘汰基于旧序列计算的看板结果。
+        # 否则 3 秒轮询仍可能继续命中最长 10 秒的旧 result_cache，
+        # 造成前端看起来停止刷新。
+        _invalidate_result_cache(trade_date, mode_key)
         print(f"[REALTIME] 序列就绪：{len(series)} 只，{len(available_times)} 个时间点，"
               f"最新 {latest_time}，耗时 {time.time()-t0:.1f}s")
         return rec
@@ -506,6 +511,83 @@ class RealtimeEngine:
             "holding_stocks": holding_stocks,   # 持仓股清单（仅 custom 模式非空，供前端醒目标注）
         }
 
+    def get_member_ranking(
+        self,
+        concept_code: str,
+        trade_date: str = None,
+        snapshot_time: str = None,
+        custom_mode: bool = False,
+        sort_key: str = "score",
+        descending: bool = True,
+        limit: int = 10,
+    ) -> Dict:
+        """对单个板块/分组的全部有效成分股排序，只返回展示所需的前 N 支。"""
+        self._ensure_maps()
+        allowed_sort_keys = {
+            "change_ratio", "speed", "acceleration", "body", "score",
+        }
+        if sort_key not in allowed_sort_keys:
+            return {"error": f"不支持的排序字段: {sort_key}"}
+
+        today_str = datetime.now().strftime("%Y%m%d")
+        trade_date = (trade_date or today_str).replace("-", "")
+        is_today = trade_date == today_str
+
+        if custom_mode:
+            members_map = self.db.get_custom_members_map()
+            mode_key = "custom_group"
+            codes = self.db.get_custom_all_stock_codes()
+        else:
+            members_map = self._members_map or {}
+            mode_key = "managed_concepts"
+            codes = self._get_managed_stock_codes()
+
+        members = members_map.get(concept_code)
+        if not members:
+            return {"error": "板块不存在或不在当前监控范围"}
+
+        cache_rec = self._ensure_series(
+            trade_date, codes, mode_key, is_today,
+        )
+        if cache_rec is None:
+            return {"error": "无分时数据（可能非交易时段或 API 不可达）"}
+
+        if snapshot_time in (None, "", "latest"):
+            snapshot_time = None
+        rt_df = self._build_indicator_df(cache_rec["series"], snapshot_time)
+        member_df = rt_df[rt_df["code"].isin(members)].copy()
+        if member_df.empty:
+            return {"error": "该板块暂无有效成分股行情"}
+
+        scored = score_members(member_df)
+        picked = scored.sort_values(
+            [sort_key, "score", "code"],
+            ascending=[not descending, False, True],
+            kind="stable",
+        ).head(max(1, min(int(limit), 50)))
+        stock_name_map = self._stock_names or {}
+        ranked_members = [
+            {
+                "code": row["code"],
+                "name": stock_name_map.get(row["code"], ""),
+                "change_ratio": round(float(row["change_ratio"]), 2),
+                "speed": round(float(row["speed"]), 2),
+                "body": round(float(row["body"]), 2),
+                "acceleration": round(float(row["acceleration"]), 2),
+                "limit": int(row["limit_score"]),
+                "score": round(float(row["score"]), 4),
+            }
+            for _, row in picked.iterrows()
+        ]
+        return {
+            "concept_code": concept_code,
+            "sort_key": sort_key,
+            "descending": descending,
+            "member_count": len(scored),
+            "members": ranked_members,
+            "snapshot_time": snapshot_time or cache_rec["latest_time"],
+        }
+
     @staticmethod
     def _market_stats(rt_df: pd.DataFrame) -> Dict:
         def _is_limit(code, chg):
@@ -813,22 +895,37 @@ def _get_result_lock(rk: str) -> "threading.Lock":
 
 def _result_cache_get(rk: str) -> Optional[dict]:
     """查 result_cache（命中且未过期返回结果，否则 None）"""
-    rec = RealtimeEngine._result_cache.get(rk)
-    if rec and (time.time() - rec["fetched_at"]) < RealtimeEngine._RESULT_TTL:
-        return rec["data"]
+    with RealtimeEngine._result_cache_guard:
+        rec = RealtimeEngine._result_cache.get(rk)
+        if rec and (time.time() - rec["fetched_at"]) < RealtimeEngine._RESULT_TTL:
+            return rec["data"]
     return None
 
 
 def _result_cache_set(rk: str, data: dict):
     """写 result_cache（LRU 淘汰）"""
-    cache = RealtimeEngine._result_cache
-    cache[rk] = {"data": data, "fetched_at": time.time()}
-    # LRU：超过上限删最早的（dict 保持插入序，删 first key）
-    while len(cache) > RealtimeEngine._RESULT_MAX_ENTRIES:
-        try:
-            del cache[next(iter(cache))]
-        except (StopIteration, KeyError):
-            break
+    with RealtimeEngine._result_cache_guard:
+        cache = RealtimeEngine._result_cache
+        cache[rk] = {"data": data, "fetched_at": time.time()}
+        # LRU：超过上限删最早的（dict 保持插入序，删 first key）
+        while len(cache) > RealtimeEngine._RESULT_MAX_ENTRIES:
+            try:
+                del cache[next(iter(cache))]
+            except (StopIteration, KeyError):
+                break
+
+
+def _invalidate_result_cache(trade_date: str, mode_key: str):
+    """新序列写入后，清除同日期同模式下基于旧序列生成的看板结果。"""
+    mode = "custom" if mode_key == "custom_group" else "managed"
+    prefixes = (f"{mode}:{trade_date}:", f"{mode}:today:")
+    with RealtimeEngine._result_cache_guard:
+        stale_keys = [
+            key for key in RealtimeEngine._result_cache
+            if key.startswith(prefixes)
+        ]
+        for key in stale_keys:
+            RealtimeEngine._result_cache.pop(key, None)
 
 
 def get_realtime_dashboard(
@@ -873,6 +970,30 @@ def get_realtime_dashboard(
         if "error" not in result:
             _result_cache_set(rk, result)
         return result
+
+
+def get_realtime_member_ranking(
+    concept_code: str,
+    trade_date: str = None,
+    snapshot_time: str = None,
+    custom_mode: bool = False,
+    sort_key: str = "score",
+    descending: bool = True,
+    limit: int = 10,
+) -> Dict:
+    """单板块全量成分股排序入口，复用实时引擎及分时序列缓存。"""
+    global _engine_instance
+    if _engine_instance is None:
+        _engine_instance = RealtimeEngine()
+    return _engine_instance.get_member_ranking(
+        concept_code=concept_code,
+        trade_date=trade_date,
+        snapshot_time=snapshot_time,
+        custom_mode=custom_mode,
+        sort_key=sort_key,
+        descending=descending,
+        limit=limit,
+    )
 
 
 def scan_custom_groups(query: str) -> Dict:
