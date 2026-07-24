@@ -622,7 +622,8 @@ def get_available_dates():
 @app.get("/api/sector_manage/list")
 def sector_manage_list(date: str = None):
     """
-    监控板块管理列表：全部候选板块（观察池全集）+ iFinD 实时行情 + 是否已勾选监控。
+    监控板块管理列表：观察池内成分股数 10~500 的候选板块
+    + iFinD 实时行情 + 是否已勾选监控。
     行情数据直接从 iFinD 接口3（概念指数日K）获取，不依赖本地 daily_kline。
     :param date: 保留兼容，实际行情由 iFinD 实时返回
     :return: {date, total, watched_count, sectors: [{concept_code, concept_name, level,
@@ -650,12 +651,17 @@ def sector_manage_watched():
 def sector_manage_save(req: WatchedSaveRequest):
     """
     全量覆盖监控板块勾选清单。保存后立即生效（各链路下次查询即读取新清单）。
-    :return: {ok, saved_count}
+    成分股数量不在配置范围内的代码会被自动剔除。
+    :return: {ok, saved_count, excluded_count}
     """
-    db.save_watched_concepts(req.concept_codes)
+    saved_codes = db.save_watched_concepts(req.concept_codes)
     from realtime_engine import clear_cache
     clear_cache()
-    return {"ok": True, "saved_count": len(req.concept_codes)}
+    return {
+        "ok": True,
+        "saved_count": len(saved_codes),
+        "excluded_count": len(set(req.concept_codes) - set(saved_codes)),
+    }
 
 
 # 刷新板块信息的后台任务状态（全局，进程内）

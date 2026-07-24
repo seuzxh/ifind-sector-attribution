@@ -1,6 +1,6 @@
 # 前后端架构梳理（第一性原理 + 对抗式审查）
 
-> 生成于 2026-07-02，基于对真实代码的逐文件审查（非凭记忆）。
+> 生成于 2026-07-02，2026-07-24 按真实代码复核。
 > 目的：为后续开发/扩展提供清晰的边界与约束。
 
 ---
@@ -15,7 +15,7 @@
 │  main.py server → uvicorn → FastAPI app (api_server.py)       │
 │                                                               │
 │  前端：Vue3 SPA (static/index.html, Hash 路由)                │
-│  后端：api_server.py (30 个 REST/SSE 接口)                    │
+│  后端：api_server.py (24 个 API/SSE 接口)                     │
 │         │                                                      │
 │    ┌────┴──────────────────────────────────────────────┐      │
 │    │  业务引擎层（各自带缓存/锁）                         │      │
@@ -71,7 +71,7 @@ config (leaf)
 | **数据层** | database, ifind_client, intraday_fetcher, mcp_proxy | 读写外部存储/API | — |
 | **基础** | config(只读常量), trade_calendar | 全局配置、日历 | config 不导入业务模块 |
 
-### 后端接口清单（30 个）
+### 后端接口清单（24 个）
 | 类别 | 方法 | 路径 | 用途 |
 |------|------|------|------|
 | 页面 | GET | `/` | SPA 入口；入口 no-cache，hash assets 可长缓存 |
@@ -93,12 +93,6 @@ config (leaf)
 | 管理 | GET/POST | `/api/sector_manage/*` | 监控范围、后台刷新及状态；保存后清看板缓存 |
 | 日历 | GET | `/api/trade_calendar` | 交易日(+today) |
 | 日历 | GET | `/api/session_status` | 交易时段 |
-| AI | GET | `/api/mcp/tools` | MCP工具列表 |
-| AI | POST | `/api/mcp/call` | 调MCP工具 |
-| AI | POST | `/api/chat` | AI问答(SSE) |
-| AI | GET | `/api/llm/models` | 模型列表 |
-| AI | GET/POST | `/api/llm/model` | 查/切模型 |
-| AI | POST | `/api/llm/model/reset` | 重置模型 |
 
 ---
 
@@ -106,27 +100,27 @@ config (leaf)
 
 ### 技术栈
 Vue 3 (`<script setup>`) + Vite + TypeScript + Element Plus + Vue Router
-（Pinia 已装但**未使用**，见审查项）
+（Pinia 已注册但当前没有 store，见审查项）
 
 ### 工程结构
 ```
 frontend/src/
-├── api/           # 类型化接口封装（8 个模块，按领域拆）
+├── api/           # 类型化接口封装（按领域拆）
 │   ├── client.ts      # axios 实例 + 拦截器
 │   ├── dashboard.ts   # realtime/custom/history
-│   ├── auction.ts / scan.ts / chat.ts / session.ts / calendar.ts / custom.ts
+│   ├── auction.ts / scan.ts / sectorManage.ts / session.ts / calendar.ts / custom.ts
 │   └── types.ts       # 共享类型
 ├── components/dashboard/   # 复用组件
 │   ├── RankTable.vue      # 排序排行表（5维排序）
 │   ├── MemberCardGrid.vue # 成分股卡片网格
 │   └── TimeBar.vue        # 时间轴
-├── composables/    # ⚠ 三个均未被使用（死代码）
+├── composables/    # DashboardPage 的轮询、会话和时间轴逻辑
 │   ├── usePolling.ts / useSession.ts / usePlayTimeline.ts
 ├── layouts/AppLayout.vue  # 顶部 tab + router-view + keep-alive
 ├── views/          # 7 个页面
-│   ├── DashboardPage.vue  # sector+custom 共用（⚠ 425行，过大）
-│   ├── AuctionPage.vue / ScanPage.vue / ChatPage.vue / RotationPage.vue
-├── utils/          # format.ts / markdown.ts
+│   ├── DashboardPage.vue  # sector+custom 共用（⚠ 约400行，仍偏大）
+│   ├── AuctionPage.vue / ScanPage.vue / RotationPage.vue / SectorManagePage.vue
+├── utils/          # format.ts / markdown.ts（轮动输出）
 ├── router/index.ts # Hash 路由，7 个路由
 ├── main.ts         # ElementPlus + Router + Pinia 注册
 └── styles/global.css
@@ -141,14 +135,14 @@ frontend/src/
 | `/scan` | scan | ScanPage | 自选强势归类 |
 | `/market_scan` | market_scan | ScanPage | 全市场（同组件，按 route.name 区分） |
 | `/rotation` | rotation | RotationPage | 板块轮动 |
-| `/chat` | chat | ChatPage | AI问答 |
+| `/sector_manage` | sector_manage | SectorManagePage | 监控板块管理 |
 
 ### 关键交互模式
-- **3s 轮询 + 竞态守卫**：refreshSeq 序号，仅最新响应允许渲染（复刻旧版）
+- **3s 轮询 + 竞态守卫**：`usePolling` 统一序号，仅最新响应允许渲染
 - **会话感知**：盘前/非交易日停轮询，10s 探测到点恢复
 - **红涨绿跌**：A 股惯例，全局 `.up{#ef4444}/.down{#10b981}`
-- **SSE 流式**：chat/rotation 用 fetch ReadableStream 解析
-- **keep-alive**：tab 切换保留状态（注意：onMounted 只首次触发）
+- **SSE 流式**：rotation 用 fetch ReadableStream 解析
+- **keep-alive**：tab 切换保留状态；DashboardPage 和 ScanPage 监听共享组件的路由切换并按新范围重拉
 
 ---
 
@@ -156,23 +150,12 @@ frontend/src/
 
 ### 🔴 P0（建议尽快修）
 
-**1. DashboardPage 内联了轮询/会话逻辑，composables 成死代码**
-- `src/composables/` 下 3 个文件（usePolling/useSession/usePlayTimeline）**无任何 view 引用**
-- DashboardPage 手写了 14 处 setInterval/checkSession（425 行）
-- **影响**：违反 DRY，逻辑分散难维护，composables 的抽象白费
-- **修复**：DashboardPage 改用 composables，删手写逻辑
-
-**2. `/api/history/dashboard` 是 153 行单体 handler，内联业务逻辑**
-- api_server.py:449-601，包含内联 `_build_member_ranking`、`_is_limit`、market_stats
+**1. `/api/history/dashboard` 是大型单体 handler，内联业务逻辑**
+- handler 约 220 行，包含内联成员排名、涨停判定、scope 聚合和 market_stats
 - 直接 `sqlite3.connect` 绕过 Database 类（2 处）
 - 重复了 realtime_engine 的成员排名 + stock_scorer 的涨停规则
 - `force_calc` 分支在请求里同步跑 ~2 分钟 SyncPipeline，阻塞 worker
 - **修复**：抽到 core_calculator/stock_scorer；force_calc 改后台任务
-
-**3. SQLite 未开 WAL 模式**
-- database.py:41 `_init_db` 未设 `PRAGMA journal_mode=WAL`
-- force_calc 写 K线 时，并发读请求可能 `database is locked`
-- **修复**：`_connect()` 或 `_init_db` 里加 `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`
 
 ### 🟡 P1（技术债）
 
@@ -196,17 +179,17 @@ frontend/src/
 
 ### 🟢 P2（优化项）
 
-**8. api_server.py 794 行偏大**
-- 30 个接口全在一个文件
-- **修复**：按领域拆 router（dashboard/auction/chat/llm）
+**8. api_server.py 746 行偏大**
+- 24 个接口全在一个文件
+- **修复**：按领域拆 router（dashboard/auction/rotation/sector-manage）
 
 **9. config.ACCESS_TOKEN 运行时被 ifind_client 改写**
 - 全局可变 config，虽有 _refresh_lock 保护，但是隐式耦合
 - **修复**：token 管理封装到独立类（长期）
 
-**10. 前端 DashboardPage 425 行**
-- 承担了轮询+会话+播放+排序+持仓+ZT+历史模式
-- **修复**：抽出 useDashboard composable + 子组件
+**10. 前端 DashboardPage 约 400 行**
+- 定时器已抽入现役 composables，但页面仍承担数据装载、排序、持仓、ZT 和历史模式组装
+- **修复**：继续抽出 useDashboard 数据层并拆分控制栏/状态栏子组件
 
 ---
 
@@ -226,8 +209,8 @@ frontend/src/
 ### 前端约束
 | 编号 | 约束 | 理由 |
 |------|------|------|
-| FE-1 | **复用 composables**，禁止在 view 里手写 setInterval/轮询 | 已有 usePolling/useSession |
-| FE-2 | **接口调用必须经 src/api/ 封装**，禁止 view 里裸 fetch | 类型安全 + 统一错误处理 |
+| FE-1 | 新增轮询必须保留请求序号守卫和卸载清理；DashboardPage 优先复用现役 composables | 防止复制页面内逻辑 |
+| FE-2 | JSON 接口必须经 src/api/ 封装；SSE 流式接口允许 view 使用原生 fetch + ReadableStream | 类型安全与流式读取兼容 |
 | FE-3 | **组件超 300 行考虑拆分**（DashboardPage 已超标） | 可维护性 |
 | FE-4 | **红涨绿跌用全局 .up/.down class**，不要硬编码颜色 | A股惯例一致性 |
 | FE-5 | **跨组件状态用 Pinia**（如选中模型/排序状态持久化） | 已装未用 |
@@ -247,11 +230,14 @@ frontend/src/
 
 | 优先级 | 项 | 工作量 | 收益 |
 |--------|-----|--------|------|
-| P0 | SQLite 开 WAL | 2行 | 消除锁冲突风险 |
-| P0 | composables 接入 DashboardPage | 中 | 消除死代码+降低复杂度 |
 | P0 | history dashboard 抽离业务逻辑 | 中 | 消除重复+单体handler |
 | P1 | 涨停规则统一到 stock_scorer | 小 | DRY |
 | P1 | auction_engine 加锁 | 小 | 并发安全 |
 | P1 | Element Plus 按需引入 | 小 | 包体积-60% |
 | P2 | api_server 拆 router | 中 | 可维护性 |
-| P2 | DashboardPage 拆 composable+子组件 | 中 | 可维护性 |
+| P2 | DashboardPage 抽数据层并拆子组件 | 中 | 可维护性 |
+
+### 已解决项
+
+- **Dashboard composables**：`usePolling`、`useSession`、`usePlayTimeline` 已接入 DashboardPage，页面不再自行持有对应定时器。
+- **SQLite WAL / busy timeout**：`Database._init_db()` 已启用 WAL，连接统一设置 `busy_timeout` 和 `synchronous=NORMAL`。

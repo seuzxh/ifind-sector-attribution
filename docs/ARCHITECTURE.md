@@ -249,7 +249,7 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 ```
 前端 3s 轮询 GET /api/realtime/dashboard?snapshot_time=09:50
                 ↓
-    检查分时序列缓存（按 trade_date+mode_key，TTL 5s）
+    检查分时序列缓存（按 trade_date+mode_key，TTL 15s）
         ├─ 命中 ─────────────────────→ 不拉网络，进入切片
         └─ 未命中（当日实时 TTL 过期 / 历史首次）
             ↓
@@ -313,11 +313,12 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 
 ### 管理页监控范围
 
-实时模式以 `watched_concepts` 为唯一范围：
+实时模式以 `watched_concepts` 的持久化选择和成员数资格规则共同确定范围：
 - 板块集合来自“监控板块管理”的当前勾选项；
 - 行情池是这些板块全部成分股的去重并集；
 - 分组强度使用每个勾选板块中成功取得行情的全部成分股；
 - 未勾选板块时返回“未配置监控板块”，不会隐式回退到旧 watchlist 或全市场。
+- 勾选集还会按最新成分股总数做 10~500（含边界）过滤；管理列表、保存接口和实时引擎使用同一规则。
 
 ### 历史模式降级
 
@@ -327,7 +328,7 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 - 成分股排名读取 `daily_kline` 当日涨幅，**降级为纯涨幅排序**（无分时历史，无法算涨速/body）。
 - 页面标注"历史模式仅涨幅"
 
-> 注意：实时模式选历史日期（如 `trade_date=20260612`）走的是**分时数据链路**（拉该日全天分时），与历史看板（读 concept_strength 入库数据）是两条不同路径。
+> 注意：实时模式选历史日期（如 `trade_date=20260612`）走的是**分时数据链路**（拉该日全天分时），与历史看板（sector 读 concept_strength、custom 按 daily_kline 聚合）是两条不同路径。
 
 ### 集合竞价监控（09:15~09:25）
 
@@ -374,8 +375,8 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 
 | 时段 | 前端行为 |
 |---|---|
-| 非交易日 / `pre_open`(<9:15) / `closed`(收盘后) | **停止 3s 轮询**，显示友好提示（如"⏰ 盘前 · 09:15 后自动开始监控"），`scheduleResume` 每分钟检查 |
-| `auction`(9:15-9:25) / 盘中 | 启动轮询（集合竞价阶段配合后端 ref_price 计算逻辑） |
+| 非交易日 / `pre_open`(<9:15) | **停止 3s 轮询**，显示友好提示（如"⏰ 盘前 · 09:15 后自动开始监控"），`scheduleResume` 每分钟检查 |
+| `auction`(9:15-9:25) / 盘中 / `closed`(收盘后) | 启动或保持轮询（集合竞价阶段配合后端 ref_price 计算逻辑；收盘后继续提供最新快照） |
 
 设计要点：轮询启停完全由服务端 `session_phase` 决定（前端本地时间仅兜底），避免客户端时区偏差。集合竞价阶段数据可用后，前端无需特殊处理——后端返回的 `available_times` 含 9:15-9:25 点，进度条自然从 9:15 开始。
 
@@ -384,8 +385,8 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 ## 8. 已退役：盘前筛选与 watchlist
 
 盘前筛选功能于 2026-07-24 退役。现役实时监控范围由“监控板块管理”的
-`watched_concepts` 唯一决定，不再创建、读取或依赖 `watchlist`。旧数据库中的
-`watchlist` 表可作为历史数据保留，但应用代码不会访问它；历史过程见
+`watched_concepts` 持久化选择再经成员数规则收口，不再创建、读取或依赖 `watchlist`。本机运行库的
+`watchlist` 已于 2026-07-24 经确认后删除；其他旧数据库即使仍保留该表，应用代码也不会访问。历史过程见
 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
@@ -451,8 +452,8 @@ GET /  → tabs.html（顶层 Tab 容器）
 
 ### 时间条播放
 
-`togglePlay` 用 `setInterval` 逐分钟推进滑块（`stepPlay` → `refresh`）：
+`DashboardPage` 通过 `usePlayTimeline` 逐分钟推进滑块，并由 `usePolling` 触发刷新：
 - 速度档位 1.5x/2x/4x/8x（每步间隔 1500/800/400/150ms）
 - 播放时自动 `autoFollow=false`（否则 3s 轮询拉回最新）
 - 到末尾自动 `stopPlay`；切模式/切日期/拖滑块/点"回到最新"也自动停
-- **请求序号守卫 `refreshSeq`**：每次 refresh 前 `++seq` 记 `mySeq`，响应回来若 `mySeq !== refreshSeq` 则丢弃——防止播放快进时多个并发请求乱序覆盖界面（时刻跳变）
+- **共享请求序号守卫**：`usePolling` 为轮询、播放和手动刷新分配单调序号，过期响应直接丢弃，防止播放快进时多个并发请求乱序覆盖界面

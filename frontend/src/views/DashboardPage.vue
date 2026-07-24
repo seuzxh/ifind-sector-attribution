@@ -81,15 +81,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import TimeBar from '@/components/dashboard/TimeBar.vue'
 import RankTable from '@/components/dashboard/RankTable.vue'
 import MemberCardGrid from '@/components/dashboard/MemberCardGrid.vue'
 import { getCustomDashboard, getRealtimeDashboard, getHistoryDashboard } from '@/api/dashboard'
 import type { DashboardPayload } from '@/api/types'
-import { getSessionStatus } from '@/api/session'
 import { getAvailableDates } from '@/api/calendar'
+import { usePolling } from '@/composables/usePolling'
+import { useSession } from '@/composables/useSession'
+import { usePlayTimeline } from '@/composables/usePlayTimeline'
 import { fmt } from '@/utils/format'
 
 const route = useRoute()
@@ -113,7 +115,6 @@ function getDateVal(): string {
 const payload = ref<DashboardPayload | null>(null)
 const canCalc = ref(false)   // 历史日期无数据时，是否可拉取计算（显示按钮）
 const availableTimes = ref<string[]>([])
-const sliderIndex = ref(0)
 const autoFollow = ref(true)
 const membersTab = ref<'top' | 'bottom' | 'zt'>('top')
 const activeCode = ref('')
@@ -123,19 +124,7 @@ const statusCls = ref('')
 // 成分股网格 ref（用于高亮滚动）
 const memberGrid = ref<InstanceType<typeof MemberCardGrid>>()
 
-// ===== 轮询（竞态守卫） =====
-let refreshSeq = 0
-let pollTimer: ReturnType<typeof setInterval> | null = null
 const POLL_INTERVAL = 3000
-
-// ===== 时间轴播放 =====
-const playing = ref(false)
-const speedMs = ref(800)
-let playTimer: ReturnType<typeof setInterval> | null = null
-
-// ===== 会话感知 =====
-let sessionTimer: ReturnType<typeof setInterval> | null = null
-let resumeTimer: ReturnType<typeof setInterval> | null = null
 
 // 当前时刻文本
 const currentTimeText = computed(() => {
@@ -156,10 +145,12 @@ const currentMembers = computed(() => {
 
 // ===== 模式/日期切换 =====
 function onModeChange() {
-  stopPlay(); stopPolling()
+  stopPlay()
+  stopPolling()
+  stopSession()
   if (mode.value === 'realtime') { autoFollow.value = true }
   refresh()
-  if (mode.value === 'realtime') checkSession()
+  if (mode.value === 'realtime') void startSession()
 }
 function onDateChange() {
   stopPlay()
@@ -180,9 +171,7 @@ async function loadDates() {
   } catch { dateHint.value = '' }
 }
 
-async function refresh() {
-  const mySeq = ++refreshSeq
-
+async function loadDashboard(mySeq: number) {
   let data: DashboardPayload
   try {
     if (mode.value === 'history') {
@@ -211,7 +200,7 @@ async function refresh() {
   }
 
   // 竞态守卫：丢弃过期响应
-  if (mySeq !== refreshSeq) return
+  if (mySeq !== currentSeq()) return
 
   if (data.error) {
     statusText.value = '⚠ ' + data.error
@@ -247,15 +236,25 @@ async function refresh() {
   statusCls.value = 'live'
 }
 
+const {
+  start: startPolling,
+  stop: stopPolling,
+  triggerNow: refresh,
+  currentSeq,
+  nextSeq,
+} = usePolling(loadDashboard, POLL_INTERVAL, {
+  shouldTick: () => mode.value === 'realtime' && autoFollow.value,
+})
+
 // ===== 历史无数据时：拉取并计算（force_calc）=====
 const calcLoading = ref(false)
 async function forceCalc() {
   if (calcLoading.value) return
   calcLoading.value = true
-  const mySeq = ++refreshSeq
+  const mySeq = nextSeq()
   try {
     const data = await getHistoryDashboard(getDateVal(), 10, true, isCustom.value ? 'custom' : 'sector')
-    if (mySeq !== refreshSeq) return
+    if (mySeq !== currentSeq()) return
     if (data.error) { statusText.value = '⚠ ' + data.error; statusCls.value = 'warn'; payload.value = null }
     else { canCalc.value = false; payload.value = data; statusText.value = `历史 · ${data.date || getDateVal()}`; statusCls.value = 'live' }
   } catch (e: any) { statusText.value = '⚠ 计算失败: ' + (e?.message || e); statusCls.value = 'warn' }
@@ -273,37 +272,38 @@ function onRowClick(tab: 'top' | 'bottom' | 'zt', code: string) {
 function onSliderChange(idx: number) {
   stopPlay()
   autoFollow.value = false
-  sliderIndex.value = idx
+  jumpToIndex(idx)
   refresh()
 }
 function togglePlay() {
   if (playing.value) { stopPlay(); return }
   // 播放：从头或当前位置开始
-  if (sliderIndex.value >= availableTimes.value.length - 1) sliderIndex.value = 0
+  if (sliderIndex.value >= availableTimes.value.length - 1) jumpToIndex(0)
   autoFollow.value = false
-  playing.value = true
-  stepPlay()
-  playTimer = setInterval(stepPlay, speedMs.value)
-}
-function stepPlay() {
-  if (sliderIndex.value >= availableTimes.value.length - 1) { stopPlay(); return }
-  sliderIndex.value += 1
-  refresh()
-}
-function stopPlay() {
-  playing.value = false
-  if (playTimer) { clearInterval(playTimer); playTimer = null }
+  startPlay()
 }
 function onSpeedChange(ms: number) {
-  speedMs.value = ms
-  if (playing.value) { clearInterval(playTimer!); playTimer = setInterval(stepPlay, ms) }
+  setPlaySpeed(ms)
 }
 function jumpToLatest() {
   stopPlay()
   autoFollow.value = true
-  sliderIndex.value = availableTimes.value.length - 1
+  jumpToIndex(availableTimes.value.length - 1)
   refresh()
 }
+
+const {
+  playing,
+  speedMs,
+  currentIndex: sliderIndex,
+  start: startPlay,
+  stop: stopPlay,
+  setSpeed: setPlaySpeed,
+  jumpTo: jumpToIndex,
+} = usePlayTimeline({
+  max: () => availableTimes.value.length - 1,
+  onStep: () => { void refresh() },
+})
 
 // sector/custom 复用同一组件；切换路由时立即按新范围重拉，避免历史结果残留。
 watch(() => route.name, (name, oldName) => {
@@ -315,73 +315,40 @@ watch(() => route.name, (name, oldName) => {
 })
 
 // ===== 轮询 + 会话感知 =====
-function startPolling() {
-  if (pollTimer) return
-  pollTimer = setInterval(() => { if (autoFollow.value) refresh() }, POLL_INTERVAL)
-}
-function stopPolling() {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-}
+const {
+  status: sessionStatus,
+  error: sessionError,
+  shouldPoll,
+  start: startSession,
+  stop: stopSession,
+} = useSession(60000, 10000)
 
-async function checkSession() {
-  try {
-    const s = await getSessionStatus()
-    if (!s.is_trading_day) {
-      stopPolling()
-      statusText.value = `今日非交易日（下一交易日 ${s.next_trade_day || ''}）`
-      statusCls.value = 'warn'
-      scheduleResume()
-      return
-    }
-    if (s.phase === 'pre_open') {
-      stopPolling()
-      statusText.value = `⏰ 盘前 · ${s.next_open_time || '09:15'} 后自动开始监控`
-      statusCls.value = 'warn'
-      scheduleResume()
-      return
-    }
-    // 有数据时段 → 启动轮询
-    stopPollingResume()
+watch([sessionStatus, shouldPoll, sessionError], ([session, canPoll, error], [, previouslyCanPoll]) => {
+  if (mode.value !== 'realtime') return
+  if (error) {
     startPolling()
-    refresh()
-  } catch {
-    // 接口异常 → 保守轮询
-    startPolling()
-    refresh()
+    return
   }
-}
-
-function scheduleResume() {
-  if (resumeTimer) return
-  resumeTimer = setInterval(async () => {
-    try {
-      const s = await getSessionStatus()
-      if (s.is_trading_day && ['auction', 'pre_morning', 'morning', 'lunch', 'afternoon'].includes(s.phase)) {
-        clearInterval(resumeTimer!); resumeTimer = null
-        startPolling()
-        refresh()
-      }
-    } catch { /* 忽略，继续探测 */ }
-  }, 10000)
-}
-function stopPollingResume() {
-  if (resumeTimer) { clearInterval(resumeTimer); resumeTimer = null }
-}
+  if (!session) return
+  if (!canPoll) {
+    stopPolling()
+    if (!session.is_trading_day) {
+      statusText.value = `今日非交易日（下一交易日 ${session.next_trade_day || ''}）`
+    } else {
+      statusText.value = `⏰ 盘前 · ${session.next_open_time || '09:15'} 后自动开始监控`
+    }
+    statusCls.value = 'warn'
+    return
+  }
+  startPolling()
+  if (previouslyCanPoll === false) void refresh()
+})
 
 // ===== 生命周期 =====
 onMounted(async () => {
   await loadDates()
   await refresh()
-  if (mode.value === 'realtime') {
-    checkSession()
-    sessionTimer = setInterval(checkSession, 60000)
-  }
-})
-onUnmounted(() => {
-  stopPolling()
-  stopPlay()
-  stopPollingResume()
-  if (sessionTimer) clearInterval(sessionTimer)
+  if (mode.value === 'realtime') await startSession()
 })
 </script>
 

@@ -41,7 +41,7 @@ REST 通路（成分股）依赖 `ACCESS_TOKEN`（`config_local.py` 的 iFinD �
 
 > ⚠️ **两个 token 是不同的东西，别混淆**：
 > - `IFIND_MCP_TOKEN` = MCP 自然语言接口的 JWT（header 含 `kid:mcp-api`），本 skill 主依赖。
-> - `ACCESS_TOKEN`/`REFRESH_TOKEN` = iFinD REST 数据接口的 token，任务②成分股查询用。**会过期**（返回 `errorcode:-1302 "Access_Token is expired"`），过期需到同花顺重新获取并更新 `config_local.py`。
+> - `ACCESS_TOKEN`/`REFRESH_TOKEN` = iFinD REST 数据接口的 token，任务②成分股查询用。`ACCESS_TOKEN` 过期时客户端会用 `REFRESH_TOKEN` 自动刷新并重试；只有 refresh token 也失效时才需人工更新。
 
 ## 两条数据通路
 
@@ -60,7 +60,7 @@ REST 通路（成分股）依赖 `ACCESS_TOKEN`（`config_local.py` 的 iFinD �
 
 ## 任务①：查自选股信息
 
-自选股 = 用户从同花顺客户端导出的**自选分组**，存在 `custom_group` 表（PK: group_id+stock_code，53 分组/594 股）。来源：`ths-custom-block-data/同花顺自选分组导出.json`，由 `main.py import-groups` 导入。
+自选股 = 用户从同花顺客户端导出的**自选分组**，存在 `custom_group` 表（PK: group_id+stock_code；2026-07-24 当前快照为 50 分组/599 只去重股票）。来源：`ths-custom-block-data/同花顺自选分组导出.json`，由 `main.py import-groups` 导入。
 
 ### 方式 A：读自选股清单（纯本地，最快）
 
@@ -134,7 +134,7 @@ resp = client.get_concept_members("700471.TI", "20260613")
 
 > 该接口（`data_pool` p03473）一次只能传**一个**概念代码，多个要循环调。返回结构见 `ifind_client.py:73`。
 >
-> ⚠️ **401 排错**：若报 `errorcode:-1302 "Access_Token is expired"`，是 `ACCESS_TOKEN` 过期（与 MCP token 无关），需到同花顺重新取数据接口 token 更新 `config_local.py`。在 token 失效期间，可用 MCP 通路降级（见下文「MCP 替代」）。
+> ⚠️ **401 排错**：若报 `errorcode:-1302 "Access_Token is expired"`，是 REST 的 `ACCESS_TOKEN` 问题（与 MCP token 无关）。客户端通常会自动用 `REFRESH_TOKEN` 刷新并重试；自动刷新失败时再更新 `config_local.py`。在 token 无法恢复期间，可用 MCP 通路降级（见下文「MCP 替代」）。
 
 ### MCP 替代（ACCESS_TOKEN 失效时降级）
 

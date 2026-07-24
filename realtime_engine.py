@@ -15,7 +15,7 @@
      - body（开盘至今）= (last - open) / open × 100，open = pre_market[-1].ref_price
      - 涨速 speed（1min 滚动末点）= (last[-1] - last[-2]) / last[-2] × 100
      - 加速 acceleration = speed[-1] - speed[-2]
-  4. 板块监控范围：管理页 watched_concepts 勾选集及其全部成分股
+  4. 板块监控范围：管理页 watched_concepts 勾选集中成分股数 10~500 的板块
 """
 
 import os
@@ -60,14 +60,14 @@ class RealtimeEngine:
             return
         print("[REALTIME] 构建成分股映射缓存...")
         import sqlite3
-        # 监控板块由管理页勾选决定（watched_concepts 表，唯一真相源）。
+        # 监控板块由管理页持久化选择 + 成员数资格规则共同决定。
         # 表空（用户清空所有勾选）→ members_map 为空，compute_dashboard 返回"未配置"提示。
         concept_codes = self.db.get_watched_concept_codes()
         member_records = self.db.get_concept_members_map(concept_codes)
         members_map = {
             cc: [m["stock_code"] for m in members]
             for cc, members in member_records.items()
-            if members
+            if config.is_monitorable_member_count(len(members))
         }
         self._members_map = members_map
 

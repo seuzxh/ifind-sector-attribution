@@ -11,7 +11,7 @@
 - **盘中实时监控（多看板 Tab）**：基于分时数据（kline-fetcher）的可视化网站
   - **板块强度看板**：3s 轮询刷新板块强度 + 成分股四维评分排名
   - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
-  - **强势股归类**：按筛选条件（涨幅/成交额/实体涨幅）扫描自选股池，按分组归类统计命中，发现哪个分组批量冒强势股
+  - **自选强势归类**：iFinD MCP 自然语言选股后取自选股交集，再按自选分组统计命中
   - **全市场强势归类**：自然语言选股（iFinD MCP `search_stocks`，4 组预置 + 自定义条件可存/重命名）→ 按管理页已勾选板块归类
   - **板块轮动分析**：并发行情采集 → 分批 LLM 流式分析 → 对抗审查 → 综合结论；采集进度覆盖更新
   - 顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
@@ -157,8 +157,8 @@ python main.py server --host 0.0.0.0 --port 8000
 访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部 7 个 Tab 切换（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理），各页状态由 `<keep-alive>` 保留：
 
 **📊 Tab 1：板块强度监控**（默认）
-- 每个分组 = “监控板块管理”中勾选的同花顺概念板块。两种模式可切：
-  - **实时模式**（默认）：基于 **kline-fetcher 分时数据**，拉取全部勾选板块的去重成分股完整分时序列。前端每 **3s** 自动轮询，后端分时序列缓存（TTL 15s）挡住网络。Top10 板块成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 开盘至今涨幅 0.2 / 涨停 0.2），另有**涨速加速**指标（▲加速 / ▼减缓）。
+- 每个分组 = “监控板块管理”中勾选且成分股数为 **10~500（含边界）** 的同花顺概念板块。两种模式可切：
+  - **实时模式**（默认）：基于 **kline-fetcher 分时数据**，拉取有效板块（已勾选且成员数 10~500）的去重成分股完整分时序列。前端每 **3s** 自动轮询，后端分时序列缓存（TTL 15s）挡住网络。Top10 板块成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 开盘至今涨幅 0.2 / 涨停 0.2），另有**涨速加速**指标（▲加速 / ▼减缓）。
   - **历史模式**：选日期读已入库的收盘数据，秒级响应，成分股按当日涨幅排序。
 
 **⭐ Tab 2：自选分组监控**
@@ -184,7 +184,7 @@ python main.py purge --vacuum    # 删除后执行 VACUUM 回收磁盘空间
 
 此命令幂等，可重复执行。建议执行前备份数据库。
 
-### 9. 导入自选股分组（自选看板用）
+### 8. 导入自选股分组（自选看板用）
 
 ```bash
 python main.py import-groups                      # 默认读 ths-custom-block-data/同花顺自选分组导出.json
@@ -213,9 +213,9 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `POST /api/attribution/stock` | — | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
 | `GET /api/realtime/sector` | — | 最新板块强度排名 |
-| `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页勾选板块全集，分时切片） |
+| `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页有效板块，分时切片） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回持仓标注字段） |
-| `GET /api/custom/scan` | — | **自选强势归类**（分时筛选命中 → 按自选分组归类） |
+| `GET /api/custom/scan` | — | **自选强势归类**（MCP 自然语言选股 → 取自选交集 → 按自选分组归类） |
 | `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → 按管理页已勾选板块归类；入参 `query`） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（`scope=sector` 按当前勾选板块；`scope=custom` 按自选分组） |
@@ -234,6 +234,8 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `SCORE_WEIGHTS` | s1:0.4 / s2:0.3 / s4:0.3 | 板块强度三维权重 |
 | `PERIOD_WEIGHTS` | 1d:0.5 / 5d:0.3 / 20d:0.2 | 多周期融合权重 |
 | `MIN_MEMBER_COUNT` | 6 | 命中 K 线的成分股数下限，过滤迷你概念 |
+| `MONITORED_CONCEPT_MIN_MEMBERS` | 10 | 监控候选的最新成分股总数下限（含边界） |
+| `MONITORED_CONCEPT_MAX_MEMBERS` | 500 | 监控候选的最新成分股总数上限（含边界） |
 | `CONCEPT_MEMBERS_CONCURRENCY` | 8 | 成分股拉取并发线程数 |
 | `CONCEPT_MEMBERS_PROGRESS_EVERY` | 100 | 进度打印间隔 |
 | `A_SHARE_CONCEPT_PREFIXES` | 700/881/883/884/885/886 | A 股概念前缀白名单 |
@@ -248,7 +250,7 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 
 ## 数据模型
 
-SQLite 新建数据库包含 9 张现役表；旧数据库可能保留不再读写的 `watchlist` 历史表：
+SQLite 新建数据库包含 9 张现役表；本机运行库已于 2026-07-24 删除退役 `watchlist`，其他未清理的旧数据库仍可能残留该历史表：
 
 | 表 | 说明 | A 股过滤 |
 |---|---|---|
@@ -260,7 +262,7 @@ SQLite 新建数据库包含 9 张现役表；旧数据库可能保留不再读�
 | `concept_strength` | 板块强度评分（含 score_1d/5d/20d/final） | 仅 A 股概念 |
 | `stock_attribution` | 个股归因结果（含明细 JSON） | 仅 A 股代码 |
 | `custom_group` | 导入的同花顺自选分组 | 导入时仅留 A 股 |
-| `watched_concepts` | 管理页保存的全局监控范围 | 仅 A 股概念 |
+| `watched_concepts` | 管理页持久化选择（读取时再按最新成分股数 10~500 过滤） | 物理行数不等于有效监控数 |
 
 **永久缓存语义**：`stock_concept_map` / `concept_members` 是一次性缓存，查询时不传日期则取最新一份（`MAX(date)`），与 init 日期解耦。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 

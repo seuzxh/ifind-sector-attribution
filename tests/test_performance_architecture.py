@@ -1,7 +1,6 @@
 """实时热路径的回归测试：保证优化不改变计算语义和缓存隔离。"""
 
 import os
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -81,6 +80,46 @@ class PerformanceArchitectureTests(unittest.TestCase):
             ["000001.SZ", "000002.SZ", "600001.SH"],
         )
 
+    def test_watched_scope_keeps_only_concepts_with_10_to_500_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(os.path.join(tmp, "member-bounds.db"))
+            counts = {
+                "sector-9": 9,
+                "sector-10": 10,
+                "sector-500": 500,
+                "sector-501": 501,
+            }
+            with db._connect() as conn:
+                conn.execute("DELETE FROM watched_concepts")
+                conn.executemany(
+                    """
+                    INSERT INTO concept_members
+                    (concept_code, stock_code, stock_name, member_date)
+                    VALUES (?, ?, ?, '20260724')
+                    """,
+                    [
+                        (concept, f"{i:06d}.SZ", f"股票{i}")
+                        for concept, count in counts.items()
+                        for i in range(count)
+                    ],
+                )
+
+            saved = db.save_watched_concepts(list(counts))
+
+            self.assertEqual(saved, ["sector-10", "sector-500"])
+            self.assertEqual(
+                db.get_watched_concept_codes(),
+                ["sector-10", "sector-500"],
+            )
+            with db._connect() as conn:
+                stored = [
+                    row["concept_code"]
+                    for row in conn.execute(
+                        "SELECT concept_code FROM watched_concepts ORDER BY concept_code"
+                    )
+                ]
+            self.assertEqual(stored, ["sector-10", "sector-500"])
+
     def test_prescreen_routes_are_removed(self):
         from api_server import app
 
@@ -121,7 +160,7 @@ class PerformanceArchitectureTests(unittest.TestCase):
             }
             db.save_concept_strength([make("old-a"), make("old-b")])
             db.save_concept_strength([make("new-only")])
-            with sqlite3.connect(db.db_path) as conn:
+            with db._connect() as conn:
                 codes = [
                     row[0] for row in conn.execute(
                         "SELECT concept_code FROM concept_strength WHERE calc_date = '20260724'"

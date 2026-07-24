@@ -12,7 +12,7 @@
 - [7. 数据流：状态与轮询](#7-数据流状态与轮询)
 - [8. 样式体系](#8-样式体系)
 - [9. 编程规范](#9-编程规范)
-- [10. 新旧并存：legacy 旧版](#10-新旧并存legacy-旧版)
+- [10. 架构统一（无旧版）](#10-架构统一无旧版)
 
 ---
 
@@ -52,7 +52,7 @@
 | UI 库 | Element Plus | ^2.9.1 | 中文 locale (`zhCn`) |
 | 图标 | @element-plus/icons-vue | ^2.3.1 | 全量全局注册 |
 | 路由 | Vue Router | ^4.5.0 | Hash 模式 |
-| 状态 | Pinia | ^2.3.0 | 已安装（目前轻量使用） |
+| 状态 | Pinia | ^2.3.0 | 已安装并注册，当前尚无 store |
 | HTTP | Axios | ^1.7.9 | 统一实例 + 拦截器 |
 | 类型检查 | vue-tsc | ^2.1.10 | `npm run build` 前置 |
 
@@ -92,7 +92,7 @@ frontend/
     │       ├── TimeBar.vue         # 时间轴播放控件
     │       ├── RankTable.vue       # 板块排行表
     │       └── MemberCardGrid.vue  # 成分股卡片网格
-    ├── composables/        # 组合式函数（可复用逻辑）
+    ├── composables/        # DashboardPage 的可复用交互逻辑
     │   ├── usePolling.ts          # 轮询 + 竞态守卫
     │   ├── usePlayTimeline.ts     # 时间轴自动播放
     │   └── useSession.ts          # 交易时段感知（盘前停轮询）
@@ -102,13 +102,12 @@ frontend/
     │   ├── dashboard.ts    # 看板数据接口
     │   ├── auction.ts      # 集合竞价接口
     │   ├── scan.ts         # 强势归类接口
-    │   ├── chat.ts         # AI/MCP/LLM 接口
     │   ├── custom.ts       # 自选分组 reload
     │   ├── calendar.ts     # 交易日历
     │   └── session.ts      # 交易时段状态
     ├── utils/
     │   ├── format.ts       # fmt/fmtPct/changeCls 等格式化
-    │   └── markdown.ts     # Markdown 渲染（Chat 用）
+    │   └── markdown.ts     # Markdown 渲染（Rotation 用）
     └── styles/
         └── global.css      # 全局样式 + CSS 变量
 ```
@@ -185,7 +184,7 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 const http = axios.create({ timeout: 60000 })
 // 响应拦截器：成功直接返回 resp.data（脱壳），失败抛 Error(detail)
 ```
-**所有接口都必须经 `http` 实例**，享受统一超时与错误处理。成功返回的是业务数据（已被拦截器脱壳），失败抛 `Error(message)`。
+普通 JSON 接口统一经 `http` 实例，享受统一超时与错误处理。SSE/流式接口（当前为 Rotation）例外，使用原生 `fetch` + `ReadableStream`。成功返回的是业务数据（已被拦截器脱壳），失败抛 `Error(message)`。
 
 ### 按域分文件
 | 文件 | 后端路由前缀 | 用途 |
@@ -220,26 +219,26 @@ export function getRealtimeDashboard(params: DashboardParams = {}): Promise<Dash
 ## 7. 数据流：状态与轮询
 
 ### 轮询与竞态（核心机制）
-实时看板每 3 秒轮询一次，但请求可能乱序返回。`usePolling` 用**序号守卫**丢弃过期响应：
+实时看板每 3 秒轮询一次，但请求可能乱序返回。`DashboardPage` 通过 `usePolling` 的共享序号守卫，只允许最新响应渲染：
 
 ```ts
-const { start, stop, currentSeq, triggerNow } = usePolling(async (mySeq) => {
+const { triggerNow, currentSeq } = usePolling(loadDashboard, 3000)
+async function loadDashboard(mySeq: number) {
   const data = await fetchDashboard()
-  if (mySeq !== currentSeq()) return   // 过期，丢弃
-  // 仅渲染最新
-}, 3000)
+  if (mySeq !== currentSeq()) return
+}
 ```
-> 这是从旧版 `index.html` 的 `refreshSeq` 机制迁移来的，**新增轮询场景必须复用此 composable**，不要自己 `setInterval`。
+暂停自动跟随时，定时 tick 不占用新序号，避免把时间轴手动请求误判为过期。`AuctionPage` 和 `SectorManagePage` 仍各自管理其专用轮询。
 
 ### 三个 composable
-| composable | 作用 | 何时用 |
+| composable | 作用 | 当前状态 |
 |---|---|---|
-| `usePolling` | 定时轮询 + 竞态守卫 + 自动 onUnmounted 清理 | 所有需要定时刷新的看板 |
-| `usePlayTimeline` | 时间轴自动快进（逐分钟回放当日） | 实时看板的时间滑块播放 |
-| `useSession` | 交易时段感知：盘前/非交易日停轮询，到点自恢复 | 实时看板是否启动轮询的判据 |
+| `usePolling` | 定时轮询、手动刷新、共享竞态序号、自动清理 | `DashboardPage` 已接入 |
+| `usePlayTimeline` | 时间轴自动快进、调速、跳转和停止 | `DashboardPage` 已接入 |
+| `useSession` | 交易时段感知；盘前 10 秒探测、正常时段 60 秒复核 | `DashboardPage` 已接入 |
 
 ### 状态管理
-- 跨组件共享状态用 **Pinia**（已安装）。
+- Pinia 已安装并注册，但当前没有 `defineStore`；页面状态均为局部状态。
 - 但目前多数状态是**页面级局部状态**（`ref` / `reactive` 在 `<script setup>` 内），不强行提升到 store。仅在确有跨页共享需求时才建 store。
 
 ---
@@ -331,7 +330,7 @@ const { start, stop, currentSeq, triggerNow } = usePolling(async (mySeq) => {
 - **前端唯一入口**：`frontend/` 源码 → `npm run build` → `static/` 产物。
 - **后端唯一入口路由** `api_server.py:root()`：`GET /` 返回 `static/index.html`（Vue SPA）并设置 `Cache-Control: no-cache, no-store, must-revalidate`，避免新构建后旧入口继续引用已不存在的 hash asset；SPA 未构建时返回构建提示（不再回退旧版）。
 - 已删除：`templates/`（旧版 `index.html` / `tabs.html` / `chat.html`）、`root()` 的 `legacy` / `board` 参数。
-- `DashboardPage` 的板块实时模式直接使用“监控板块管理”勾选集及其全部去重成分股；不再提供盘前筛选或 watchlist 模式。
+- `DashboardPage` 的板块实时模式使用“监控板块管理”有效范围（勾选且最新成员数 10~500）及其全部去重成分股；不再提供盘前筛选或 watchlist 模式。
 
 ---
 

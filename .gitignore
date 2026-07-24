@@ -16,6 +16,7 @@ data/*.db
 data/*.db.bak.*
 data/*.db-journal
 data/*.db-wal
+data/*.db-shm
 *.db
 
 # Token 和敏感配置
@@ -45,4 +46,3 @@ node_modules/
 frontend/node_modules/
 # Vite 构建产物（npm run build 生成，不入库）
 static/
-
