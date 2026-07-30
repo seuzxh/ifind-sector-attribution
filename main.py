@@ -84,6 +84,41 @@ def cmd_purge(args):
     print("[PURGE] 提示：建议提前备份数据库，此操作不可逆")
 
 
+def cmd_push(args):
+    """股池归因定时推送：按 slot 选股归类并推送飞书（由 crontab 在 4 个时刻调用）。"""
+    from scan_push import run_push, PUSH_SLOTS
+    if args.slot not in PUSH_SLOTS:
+        print(f"[PUSH] 未知 slot: {args.slot}（可选: {list(PUSH_SLOTS)}）")
+        sys.exit(1)
+    result = run_push(args.slot, dry_run=args.dry_run)
+    if result.get("skipped"):
+        print(f"[PUSH] 非交易日，跳过（slot={args.slot}）")
+        return
+    cls = result.get("classification", {})
+    custom = cls.get("custom", {})
+    market = cls.get("market", {})
+    c_err = custom.get("error") if isinstance(custom, dict) else None
+    m_err = market.get("error") if isinstance(market, dict) else None
+    print(f"[PUSH] slot={args.slot} query={cls.get('query', '')[:60]}")
+    if c_err:
+        print(f"  自选归类: ❌ {c_err}")
+    else:
+        print(f"  自选归类: 池{custom.get('pool_size',0)} 命中{custom.get('hit_total',0)} 分组{custom.get('group_hit_count',0)}")
+    if m_err:
+        print(f"  全市场:   ❌ {m_err}")
+    else:
+        print(f"  全市场:   池{market.get('pool_size',0)} 可归类{market.get('hit_total',0)} 分组{market.get('group_hit_count',0)}")
+    # 自选/全市场分别推送（两条独立卡片）
+    pushed = result.get("pushed", {})
+    if args.dry_run:
+        print("  推送: dry-run 未推送（自选/全市场各一条）")
+    else:
+        pc = pushed.get("custom")
+        pm = pushed.get("market")
+        print(f"  自选推送:   {'✅ 成功' if pc else '❌ 失败/未配置'}")
+        print(f"  全市场推送: {'✅ 成功' if pm else '❌ 失败/未配置'}")
+
+
 def cmd_import_groups(args):
     """导入同花顺自选股分组 JSON 到 custom_group 表（幂等，可重复导入更新）"""
     result = import_groups_from_json(args.json)
@@ -188,6 +223,14 @@ def main():
     ig_parser = subparsers.add_parser("import-groups", help="导入同花顺自选股分组 JSON（幂等，可重复导入更新）")
     ig_parser.add_argument("--json", type=str, default=CUSTOM_GROUPS_JSON, help="自选分组 JSON 文件路径")
     ig_parser.set_defaults(func=cmd_import_groups)
+
+    # push（股池归因定时推送，由 crontab 调用）
+    push_parser = subparsers.add_parser("push", help="股池归因定时推送（按时间槽选股归类并推送飞书）")
+    push_parser.add_argument("--slot", type=str, required=True,
+                             choices=["933", "945", "1000", "1430"],
+                             help="时间槽：933=9:33 / 945=9:45 / 1000=10:00 / 1430=14:30")
+    push_parser.add_argument("--dry-run", action="store_true", help="只选股归类并打印消息，不推送")
+    push_parser.set_defaults(func=cmd_push)
 
     args = parser.parse_args()
     if args.command:

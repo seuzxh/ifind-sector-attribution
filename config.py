@@ -38,6 +38,11 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "doubao-seed-2.0-pro")
 # 批量分析用的轻量模型（轮动分析批次分析用，留空则同 LLM_MODEL）
 LLM_MODEL_BATCH = os.environ.get("LLM_MODEL_BATCH", "")
 
+# ========== 股池归因定时推送（飞书 webhook）==========
+# scan_push 模块在交易日 9:33/9:45/10:00/14:30 推送归类结果到这里。
+# 敏感（webhook 地址可被他人用于推送），默认从环境变量读，config_local.py 覆盖。
+PUSH_WEBHOOK_URL = os.environ.get("PUSH_WEBHOOK_URL", "")
+
 # 本地配置文件覆盖（config_local.py 已加入 .gitignore）
 try:
     from config_local import *
