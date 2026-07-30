@@ -10,7 +10,10 @@
         <span class="head-title">
           <span class="num">{{ i + 1 }}</span>{{ s.concept_name }}
         </span>
-        <span class="meta">评分 {{ fmt(s.score) }} · S1 {{ fmtPct(s.s1_return) }} · S2 {{ (s.s2_breadth * 100).toFixed(0) }}%</span>
+        <span class="meta">
+          评分 {{ fmt(s.score) }} · S1 {{ fmtPct(s.s1_return) }} · S2 {{ (s.s2_breadth * 100).toFixed(0) }}%
+          <template v-if="sortLoading[s.concept_code]"> · 排序中…</template>
+        </span>
       </div>
       <!-- 成分股表格 -->
       <table class="card-table">
@@ -63,8 +66,9 @@
 </template>
 
 <script setup lang="ts">
-import { reactive } from 'vue'
+import { reactive, watch } from 'vue'
 import type { SectorEntry, MemberStock } from '@/api/types'
+import { getDashboardMembers } from '@/api/dashboard'
 import { fmt, fmtPct, changeCls, accelText } from '@/utils/format'
 
 const props = defineProps<{
@@ -72,10 +76,18 @@ const props = defineProps<{
   tab: 'top' | 'bottom' | 'zt'
   isCustom?: boolean
   highlightCode?: string
+  realtime?: boolean
+  tradeDate?: string
+  snapshotTime?: string
 }>()
 
+type MemberSortKey = 'change_ratio' | 'speed' | 'acceleration' | 'body' | 'score'
+
 // 卡片排序状态：{ [concept_code]: { key, order } }
-const cardSortState = reactive<Record<string, { key: string; order: '↓' | '↑' }>>({})
+const cardSortState = reactive<Record<string, { key: MemberSortKey; order: '↓' | '↑' }>>({})
+const remoteMembers = reactive<Record<string, MemberStock[]>>({})
+const sortLoading = reactive<Record<string, boolean>>({})
+const requestSeq: Record<string, number> = {}
 
 function cardSortKey(code: string): string {
   return cardSortState[code]?.key || 'change_ratio'
@@ -94,7 +106,7 @@ function isHolding(s: SectorEntry, code: string): boolean {
   return !!(props.isCustom && s.holding_in_group && s.holding_in_group.includes(code))
 }
 
-function memberVal(m: MemberStock, key: string): number {
+function memberVal(m: MemberStock, key: MemberSortKey): number {
   let v: number | null | undefined
   if (key === 'change_ratio') v = m.change_ratio
   else if (key === 'speed') v = m.speed
@@ -106,9 +118,10 @@ function memberVal(m: MemberStock, key: string): number {
 }
 
 function sortedMembers(s: SectorEntry): MemberStock[] {
-  const members = s.members_top10 || []
+  const members = remoteMembers[s.concept_code] || s.members_top10 || []
   if (!members.length) return members
-  const st = cardSortState[s.concept_code] || { key: 'change_ratio', order: '↓' }
+  const st: { key: MemberSortKey; order: '↓' | '↑' } =
+    cardSortState[s.concept_code] || { key: 'change_ratio', order: '↓' }
   const desc = st.order === '↓'
   return [...members].sort((a, b) => {
     const av = memberVal(a, st.key)
@@ -117,14 +130,58 @@ function sortedMembers(s: SectorEntry): MemberStock[] {
   })
 }
 
-function sortCard(code: string, key: string) {
+async function loadFullRanking(code: string) {
+  const state = cardSortState[code]
+  if (!props.realtime || !state) return
+  const seq = (requestSeq[code] || 0) + 1
+  requestSeq[code] = seq
+  sortLoading[code] = true
+  try {
+    const data = await getDashboardMembers({
+      concept_code: code,
+      trade_date: props.tradeDate,
+      snapshot_time: props.snapshotTime,
+      custom_mode: !!props.isCustom,
+      sort_key: state.key,
+      descending: state.order === '↓',
+    })
+    if (requestSeq[code] !== seq) return
+    if (data.error) throw new Error(data.error)
+    remoteMembers[code] = data.members || []
+  } catch (e) {
+    if (requestSeq[code] === seq) {
+      console.warn('[MemberCardGrid] 全量成员排序失败:', e)
+      delete remoteMembers[code]
+    }
+  } finally {
+    if (requestSeq[code] === seq) sortLoading[code] = false
+  }
+}
+
+function sortCard(code: string, key: MemberSortKey) {
   const cur = cardSortState[code]
   if (cur && cur.key === key) {
     cur.order = cur.order === '↓' ? '↑' : '↓'
   } else {
     cardSortState[code] = { key, order: '↓' }
   }
+  void loadFullRanking(code)
 }
+
+// 新的分钟行情到达后，刷新用户已经选择过的全量排序。
+watch(() => props.snapshotTime, (time, oldTime) => {
+  if (!props.realtime || !time || time === oldTime) return
+  Object.keys(cardSortState).forEach(code => { void loadFullRanking(code) })
+})
+
+// 切换日期、看板范围或模式时，不复用旧分组的按需排序结果。
+watch(
+  () => [props.tradeDate, props.isCustom, props.realtime],
+  () => {
+    Object.keys(remoteMembers).forEach(code => { delete remoteMembers[code] })
+    Object.keys(cardSortState).forEach(code => { delete cardSortState[code] })
+  },
+)
 
 // 高亮卡片（点击排行表行时滚动到对应卡片）
 const cardRefs: Record<string, HTMLElement> = {}

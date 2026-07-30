@@ -230,6 +230,19 @@ async function loadDashboard(mySeq: number) {
 ```
 暂停自动跟随时，定时 tick 不占用新序号，避免把时间轴手动请求误判为过期。`AuctionPage` 和 `SectorManagePage` 仍各自管理其专用轮询。
 
+状态栏同时展示行情分钟和最近响应秒数，例如 `行情 14:12 · 刷新 14:12:08 · 自动3s`。行情源是分钟级，行情分钟在同一分钟内不变并不代表轮询停止；“刷新”时间用于直接确认页面定时器仍在工作。
+
+### 成分股全量字段排序
+
+看板主响应只携带每个板块的 `members_top10`，避免 3 秒轮询反复传输所有成员。用户点击涨幅、涨速、加速、开盘至今或综合分列时：
+
+1. `MemberCardGrid` 调用 `GET /api/dashboard/members`；
+2. 后端复用当前分时序列，对该板块/分组全部有效成员计算并按所选字段排序；
+3. 接口只返回排序后的前 10 支；
+4. 新行情分钟到达后，组件自动刷新用户已选择过的全量排序。
+
+历史收盘模式没有完整分时指标，仍对主响应中的 10 支做本地展示排序。
+
 ### 三个 composable
 | composable | 作用 | 当前状态 |
 |---|---|---|
@@ -319,7 +332,7 @@ async function loadDashboard(mySeq: number) {
 ### 性能约定
 - 定时器（`setInterval`）一律在 `onUnmounted` 清理（composable 已封装）。
 - 大列表避免无 key 的 `v-for`，用业务主键（`concept_code` / `code`）作 key。
-- 接口返回的子结构（如 `members_top10`）排序优先在前端做，避免重复请求。
+- 小型完整列表优先在前端排序；`members_top10` 不是完整列表，实时成分股列排序必须调用 `/api/dashboard/members` 覆盖全部有效成员，同时避免把全量成员放进 3 秒主响应。
 
 ---
 

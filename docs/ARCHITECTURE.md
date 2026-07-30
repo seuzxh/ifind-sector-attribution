@@ -249,13 +249,19 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 ```
 前端 3s 轮询 GET /api/realtime/dashboard?snapshot_time=09:50
                 ↓
+    检查看板结果缓存（按 mode+trade_date+snapshot_time+top_n，TTL 10s）
+        ├─ 命中 ─────────────────────→ 直接返回
+        └─ 未命中
+            ↓
     检查分时序列缓存（按 trade_date+mode_key，TTL 15s）
         ├─ 命中 ─────────────────────→ 不拉网络，进入切片
-        └─ 未命中（当日实时 TTL 过期 / 历史首次）
+        ├─ 当日过期且有旧序列 ───────→ 立即返回旧序列 + 后台刷新
+        └─ 无缓存（冷启动 / 历史首次）
             ↓
         intraday_fetcher.fetch_batch()  ← 32 线程并发拉勾选板块的全部去重成分股
             ↓
         缓存完整分时序列 + 时间轴 available_times
+        新序列写入后定向失效对应旧看板结果
             ↓
     snapshot_time 切片：trading[:snapshot_time]
             ↓
@@ -263,9 +269,17 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
             ↓
     calc_all_sectors_strength(rt_df, members_map)  ← 复用收盘计算
             ↓
-    对 Top10 板块各调 stock_scorer.score_members() → 成分股四维排名
+    对 Top10 板块各调 stock_scorer.score_members() → 全部有效成员评分后截取 10 支
             ↓
     组装返回 top/bottom 板块 + 成分股 + 市场统计 + available_times
+
+用户点击成分股列头
+                ↓
+    GET /api/dashboard/members
+                ↓
+    复用当前分时序列，对该分组全部有效成员按所选字段排序
+                ↓
+    只返回前 10 支（不放大全局 3s 轮询响应）
 ```
 
 ### 与 daily 的区别
@@ -305,7 +319,22 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 - 历史日期：全天缓存（数据不变，首次拉取后永久有效，直至进程重启）
 - 引擎实例（含成分股映射）全局复用
 
-**snapshot_time 切片**（时间条回看）：
+**看板结果缓存**（`_result_cache`，按 `mode:trade_date:snapshot_time:top_n` 键）：
+- TTL 10s，同一看板/时刻的并发和高频请求直接复用组装结果；
+- 新分时序列成功写入时，立即定向失效同日期、同模式的结果，下一次 3s 轮询消费新序列；
+- 结果缓存读写、定向失效和 per-key singleflight 分别受锁保护。
+
+盘中 `trading` 数据为分钟粒度，因此状态栏同时展示“行情 HH:MM”和“刷新 HH:MM:SS”：前者只在新分钟到达时变化，后者用于确认 3s 页面轮询仍在运行。
+
+### 成分股展示与按需全量排序
+
+- 主看板先在每个板块全部有效成员上计算四维综合分，Top 板块取最强 10 支、Bottom 板块取最弱 10 支，字段名保留为 `members_top10`；
+- 点击涨幅、涨速、加速、开盘至今或综合分列时，前端调用 `GET /api/dashboard/members`；
+- 该接口在该板块/分组全部有效成员上按所选字段和方向排序，只返回前 10；
+- 这样既保证排序口径覆盖全部成员，又避免每 3 秒向浏览器传输全部板块的全量成员。
+
+### snapshot_time 切片（时间条回看）
+
 - 截取 `trading` 中 `time <= snapshot_time` 的前缀，用末点重算所有指标
 - 纯内存操作（毫秒级），**不触发网络拉取**
 - 应用场景：拖时间条观察任意时刻的板块排名，可看到板块轮动（如 9:50 半导体领涨、15:00 铜板块第一）

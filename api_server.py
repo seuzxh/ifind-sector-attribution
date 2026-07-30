@@ -240,6 +240,32 @@ def get_custom_dashboard(
     )
 
 
+@app.get("/api/dashboard/members")
+def get_dashboard_members(
+    concept_code: str,
+    trade_date: str = None,
+    snapshot_time: str = None,
+    custom_mode: bool = False,
+    sort_key: str = "score",
+    descending: bool = True,
+):
+    """
+    对指定板块/自选分组的全部有效成分股按字段排序，只返回前 10 支。
+
+    页面点击成分股表头时调用，避免把所有板块的全量成员塞进 3 秒轮询响应。
+    """
+    from realtime_engine import get_realtime_member_ranking as _rank
+    return _rank(
+        concept_code=concept_code,
+        trade_date=trade_date,
+        snapshot_time=snapshot_time,
+        custom_mode=custom_mode,
+        sort_key=sort_key,
+        descending=descending,
+        limit=10,
+    )
+
+
 @app.get("/api/custom/scan")
 def get_custom_scan(query: str):
     """
