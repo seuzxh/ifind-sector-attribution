@@ -41,7 +41,7 @@
 | **kline API 地址** | `KLINE_API_BASE_URL`（中焯行情 API，盘中实时监控用）：配在 `config_local.py` 或环境变量，**不配则实时链路不可用** |
 | 数据库 | `data/sector_attribution.db`（SQLite，9 张现役表；本机退役 `watchlist` 已于 2026-07-24 删除） |
 | 交易日历缓存 | `data/trade_calendar.txt`（`trade_calendar.py` 三级缓存的本地落盘，缺失会自动重建） |
-| 服务器 / 部署 | **115.191.14.82:8000**；systemd 服务 `ifind-monitor`，一键装 `sudo bash install_service.sh`（详见 `docs/DEPLOYMENT.md`） |
+| 服务器 / 部署 | **115.191.14.82:8000**；systemd 服务 `ifind-monitor`，一键装 `sudo bash install_service.sh`（详见 `docs/ops/DEPLOYMENT.md`） |
 | **轮动分析 LLM** | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_MODEL_BATCH`（火山方舟 Coding Plan）：base_url **必须用 `/api/coding/v3`**（`/api/v3` 不消耗 Plan 额度会产生额外费用）。批次模型留空则跟随主模型。 |
 | **MCP（轮动/实时用）** | `IFIND_MCP_TOKEN`（iFinD MCP server 的 JWT 鉴权）：配在 `config_local.py` 或环境变量，供 rotation_agent / realtime_engine 调 iFinD 工具 |
 | **可用模型** | Coding Plan 白名单 10 个（`llm_agent._CODING_PLAN_MODELS`）：doubao-seed-2.0-pro/code/lite、doubao-seed-code、minimax-latest、glm-latest、deepseek-v4-flash/pro、kimi-k2.6/k2.7-code |
@@ -78,7 +78,7 @@
 | `sector_manage.py` | 监控板块管理：多周期涨幅计算（1d/3d/5d）+ 候选板块列表组装 | 中（改管理页看这） |
 | `llm_agent.py` | LLM 客户端封装（火山方舟 Coding Plan，OpenAI 兼容；`OpenAICompatibleAgent` 供 rotation_agent 调用） | 低 |
 | `mcp_proxy.py` | iFinD MCP 客户端代理（hexin-ifind-ds-stock-mcp / -index-mcp，JWT 鉴权） | 低 |
-| `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。7 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理。结构详见 `docs/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
+| `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。7 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理。结构详见 `docs/architecture/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
 | `static/` | 前端构建产物（FastAPI `mount('/static')` 托管；已 gitignore，勿手改） | — |
 | `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
 | `main.py` | 命令入口（argparse 子命令） | 低 |
@@ -192,7 +192,7 @@ schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATAB
 | 接入自选股分组监控 | `main.py import-groups` 导入 JSON → 调 `GET /api/custom/dashboard` |
 | 改交易时段判定 | `trade_calendar.py`（`session_phase`、交易日历） |
 | 改持仓分组（自选看板金色标注） | `config.HOLDING_GROUP_NAME` 改分组名（默认 "CC"），无需改代码 |
-| 改前端（加 Tab / 改看板） | `frontend/src/`（Vue SPA）：`views/` 加页 + `router/index.ts` 加路由 + `AppLayout.vue` 加 Tab；接口在 `api/<域>.ts` 封装。详见 `docs/FRONTEND.md` |
+| 改前端（加 Tab / 改看板） | `frontend/src/`（Vue SPA）：`views/` 加页 + `router/index.ts` 加路由 + `AppLayout.vue` 加 Tab；接口在 `api/<域>.ts` 封装。详见 `docs/architecture/FRONTEND.md` |
 | 时间条播放异常（时刻跳变） | 检查 `usePolling` 的共享请求序号守卫是否被破坏（防异步乱序覆盖） |
 | 改轮动分析 LLM 模型 | `llm_agent._CODING_PLAN_MODELS` 白名单；`config.LLM_MODEL` 改主模型，`config.LLM_MODEL_BATCH` 改批次模型。**base_url 必须用 `/api/coding/v3`** |
 | 轮动分析报错 / 不调工具 | 检查 `LLM_API_KEY` + `IFIND_MCP_TOKEN` 是否配在 `config_local.py`；rotation_agent 依赖 llm_agent + mcp_proxy |
@@ -205,6 +205,6 @@ schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATAB
 |---|---|
 | `data/DATABASE_MANIFEST.json` | 本机运行库快照（gitignore，可能不存在；结构以 `database.py` 为准，数据范围需现场复核） |
 | `README.md` | 系统总览、快速开始、命令、API、配置项（面向人类） |
-| `docs/ARCHITECTURE.md` | 双概念编码体系、永久缓存语义、多周期融合、A股过滤、实时监控（含部分历史实现记录） |
-| `docs/DEPLOYMENT.md` | systemd 服务、外网访问、运维命令、故障排查 |
-| `docs/CHANGELOG.md` | 版本改动记录 |
+| `docs/architecture/ARCHITECTURE.md` | 双概念编码体系、永久缓存语义、多周期融合、A股过滤、实时监控（含部分历史实现记录） |
+| `docs/ops/DEPLOYMENT.md` | systemd 服务、外网访问、运维命令、故障排查 |
+| `docs/reference/CHANGELOG.md` | 版本改动记录 |
