@@ -1,3 +1,9 @@
+---
+title: "架构设计（V1 历史）"
+parent: "架构与设计"
+nav_order: 2
+---
+
 # 架构设计
 
 本文档记录系统的关键设计决策，特别是数据流、概念编码体系、缓存语义与过滤策略。
@@ -416,7 +422,7 @@ def is_a_share_concept(concept_code): # 概念代码前缀判定
 盘前筛选功能于 2026-07-24 退役。现役实时监控范围由“监控板块管理”的
 `watched_concepts` 持久化选择再经成员数规则收口，不再创建、读取或依赖 `watchlist`。本机运行库的
 `watchlist` 已于 2026-07-24 经确认后删除；其他旧数据库即使仍保留该表，应用代码也不会访问。历史过程见
-[CHANGELOG.md](CHANGELOG.md)。
+[CHANGELOG.md](../reference/CHANGELOG.md)。
 
 ---
 

@@ -1,0 +1,27 @@
+# GitHub Pages 站点配置（来源：main 分支 /docs 目录，Jekyll + just-the-docs）
+title: iFinD 行业归因与板块强度检测系统
+description: A股行业归因、板块强度检测与盘中实时监控系统的项目文档
+remote_theme: just-the-docs/just-the-docs
+
+# 项目页（非 username.github.io 仓库）需设 baseurl，否则样式与导航链接 404
+url: "https://seuzxh.github.io"
+baseurl: "/ifind-sector-attribution"
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  auto_ids: true
+
+# 顶部右侧外链
+aux_links:
+  源码仓库: "https://github.com/seuzxh/ifind-sector-attribution"
+
+# 关闭 Just the Docs 自带的"在本页修正错误"链接（指向本仓库不存在的模板）
+# 页面底部"最后更新时间"
+footer_content: '© 2026 <a href="https://github.com/seuzxh/ifind-sector-attribution">ifind-sector-attribution</a> · 文档问题请提 Issue'
+
+# 目录与搜索
+search_enabled: true
+heading_anchors: true
+back_to_top: true
+back_to_top_text: "回到顶部"

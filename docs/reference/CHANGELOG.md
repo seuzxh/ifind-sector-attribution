@@ -1,3 +1,9 @@
+---
+title: "更新日志"
+parent: "参考"
+nav_order: 1
+---
+
 # 更新日志
 
 本文件记录 ifind-sector-attribution 项目的版本改动，与 git commit 历史对应。

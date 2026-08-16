@@ -107,7 +107,7 @@ python main.py init
 3. **行业成分股**（接口2）：对全部行业概念并发拉取成分股（默认 8 线程）
 4. **概念板块全集补全**（`init_concept_universe`）：扫描全市场股票，补全 885xxx/886xxx 概念板块码的字典+成分股+映射，打通归因链路
 
-> **为什么需要步骤4**：接口1 返回的个股概念是 `885xxx` 系列（概念板块），而 `config.ALL_CONCEPT_CODES` 默认只有 `700xxx/884xxx`（行业分类），两套编码体系交集为 0。`init_concept_universe` 通过扫描全市场发现并补全概念板块码，让归因的 JOIN 能打通。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+> **为什么需要步骤4**：接口1 返回的个股概念是 `885xxx` 系列（概念板块），而 `config.ALL_CONCEPT_CODES` 默认只有 `700xxx/884xxx`（行业分类），两套编码体系交集为 0。`init_concept_universe` 通过扫描全市场发现并补全概念板块码，让归因的 JOIN 能打通。详见 [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。
 
 可选参数：
 
@@ -140,7 +140,7 @@ sudo bash install_service.sh    # 一键安装并启动
 - **公网直连**：`http://115.191.14.82:8000`（需云安全组放行 TCP 8000）
 - **SSH 隧道**：本地 `ssh -L 8000:127.0.0.1:8000 <用户>@115.191.14.82`，浏览器开 `http://127.0.0.1:8000`
 
-详见 [部署手册](docs/DEPLOYMENT.md)。
+详见 [部署手册](docs/ops/DEPLOYMENT.md)。
 
 **方式B：手动前台启动（调试用）**
 
@@ -266,10 +266,17 @@ SQLite 新建数据库包含 9 张现役表；本机运行库已于 2026-07-24 �
 | `custom_group` | 导入的同花顺自选分组 | 导入时仅留 A 股 |
 | `watched_concepts` | 管理页持久化选择（读取时再按最新成分股数 10~500 过滤） | 物理行数不等于有效监控数 |
 
-**永久缓存语义**：`stock_concept_map` / `concept_members` 是一次性缓存，查询时不传日期则取最新一份（`MAX(date)`），与 init 日期解耦。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+**永久缓存语义**：`stock_concept_map` / `concept_members` 是一次性缓存，查询时不传日期则取最新一份（`MAX(date)`），与 init 日期解耦。详见 [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。
 
 ## 更多文档
 
-- [架构设计](docs/ARCHITECTURE.md) — 双概念编码体系、永久缓存语义、多周期融合算法、A股过滤策略、实时监控
-- [部署手册](docs/DEPLOYMENT.md) — systemd 服务、外网访问、运维命令、故障排查
-- [更新日志](docs/CHANGELOG.md) — 版本改动记录
+**在线文档站（GitHub Pages）**：<https://seuzxh.github.io/ifind-sector-attribution/>
+
+- [快速开始](docs/getting-started.md) — 从零部署：依赖、token、初始化、启动、定时任务
+- [交互指南](docs/guides/interaction.md) — 7 个看板 Tab 的使用方式
+- [API 参考](docs/guides/api.md) — 全部 REST 端点
+- [架构设计](docs/architecture/ARCHITECTURE.md) — 双概念编码体系、永久缓存语义、多周期融合算法、A股过滤策略、实时监控
+- [部署手册](docs/ops/DEPLOYMENT.md) — systemd 服务、外网访问、运维命令、故障排查
+- [更新日志](docs/reference/CHANGELOG.md) — 版本改动记录
+
+文档规范：`python scripts/lint_docs.py` 校验结构 / 链接 / 导航。
