@@ -39,7 +39,7 @@
 | iFinD token | `ACCESS_TOKEN` / `REFRESH_TOKEN`：读 `config_local.py` 或环境变量 `IFIND_ACCESS_TOKEN` / `IFIND_REFRESH_TOKEN` |
 | **分时数据依赖** | **`kline-fetcher` 本地包（不在 PyPI，须单独装）**：`pip install -e /root/Projects/kline-fetcher`，或 `pip install git+https://github.com/seuzxh/kline-fetcher.git` |
 | **kline API 地址** | `KLINE_API_BASE_URL`（中焯行情 API，盘中实时监控用）：配在 `config_local.py` 或环境变量，**不配则实时链路不可用** |
-| 数据库 | `data/sector_attribution.db`（SQLite，9 张现役表；本机退役 `watchlist` 已于 2026-07-24 删除） |
+| 数据库 | `data/sector_attribution.db`（SQLite，14 张现役表；本机退役 `watchlist` 已于 2026-07-24 删除） |
 | 交易日历缓存 | `data/trade_calendar.txt`（`trade_calendar.py` 三级缓存的本地落盘，缺失会自动重建） |
 | 服务器 / 部署 | **115.191.14.82:8000**；systemd 服务 `ifind-monitor`，一键装 `sudo bash install_service.sh`（详见 `docs/ops/DEPLOYMENT.md`） |
 | **轮动分析 LLM** | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_MODEL_BATCH`（火山方舟 Coding Plan）：base_url **必须用 `/api/coding/v3`**（`/api/v3` 不消耗 Plan 额度会产生额外费用）。批次模型留空则跟随主模型。 |
@@ -56,6 +56,11 @@
 | `daily --date YYYYMMDD` | 每日盘后：同步日K → 板块强度 → 个股归因 | 日期须为交易日；不传 `--codes` 自动反查全市场 |
 | `server [--host H] [--port P] [--reload]` | 启动 FastAPI（API + 可视化看板），默认 `0.0.0.0:8000` | 生产用 systemd，调试加 `--reload` |
 | `import-groups [--json FILE]` | 导入同花顺自选股分组 JSON → `custom_group` 表（幂等覆盖） | 默认读 `ths-custom-block-data/同花顺自选分组导出.json`；自动过滤指数/ETF/可转债等非 A 股标的 |
+| `push --slot {933,945,1000,1430} [--dry-run]` | 股池归因定时推送：按时间槽选股归类并推飞书（crontab 交易日 4 时段，见 `scan_push.py`）；自选侧=分组归类，全市场侧=**KG 富集归类**（同全市场强势归类页，卡片带富集倍数/已监控标记） | `--dry-run` 只归类打印不推送 |
+| `kg_init [--force] [--refetch] [--skip-verify]` | 构建知识图谱（P1）：4 表落库+统计报告+族群初探 | 幂等（已有快照拒绝，`--force` 重建）；当天有成分股快照则接口2 零调用 |
+| `kg_update [--force] [--skip-verify]` | 知识图谱周维护（P2）：拉两源→diff→开/关边+升降级+变更日志+快照 | crontab 周日 20:00 自动跑（`scripts/run_kg.sh`）；幂等；状态从边 confidence 恢复（勿按 source 判态） |
+| `kg_query CODE [--linked N]` | 查图谱：个股→板块（含 ρ）/ 板块→成分股 / 联动股 TopN | 代码可带/不带后缀；`--linked` 按共享板块数排联动股 |
+| `kg_corr [--window 20] [--no-corr-weight]` | 知识图谱分析（P3）：算 20 日 ρ 边权（写 `kg_edge.corr_20d`）→ Louvain 族群（写 `kg_community`） | 窗口锚定 daily_kline 最新交易日；daily 同步恢复后重跑一次即可刷新 |
 | `purge [--vacuum]` | 删除海外数据，仅留 A 股 | **破坏性**：执行前备份数据库；幂等可重跑 |
 | `test` | 测试 5 个 iFinD 接口连通性 | — |
 
@@ -76,9 +81,12 @@
 | `probe_auction.py` | 集合竞价数据探针脚本（生产环境验证 `pre_market` 形态用，非业务链路） | 低 |
 | `api_server.py` | FastAPI 服务（REST API + 可视化页面 + 轮动分析 SSE 路由） | 中（加接口看这） |
 | `sector_manage.py` | 监控板块管理：多周期涨幅计算（1d/3d/5d）+ 候选板块列表组装 | 中（改管理页看这） |
+| `kg_sources.py` | 知识图谱数据源适配层（SourceAdapter 协议 + iFinD 接口2主源/接口1验证源两个 Adapter，未来加申万/问财只写新 Adapter） | 低 |
+| `kg_builder.py` | 知识图谱构建：`kg_bootstrap`（幂等）+ 统计报告 + 周维护 `kg_update`（diff 状态机，旧态从边 confidence 恢复） | 中（改图谱构建/周维护看这） |
+| `kg_analysis.py` | 知识图谱分析（P3）：`compute_corr_20d`（ρ 边权，先 join 后 tail 对齐）+ `detect_communities`（Louvain）+ `hub_sectors`/`linked_stocks`/`locate_sectors`（组合定位：一批股→板块富集/命中双指标） | 中（改图谱分析看这） |
 | `llm_agent.py` | LLM 客户端封装（火山方舟 Coding Plan，OpenAI 兼容；`OpenAICompatibleAgent` 供 rotation_agent 调用） | 低 |
 | `mcp_proxy.py` | iFinD MCP 客户端代理（hexin-ifind-ds-stock-mcp / -index-mcp，JWT 鉴权） | 低 |
-| `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。7 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理。结构详见 `docs/architecture/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
+| `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。8 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理/知识图谱（cytoscape 四视图：族群投影/个股星型/板块成分/组合定位）。结构详见 `docs/architecture/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
 | `static/` | 前端构建产物（FastAPI `mount('/static')` 托管；已 gitignore，勿手改） | — |
 | `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
 | `main.py` | 命令入口（argparse 子命令） | 低 |
@@ -87,7 +95,7 @@
 
 schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATABASE_MANIFEST.json`**，它是 gitignore 的运行库快照（行数、日期范围、样本和常见查询），查询本机数据库前应先读，但不能假设其他 checkout 一定存在或仍是最新。
 
-9 张现役表：`ths_concept_dict` / `stock_concept_map` / `concept_members` / `daily_kline` / `min1_kline`（空）/ `concept_strength` / `stock_attribution` / **`custom_group`** / `watched_concepts`。本机已删除退役 `watchlist`；其他未清理的旧数据库仍可能残留该历史表。
+9 张业务表：`ths_concept_dict` / `stock_concept_map` / `concept_members` / `daily_kline` / `min1_kline`（空）/ `concept_strength` / `stock_attribution` / **`custom_group`** / `watched_concepts`。另有 **知识图谱 5 表**：`kg_node`（股票+板块节点）/ `kg_edge`（双时态归属边，多源并存+confidence 分级+`corr_20d` ρ 边权列）/ `kg_snapshot`（版本快照）/ `kg_change`（变更日志）/ `kg_community`（Louvain 族群，P3）——设计见 `docs/architecture/DESIGN-knowledge-graph.md`。本机已删除退役 `watchlist`；其他未清理的旧数据库仍可能残留该历史表。
 
 **最容易踩的坑**：
 1. **日期格式跨表不一致** — `ths_concept_dict`/`stock_concept_map` 用 `YYYY-MM-DD`，其余表用 `YYYYMMDD`。跨表 JOIN 前必须格式归一，否则键对不上。
@@ -125,7 +133,7 @@ schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATAB
 - **成分股列排序必须覆盖全部有效成员**：看板主响应只保留 `members_top10`；实时页面点击涨幅/涨速/加速/body/综合分时调用 `GET /api/dashboard/members`，后端在全体有效成员上排序后仅返回前 10。不要退回浏览器只重排原 10 支，也不要把所有成员塞进 3s 主响应。
 - **历史日期回看 ≠ 历史看板**：实时接口传 `trade_date=YYYYMMDD` 走分时链路（拉该日全天分时 + 内存切片）；`/api/history/dashboard` 的 `scope=sector` 读取并按当前勾选集过滤 `concept_strength`，`scope=custom` 用 `daily_kline` 按自选分组现场聚合。两条路径别混。
 - **自选股分组看板**：`GET /api/custom/dashboard` 用 `custom_group` 表替代概念板块算分组强弱，复用 realtime_engine 的缓存/切片（仅 `members_map` 来源不同）。需先用 `import-groups` 导入分组。
-- **Vue SPA 多 Tab**：根路由 `/` 返回 Vue SPA（`static/index.html`，Hash 路由），7 个 Tab（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理）在前端切换，`<keep-alive>` 保留各页状态。`DashboardPage` 按 `route.name` 复用（sector/custom）；`ScanPage` 同理（scan/market_scan）。
+- **Vue SPA 多 Tab**：根路由 `/` 返回 Vue SPA（`static/index.html`，Hash 路由），8 个 Tab（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理/知识图谱）在前端切换，`<keep-alive>` 保留各页状态。`DashboardPage` 按 `route.name` 复用（sector/custom）；`ScanPage` 同理（scan/market_scan）。
 - **时间条播放**：`DashboardPage` 已接入 `usePlayTimeline`，按速度 1.5x/2x/4x/8x 逐分钟推进。切模式/切日期/拖滑块/点"回到最新"自动停止；播放时 `autoFollow=false`。`usePolling` 的共享序号守卫防异步乱序覆盖。
 
 ## 三套数据源（重要）
@@ -163,7 +171,7 @@ schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATAB
 | `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页有效板块，分时切片） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回 `holding_stocks`/`holding_in_group`） |
 | `GET /api/custom/scan` | — | **自选强势归类**（MCP 自然语言选股 → 取自选交集 → 按自选分组归类） |
-| `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → 按管理页当前勾选板块归类，不碰分时；入参 `query`） |
+| `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → **知识图谱富集归类**：全量 650 板块按 lift/命中数排序，每股带 ρ，勾选板块带 is_watched；入参 `query/order/min_hits/top_n`，不碰分时） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（`scope=sector` 当前勾选板块；`scope=custom` 自选分组；均按收盘涨幅展示） |
 | `GET /api/auction/dashboard` | — | 集合竞价看板 |
@@ -173,6 +181,16 @@ schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATAB
 | `POST /api/sector_manage/save` | — | 全量保存监控板块 |
 | `POST /api/sector_manage/refresh` | — | 后台刷新 884/885/886 字典与成分股 |
 | `GET /api/sector_manage/refresh/status` | — | 查询刷新状态 |
+| `GET /api/kg/stock/{code}/sectors` | — | 知识图谱：个股归属板块（含 ρ、confidence、生效区间） |
+| `GET /api/kg/sector/{code}/stocks?order=` | — | 知识图谱：板块成分股（`order=corr` 按 ρ 排） |
+| `GET /api/kg/linked/{code}?top_n=` | — | 知识图谱：联动股 TopN（共享板块 Σ\|ρ\| 评分） |
+| `GET /api/kg/communities?only_sector=` | — | 知识图谱：Louvain 板块族群 |
+| `GET /api/kg/changes?date=&change_type=&limit=` | — | 知识图谱：周 diff 变更日志 |
+| `GET /api/kg/graph/projection?min_jaccard=` | — | 知识图谱供数：板块投影图（cytoscape elements，含族群色组） |
+| `GET /api/kg/graph/star?code=&limit=` | — | 知识图谱供数：个股星型子图 |
+| `GET /api/kg/graph/sector/{code}?limit=` | — | 知识图谱供数：板块展开子图 |
+| `GET /api/kg/locate?codes=&group=&order=lift或hits` | — | **组合定位**：一批股票（或自选分组名）→ 共同指向板块（富集倍数/命中数双指标，分组名 TRIM 容错） |
+| `GET /api/kg/locate/groups` | — | 自选分组列表（组合定位下拉用） |
 | `GET /api/dates` | — | 已入库的板块强度日期列表 |
 | `GET /api/concept/list` | — | 全部 A 股概念板块列表 |
 | `GET /api/concept/members` | — | 概念成分股（`date` 不传则取最新缓存） |
