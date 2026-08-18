@@ -42,7 +42,7 @@ CREATE TABLE watched_concepts (
 | 链路 | 数据来源 | 空集行为 |
 |---|---|---|
 | 板块强度监控 | `get_watched_concept_codes()`（`_ensure_maps`） | "未配置监控板块"提示 |
-| 全市场强势归类 | `self._members_map`（已由 watched 限定） | "未配置监控板块"提示 |
+| 全市场强势归类 | ~~`self._members_map`~~ **已解耦**（2026-08-18 起改为知识图谱富集归类，全量 650 板块，勾选板块仅作 `is_watched` 高亮标记；见 DESIGN-strong-stock-scan.md） | 不再依赖勾选集，无空集限制 |
 | daily 归因 | `get_a_share_concept_codes()` → 读 watched | 退回 config 兜底（避免漏算） |
 
 ## 四、API

@@ -11,8 +11,11 @@ nav_order: 5
 ## 一、产品目的
 
 在交易日 9:33 / 9:45 / 10:00 / 14:30 四个时刻，按各自条件调 iFinD MCP 选股，
-对**自选分组**和**全市场**分别做强势归类（**完全复用**【自选股强势归类】页面的
-`scan_custom_groups` / `scan_market_groups`），把结果格式化成飞书卡片推送到 webhook。
+对**自选分组**和**全市场**分别做强势归类（复用 realtime_engine 的
+`scan_custom_groups` / `scan_market_groups`）：自选侧同【自选强势归类】页面；
+**全市场侧 2026-08-18 起为知识图谱富集归类**（全量 650 板块按富集倍数排序，
+每股带 ρ，勾选板块带「已监控」标记，见 DESIGN-strong-stock-scan.md §二），
+把结果格式化成飞书卡片推送到 webhook。
 
 归类逻辑与 `docs/DESIGN-strong-stock-scan.md` 描述的页面一致，本功能只是在指定时间
 触发并把结果推到飞书，不改归类算法。
@@ -56,7 +59,7 @@ crontab → run_push.sh → main.py push --slot <slot>
       ├─ is_trading_day? 否 → return（不推送）
       ├─ run_classification(slot)
       │     ├─ scan_custom_groups(query)   # 复用 realtime_engine，自选分组归类
-      │     └─ scan_market_groups(query)   # 复用 realtime_engine，全市场归类
+      │     └─ scan_market_groups(query)   # 复用 realtime_engine，KG 富集归类（classify_hits）
       │     （两侧互相隔离，一个失败不影响另一个）
       ├─ build_scope_message(slot,"custom",...)  → push_to_feishu  # 自选蓝头卡片
       └─ build_scope_message(slot,"market",...)  → push_to_feishu  # 全市场紫头卡片
@@ -74,7 +77,9 @@ crontab → run_push.sh → main.py push --slot <slot>
   - 头部 → 条件行 → 分割线 → 单侧内容（**标题** + 三列灰底统计卡片 + 分组明细）→ 备注页脚。
   - **头部三列统计**用 `column_set`：选股池(蓝) / 命中或可归类(红) / 涉及分组(绿)，替代旧的单行文本。
   - **涨幅按幅度上色**（`_change_color`）：≥9.8% 深红(涨停级) / ≥5% 红 / >0 橙 / <0 绿 / 0 灰。分组"均涨"与个股涨幅均上色。
-  - 每组明细：`▸ 板块名　命中 n/总数　均涨 <色>` + `代码　名称　涨幅<色>`。空结果也推送（提示"无符合条件股票"）。
+  - 每组明细（自选侧）：`▸ 分组名　命中 n/总数　均涨 <色>` + `代码　名称　涨幅<色>`。
+  - 每组明细（**全市场侧，KG 版**）：`▸ 板块名　[已监控|富集 N×]　命中 n 只（组内 p%）　均涨 <色>`——富集倍数深红，值高=该组股票在此板块异常聚集；卡片末尾附富集口径说明。空结果也推送（提示"无符合条件股票"）。
+  - **实测**（2026-08-18 slot 1430 dry-run，58 只）：榜首 其他食品 19.2×、锂电专用设备 9.6×[已监控]、光学元件 8.0×。
 
 ## 六、命令
 

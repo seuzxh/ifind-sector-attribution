@@ -158,6 +158,9 @@ def _scope_elements(name: str, result: Dict, scope_key: str) -> list:
     返回顺序：区域标题 div → 三列统计 column_set → 各分组明细 div。
     失败侧或空结果只返回一个 div。
 
+    market 侧为 KG 富集归类（2026-08-18 起）：分组标题带富集倍数与「已监控」标记，
+    命中口径为 组内命中数（组内占比），member_total 为板块成员数。
+
     :param name: 区域名，如 "自选分组归类"
     :param result: scan_*_groups 的返回（含 error 视为失败）
     :param scope_key: "custom" / "market"，用于取字段语义（命中/可归类措辞）
@@ -193,16 +196,32 @@ def _scope_elements(name: str, result: Dict, scope_key: str) -> list:
                          "text": {"tag": "lark_md", "content": "（本期无符合条件股票归入该范围）"}})
         return elements
 
+    order_note = ""
+    if scope_key == "market":
+        order_note = "（按富集倍数排序，富集=组内命中率÷板块成员占比，值高=异常聚集）"
+
     for g in groups[:_MAX_GROUPS]:
         gname = g.get("group_name", g.get("group_id", ""))
         hit_n = g.get("hit_count", 0)
         member_n = g.get("member_total", 0)
         avg = _to_float(g.get("hit_avg_change", 0))
-        # 分组标题行：板块名加粗 + 命中数 + 均涨上色
+        # 分组标题行：板块名加粗 + 附加标记 + 命中数 + 均涨上色
+        # market（KG 富集）：命中 X 只（组内 p%）+ 富集 N×；custom：命中 X/Y + 覆盖率
+        if scope_key == "market":
+            tags = []
+            if g.get("is_watched"):
+                tags.append("已监控")
+            lift = g.get("lift")
+            if lift is not None:
+                tags.append(f"富集 <font color='darkred'>{lift}×</font>")
+            tag_txt = (f"　<font color='green'>[{'|'.join(tags)}]</font>" if tags else "")
+            in_group_pct = round(hit_n / pool_size * 100) if pool_size else 0
+            head = f"▸ **{gname}**{tag_txt}　命中 {hit_n} 只（组内 {in_group_pct}%）　均涨 {_colored_chg(avg)}"
+        else:
+            head = f"▸ **{gname}**　命中 {hit_n}/{member_n}　均涨 {_colored_chg(avg)}"
         elements.append({
             "tag": "div",
-            "text": {"tag": "lark_md",
-                     "content": f"▸ **{gname}**　命中 {hit_n}/{member_n}　均涨 {_colored_chg(avg)}"},
+            "text": {"tag": "lark_md", "content": head},
         })
         elements.append({
             "tag": "div",
@@ -211,6 +230,10 @@ def _scope_elements(name: str, result: Dict, scope_key: str) -> list:
     if len(groups) > _MAX_GROUPS:
         elements.append({"tag": "div",
                          "text": {"tag": "lark_md", "content": f"... 等共 {len(groups)} 个分组"}})
+    if order_note:
+        elements.append({"tag": "div",
+                         "text": {"tag": "lark_md",
+                                  "content": f"<font color='grey'>{order_note}</font>"}})
 
     return elements
 
@@ -243,7 +266,7 @@ def build_feishu_message(slot: str, classification: Dict) -> Dict:
     elements.append({
         "tag": "note",
         "elements": [{"tag": "plain_text",
-                      "content": f"股池归因推送 · {now} · 归类逻辑同自选股强势归类页面"}],
+                      "content": f"股池归因推送 · {now} · 自选=分组归类 · 全市场=知识图谱富集归类"}],
     })
 
     return {
@@ -262,8 +285,10 @@ def build_feishu_message(slot: str, classification: Dict) -> Dict:
 # ========== 单侧独立推送（自选 / 全市场 各发一条） ==========
 # scope_key → 卡片头部颜色 + 标题措辞。两条推送各自独立、颜色区分。
 _SCOPE_META = {
-    "custom": {"title": "自选分组归类", "color": "blue"},
-    "market": {"title": "全市场归类", "color": "purple"},
+    "custom": {"title": "自选分组归类", "color": "blue",
+               "foot": "归类逻辑同自选强势归类页面"},
+    "market": {"title": "全市场归类", "color": "purple",
+               "foot": "知识图谱富集归类（同全市场强势归类页面，按富集倍数排序）"},
 }
 
 
@@ -291,7 +316,7 @@ def build_scope_message(slot: str, scope_key: str, result: Dict) -> Dict:
     elements.append({
         "tag": "note",
         "elements": [{"tag": "plain_text",
-                      "content": f"{meta['title']} · {label} · {now} · 归类逻辑同自选股强势归类页面"}],
+                      "content": f"{meta['title']} · {label} · {now} · {meta['foot']}"}],
     })
 
     return {
