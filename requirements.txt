@@ -10,3 +10,6 @@ pydantic>=2.5.0
 #   pip install -e /root/Projects/kline-fetcher
 #   或 pip install git+https://github.com/seuzxh/kline-fetcher.git
 PyYAML>=6.0
+
+# 知识图谱（族群初探/图算法，kg_builder 用）
+networkx>=3.0
