@@ -148,12 +148,83 @@ class Database:
             concept_code  TEXT PRIMARY KEY,
             added_at      TEXT NOT NULL
         );
+
+        -- ========== 知识图谱（KG）：节点 / 双时态边 / 快照 / 变更日志 ==========
+        -- 节点统一建模：股票 + 板块。node_id 形如 'STOCK:600519.SH' / 'SECTOR:884091.TI'
+        CREATE TABLE IF NOT EXISTS kg_node (
+            node_id     TEXT PRIMARY KEY,
+            node_type   TEXT NOT NULL,           -- 'stock' | 'sector'
+            code        TEXT NOT NULL,           -- 原始代码（600519.SH）
+            name        TEXT,                    -- 股票名/板块名
+            sector_type TEXT,                    -- 板块专用: 'industry'(884) / 'concept'(885/886)；股票为 NULL
+            props_json  TEXT,                    -- 扩展属性（member_count、monitorable 等）
+            first_seen  TEXT NOT NULL,           -- 首次进入图谱日期
+            last_seen   TEXT NOT NULL,           -- 最近一次确认存在的日期
+            is_active   INTEGER DEFAULT 1        -- 长期未被确认置 0，不物理删
+        );
+        CREATE INDEX IF NOT EXISTS idx_kg_node_type ON kg_node(node_type, is_active);
+        CREATE INDEX IF NOT EXISTS idx_kg_node_code ON kg_node(code);
+
+        -- 双时态归属边：valid_to IS NULL 表示当前生效。
+        -- 同一对(股,板块)可有多个 source 的生效边并存（多源交叉验证）。
+        CREATE TABLE IF NOT EXISTS kg_edge (
+            edge_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            src_id      TEXT NOT NULL,           -- 股票节点 'STOCK:xxx'
+            dst_id      TEXT NOT NULL,           -- 板块节点 'SECTOR:xxx'
+            edge_type   TEXT NOT NULL DEFAULT 'BELONGS_TO',
+            source      TEXT NOT NULL,           -- 'ifind_p03473' / 'ifind_concept' / 未来其他源
+            valid_from  TEXT NOT NULL,           -- 关系生效日（快照日期）
+            valid_to    TEXT,                    -- NULL=生效中；非空=已失效日
+            props_json  TEXT,                    -- 边动态属性（corr_20d 等）
+            confidence  REAL DEFAULT 1.0         -- 双源 1.0 / 仅主源 0.8 / 仅验证源 0.6
+        );
+        CREATE INDEX IF NOT EXISTS idx_kg_edge_src ON kg_edge(src_id, valid_to);
+        CREATE INDEX IF NOT EXISTS idx_kg_edge_dst ON kg_edge(dst_id, valid_to);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_kg_edge_open
+            ON kg_edge(src_id, dst_id, source) WHERE valid_to IS NULL;
+
+        -- 图谱版本快照（每周 kg_update 产出；kg_init 产出首份）
+        CREATE TABLE IF NOT EXISTS kg_snapshot (
+            snapshot_id  TEXT PRIMARY KEY,       -- '20260714'
+            built_at     TEXT NOT NULL,
+            node_count   INTEGER,
+            edge_count   INTEGER,
+            added_edges  INTEGER,
+            removed_edges INTEGER,
+            sources      TEXT,                   -- 参与源列表 json
+            stats_json   TEXT                    -- 度分布/置信分布/族群等统计
+        );
+
+        -- 变更日志（P2 周维护 diff 产出；P1 仅建表）
+        CREATE TABLE IF NOT EXISTS kg_change (
+            change_date TEXT NOT NULL,
+            node_id     TEXT NOT NULL,
+            edge_id     INTEGER,
+            change_type TEXT NOT NULL,           -- 'edge_added' / 'edge_removed' / ...
+            detail_json TEXT,
+            PRIMARY KEY (change_date, node_id, edge_id)
+        );
+
+        -- 板块族群（P3：Louvain 社区发现结果，喂轮动分析/图谱投影图着色）
+        CREATE TABLE IF NOT EXISTS kg_community (
+            calc_date    TEXT NOT NULL,
+            community_id INTEGER NOT NULL,       -- 族群编号（按规模重排，1=最大）
+            node_id      TEXT NOT NULL,          -- 成员节点（板块为主，含股票）
+            node_type    TEXT NOT NULL,
+            PRIMARY KEY (calc_date, node_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_kg_comm_date ON kg_community(calc_date, community_id);
         """
         with self._connect() as conn:
             # 读多写少的看板服务使用 WAL：读请求不再被 daily 写事务阻塞。
             # synchronous=NORMAL 是连接级配置，已在 _connect 中为每个连接设置。
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(ddl)
+            # P3 迁移：kg_edge 加 corr_20d 实体列（20日滚动相关系数，NULL=未算）。
+            # 实体列而非 props_json：联动股查询需按 corr 排序/过滤，实体列可走索引。
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(kg_edge)")}
+            if "corr_20d" not in cols:
+                conn.execute("ALTER TABLE kg_edge ADD COLUMN corr_20d REAL")
             # watched_concepts 首次建表时若为空，灌入 config.SECTOR_POOL_CODES 作种子，
             # 保证上线即有默认监控集（884×259），行为与改造前一致。
             cnt = conn.execute("SELECT COUNT(*) FROM watched_concepts").fetchone()[0]
@@ -262,6 +333,179 @@ class Database:
                     [(c, now) for c in eligible_codes],
                 )
         return eligible_codes
+
+    # ========== 知识图谱（kg_node / kg_edge / kg_snapshot） ==========
+    def clear_kg_tables(self):
+        """清空全部 KG 表（kg_init --force 重建用）。"""
+        with self._connect() as conn:
+            for t in ("kg_change", "kg_snapshot", "kg_edge", "kg_node"):
+                conn.execute(f"DELETE FROM {t}")
+
+    def has_kg_snapshot(self) -> bool:
+        """是否已存在图谱快照（kg_init 幂等门）。"""
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM kg_snapshot").fetchone()
+            return row[0] > 0
+
+    def save_kg_nodes(self, rows: List[Dict]):
+        """批量写入节点。rows: [{node_id, node_type, code, name, sector_type, props_json, first_seen, last_seen}]"""
+        with self._connect() as conn:
+            conn.executemany(
+                """INSERT OR REPLACE INTO kg_node
+                   (node_id, node_type, code, name, sector_type, props_json, first_seen, last_seen, is_active)
+                   VALUES (:node_id, :node_type, :code, :name, :sector_type, :props_json, :first_seen, :last_seen, 1)""",
+                rows,
+            )
+
+    def save_kg_edges(self, rows: List[Dict]):
+        """批量写入边。rows: [{src_id, dst_id, edge_type, source, valid_from, valid_to, props_json, confidence}]"""
+        with self._connect() as conn:
+            conn.executemany(
+                """INSERT INTO kg_edge
+                   (src_id, dst_id, edge_type, source, valid_from, valid_to, props_json, confidence)
+                   VALUES (:src_id, :dst_id, :edge_type, :source, :valid_from, :valid_to, :props_json, :confidence)""",
+                rows,
+            )
+
+    def get_kg_nodes(self, node_type: Optional[str] = None) -> List[Dict]:
+        """读取节点（可选按类型过滤）。"""
+        with self._connect() as conn:
+            if node_type:
+                cursor = conn.execute(
+                    "SELECT * FROM kg_node WHERE node_type = ? AND is_active = 1", (node_type,))
+            else:
+                cursor = conn.execute("SELECT * FROM kg_node WHERE is_active = 1")
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_kg_open_edges(self) -> List[Dict]:
+        """读取全部当前生效边（valid_to IS NULL）。"""
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT * FROM kg_edge WHERE valid_to IS NULL")
+            return [dict(r) for r in cursor.fetchall()]
+
+    def close_kg_edges(self, edge_ids: List[int], valid_to: str):
+        """批量关闭边（kg_update diff 用）：valid_to 置为指定日期。"""
+        if not edge_ids:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                "UPDATE kg_edge SET valid_to = ? WHERE edge_id = ?",
+                [(valid_to, eid) for eid in edge_ids],
+            )
+
+    def touch_kg_nodes(self, node_ids: List[str], last_seen: str):
+        """批量刷新节点 last_seen（kg_update 确认节点仍存在）。"""
+        if not node_ids:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                "UPDATE kg_node SET last_seen = ? WHERE node_id = ?",
+                [(last_seen, nid) for nid in node_ids],
+            )
+
+    def deactivate_stale_kg_nodes(self, before_date: str) -> List[str]:
+        """
+        将 last_seen 早于 before_date 且仍 active 的节点置为 is_active=0（不物理删）。
+        :return: 被停用的 node_id 列表（供 kg_change 记录）
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT node_id FROM kg_node WHERE is_active = 1 AND last_seen < ?",
+                (before_date,)).fetchall()
+            ids = [r["node_id"] for r in rows]
+            if ids:
+                conn.executemany(
+                    "UPDATE kg_node SET is_active = 0 WHERE node_id = ?",
+                    [(i,) for i in ids])
+            return ids
+
+    def save_kg_changes(self, rows: List[Dict]):
+        """批量写入变更日志。rows: [{change_date, node_id, edge_id, change_type, detail_json}]"""
+        if not rows:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                """INSERT OR REPLACE INTO kg_change
+                   (change_date, node_id, edge_id, change_type, detail_json)
+                   VALUES (:change_date, :node_id, :edge_id, :change_type, :detail_json)""",
+                rows,
+            )
+
+    # ========== 知识图谱 P3：族群 / ρ 边权 ==========
+    def replace_kg_communities(self, calc_date: str, rows: List[Dict]):
+        """覆盖写入当日族群（kg_corr 后重算用）。rows: [{community_id, node_id, node_type}]"""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM kg_community WHERE calc_date = ?", (calc_date,))
+            if rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO kg_community (calc_date, community_id, node_id, node_type) "
+                    "VALUES (:calc_date, :community_id, :node_id, :node_type)",
+                    [{"calc_date": calc_date, **r} for r in rows],
+                )
+
+    def get_latest_kg_communities(self) -> List[Dict]:
+        """读取最近一次族群结果：[{community_id, node_id, node_type}]"""
+        with self._connect() as conn:
+            row = conn.execute("SELECT MAX(calc_date) FROM kg_community").fetchone()
+            if not row or not row[0]:
+                return []
+            cursor = conn.execute(
+                "SELECT community_id, node_id, node_type FROM kg_community "
+                "WHERE calc_date = ? ORDER BY community_id", (row[0],))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def update_kg_edge_corr(self, pairs: List[Dict]):
+        """批量更新 open 边的 corr_20d。pairs: [{edge_id, corr_20d}]"""
+        if not pairs:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                "UPDATE kg_edge SET corr_20d = ? WHERE edge_id = ? AND valid_to IS NULL",
+                [(p["corr_20d"], p["edge_id"]) for p in pairs],
+            )
+
+    def get_kg_edges_for_stock(self, stock_code: str) -> List[Dict]:
+        """读取个股全部生效边（含板块信息与 corr）。"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """SELECT e.edge_id, e.confidence, e.corr_20d, e.valid_from,
+                          s.code AS sector_code, s.name AS sector_name, s.sector_type
+                   FROM kg_edge e
+                   JOIN kg_node s ON e.dst_id = s.node_id
+                   WHERE e.src_id = ? AND e.valid_to IS NULL""",
+                (f"STOCK:{stock_code}",))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def get_kg_edges_for_sector(self, sector_code: str) -> List[Dict]:
+        """读取板块全部生效边（含股票信息与 corr）。"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """SELECT e.edge_id, e.confidence, e.corr_20d, e.valid_from,
+                          t.code AS stock_code, t.name AS stock_name
+                   FROM kg_edge e
+                   JOIN kg_node t ON e.src_id = t.node_id
+                   WHERE e.dst_id = ? AND e.valid_to IS NULL""",
+                (f"SECTOR:{sector_code}",))
+            return [dict(r) for r in cursor.fetchall()]
+
+    def save_kg_snapshot(self, snapshot_id: str, stats: Dict, sources: List[str]):
+        """写入图谱快照（含统计 json）。"""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO kg_snapshot
+                   (snapshot_id, built_at, node_count, edge_count, added_edges, removed_edges, sources, stats_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    snapshot_id,
+                    datetime.now().isoformat(timespec="seconds"),
+                    stats.get("node_count", 0),
+                    stats.get("edge_count", 0),
+                    stats.get("added_edges", 0),
+                    stats.get("removed_edges", 0),
+                    json.dumps(sources, ensure_ascii=False),
+                    json.dumps(stats, ensure_ascii=False),
+                ),
+            )
 
     def get_all_member_stock_codes(self) -> List[str]:
         """
@@ -717,6 +961,15 @@ class Database:
                 "GROUP BY group_id, group_name"
             )
             return {row["group_id"]: row["group_name"] for row in cursor}
+
+    def get_custom_group_codes_by_name(self, name: str) -> List[str]:
+        """按分组名取成分股代码（group_name 容忍首尾空格，同花顺导出名常带尾随空格）。"""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT DISTINCT stock_code FROM custom_group WHERE TRIM(group_name) = TRIM(?)",
+                (name,),
+            )
+            return [row["stock_code"] for row in cursor]
 
     def get_custom_all_stock_codes(self) -> List[str]:
         """返回去重后的全部分组股票代码（A 股格式），供分时拉取用"""

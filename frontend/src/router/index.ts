@@ -14,6 +14,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'market_scan', name: 'market_scan', component: () => import('@/views/ScanPage.vue'), meta: { title: '全市场强势归类', icon: '🌐' } },
       { path: 'rotation', name: 'rotation', component: () => import('@/views/RotationPage.vue'), meta: { title: '板块轮动分析', icon: '🔮' } },
       { path: 'sector_manage', name: 'sector_manage', component: () => import('@/views/SectorManagePage.vue'), meta: { title: '监控板块管理', icon: '🛠️' } },
+      { path: 'kg', name: 'kg', component: () => import('@/views/KgGraphPage.vue'), meta: { title: '知识图谱', icon: '🕸️' } },
     ],
   },
 ]

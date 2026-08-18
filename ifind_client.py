@@ -9,6 +9,7 @@ iFinD API 客户端封装
   5. basic_data_service - 概念基本信息（字典初始化）
 """
 
+import os
 import time
 import requests
 from typing import List, Dict, Optional, Any
@@ -57,7 +58,37 @@ def refresh_access_token() -> str:
     config.ACCESS_TOKEN = new_token
     config.HEADERS["access_token"] = new_token
     print(f"[IFIND] access_token 已刷新，有效至 {data['data'].get('expired_time')}")
+
+    # 轮换式 refresh_token 防护：若响应携带新 refresh_token，写回 config_local.py 持久化，
+    # 避免旧 token 被消费后失效（2026-07-14 曾因 -1301 全线不可用，见 DESIGN-knowledge-graph §4.1）
+    new_refresh = data["data"].get("refresh_token")
+    if new_refresh and new_refresh != refresh_token:
+        _persist_refresh_token(new_refresh)
+        config.REFRESH_TOKEN = new_refresh
     return new_token
+
+
+def _persist_refresh_token(new_refresh_token: str):
+    """把新 refresh_token 写回 config_local.py 对应行（文件不存在或无该行则跳过，仅提示）。"""
+    import re
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_local.py")
+    try:
+        if not os.path.exists(local_path):
+            print(f"[IFIND] ⚠ 检测到轮换式 refresh_token，但 {local_path} 不存在，未能持久化——请手动更新")
+            return
+        with open(local_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        updated, n = re.subn(
+            r'(?m)^REFRESH_TOKEN\s*=\s*".*"',
+            f'REFRESH_TOKEN = "{new_refresh_token}"',
+            content,
+        )
+        if n:
+            with open(local_path, "w", encoding="utf-8") as f:
+                f.write(updated)
+            print(f"[IFIND] refresh_token 已轮换并写回 config_local.py（防失效）")
+    except Exception as e:
+        print(f"[IFIND] ⚠ refresh_token 持久化失败（不影响本次刷新）: {e}")
 
 
 class IFindClient:

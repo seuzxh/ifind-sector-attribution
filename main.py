@@ -119,6 +119,113 @@ def cmd_push(args):
         print(f"  全市场推送: {'✅ 成功' if pm else '❌ 失败/未配置'}")
 
 
+def cmd_kg_init(args):
+    """知识图谱首次构建（P1）：4 表落库 + 统计报告 + 族群初探。"""
+    from kg_builder import kg_bootstrap
+    result = kg_bootstrap(
+        Database(),
+        force=args.force,
+        refetch=args.refetch,
+        skip_verify=args.skip_verify,
+    )
+    if result.get("error") == "snapshot_exists":
+        sys.exit(1)
+
+
+def cmd_kg_query(args):
+    """知识图谱简易查询：个股→板块 / 板块→成分股 / 联动股。"""
+    import sqlite3
+    from database import Database
+    db = Database()
+    key = args.code.strip().upper()
+
+    with sqlite3.connect(db.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+
+        def _resolve_sector(k):
+            for cand in (k if k.endswith(".TI") else k + ".TI",):
+                row = conn.execute(
+                    "SELECT node_id, code, name FROM kg_node WHERE node_type='sector' AND code=?",
+                    (cand,)).fetchone()
+                if row:
+                    return row
+            return None
+
+        def _resolve_stock(k):
+            cands = [k] if "." in k else [k + s for s in (".SH", ".SZ", ".BJ")]
+            for cand in cands:
+                row = conn.execute(
+                    "SELECT node_id, code, name FROM kg_node WHERE node_type='stock' AND code=?",
+                    (cand,)).fetchone()
+                if row:
+                    return row
+            return None
+
+        sector = _resolve_sector(key) if key[:3] in ("884", "885", "886") else None
+        stock = None if sector else _resolve_stock(key)
+
+        if sector:
+            print(f"\n板块【{sector['name']}】({sector['code']}) 成分股：")
+            rows = conn.execute("""
+                SELECT n1.code, n1.name FROM kg_edge e
+                JOIN kg_node n1 ON e.src_id = n1.node_id
+                WHERE e.dst_id = ? AND e.valid_to IS NULL ORDER BY n1.code
+            """, (sector["node_id"],)).fetchall()
+            for i, r in enumerate(rows, 1):
+                print(f"  {i:>3}. {r['code']:<10} {r['name']}")
+            print(f"共 {len(rows)} 只\n")
+        elif stock:
+            print(f"\n个股【{stock['name']}】({stock['code']}) 归属板块：")
+            rows = conn.execute("""
+                SELECT n2.code, n2.name,
+                       CASE n2.sector_type WHEN 'industry' THEN '行业' ELSE '概念' END AS kind
+                FROM kg_edge e JOIN kg_node n2 ON e.dst_id = n2.node_id
+                WHERE e.src_id = ? AND e.valid_to IS NULL
+                ORDER BY kind, n2.code
+            """, (stock["node_id"],)).fetchall()
+            for i, r in enumerate(rows, 1):
+                print(f"  {i:>2}. [{r['kind']}] {r['name']}")
+            print(f"共 {len(rows)} 个板块\n")
+
+            if args.linked:
+                n = args.linked
+                print(f"联动股 Top{n}（共享板块最多的股票）：")
+                lk = conn.execute("""
+                    SELECT n2.code, n2.name, COUNT(DISTINCT e2.dst_id) AS shared,
+                           GROUP_CONCAT((SELECT name FROM kg_node WHERE node_id=e2.dst_id), '、') AS via
+                    FROM kg_edge e1
+                    JOIN kg_edge e2 ON e1.dst_id = e2.dst_id AND e2.src_id != e1.src_id
+                    JOIN kg_node n2 ON e2.src_id = n2.node_id
+                    WHERE e1.src_id = ? AND e1.valid_to IS NULL AND e2.valid_to IS NULL
+                    GROUP BY e2.src_id ORDER BY shared DESC LIMIT ?
+                """, (stock["node_id"], n)).fetchall()
+                for i, r in enumerate(lk, 1):
+                    print(f"  {i:>2}. {r['name']:<8} {r['code']:<10} 共享{r['shared']}个板块")
+                    print(f"      └ {r['via']}")
+                print()
+        else:
+            print(f"[KG-QUERY] 未找到：{args.code}（板块需 884/885/886 开头，如 884091；个股如 600519）")
+            sys.exit(1)
+
+
+def cmd_kg_update(args):
+    """知识图谱周维护（P2）：diff 两源归属 → 开/关边 + 升降级 + 变更日志 + 快照。"""
+    from kg_builder import kg_update
+    result = kg_update(Database(), skip_verify=args.skip_verify, force=args.force)
+    if result.get("error") == "snapshot_exists":
+        sys.exit(1)
+
+
+def cmd_kg_corr(args):
+    """知识图谱 P3：算 20 日滚动 ρ 挂边 + 重算族群（每日盘后跑，手动或 cron）。"""
+    from kg_analysis import compute_corr_20d, detect_communities
+    db = Database()
+    stats = compute_corr_20d(db, window=args.window)
+    comm = detect_communities(db, use_corr=not args.no_corr_weight)
+    print(f"[KG-CORR] 完成：ρ {stats['updated']}/{stats['edges']} 条（覆盖 {stats['coverage']:.1%}），"
+          f"族群 {comm['communities']} 个")
+
+
 def cmd_import_groups(args):
     """导入同花顺自选股分组 JSON 到 custom_group 表（幂等，可重复导入更新）"""
     result = import_groups_from_json(args.json)
@@ -231,6 +338,31 @@ def main():
                              help="时间槽：933=9:33 / 945=9:45 / 1000=10:00 / 1430=14:30")
     push_parser.add_argument("--dry-run", action="store_true", help="只选股归类并打印消息，不推送")
     push_parser.set_defaults(func=cmd_push)
+
+    # kg_init（知识图谱首次构建，P1）
+    kg_parser = subparsers.add_parser("kg_init", help="构建知识图谱（首次构建 + 统计报告 + 族群初探）")
+    kg_parser.add_argument("--force", action="store_true", help="已存在快照时清空 kg 表重建")
+    kg_parser.add_argument("--refetch", action="store_true", help="强制重拉接口2成分股（否则复用当天快照）")
+    kg_parser.add_argument("--skip-verify", action="store_true", help="跳过接口1交叉验证源（只建主源边）")
+    kg_parser.set_defaults(func=cmd_kg_init)
+
+    # kg_query（知识图谱简易查询）
+    kgq_parser = subparsers.add_parser("kg_query", help="查图谱：个股→板块 / 板块→成分股 / 联动股")
+    kgq_parser.add_argument("code", type=str, help="股票代码(600519) 或板块码(884091)，可带或不带后缀")
+    kgq_parser.add_argument("--linked", type=int, default=0, metavar="N", help="查个股时附带联动股 TopN（按共享板块数）")
+    kgq_parser.set_defaults(func=cmd_kg_query)
+
+    # kg_update（知识图谱周维护，P2，crontab 周日调用）
+    kgu_parser = subparsers.add_parser("kg_update", help="知识图谱周维护：拉两源→diff→开/关边+变更日志+快照")
+    kgu_parser.add_argument("--skip-verify", action="store_true", help="跳过接口1验证源")
+    kgu_parser.add_argument("--force", action="store_true", help="当日已有快照也重做")
+    kgu_parser.set_defaults(func=cmd_kg_update)
+
+    # kg_corr（知识图谱 P3：ρ 边权 + 族群，每日盘后）
+    kgc_parser = subparsers.add_parser("kg_corr", help="算 20 日滚动 ρ 挂边 + 重算族群（盘后任务）")
+    kgc_parser.add_argument("--window", type=int, default=20, help="滚动窗口交易日数，默认 20")
+    kgc_parser.add_argument("--no-corr-weight", action="store_true", help="族群发现不用 ρ 加权（退化等权）")
+    kgc_parser.set_defaults(func=cmd_kg_corr)
 
     args = parser.parse_args()
     if args.command:

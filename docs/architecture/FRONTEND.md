@@ -60,9 +60,10 @@ nav_order: 3
 | 路由 | Vue Router | ^4.5.0 | Hash 模式 |
 | 状态 | Pinia | ^2.3.0 | 已安装并注册，当前尚无 store |
 | HTTP | Axios | ^1.7.9 | 统一实例 + 拦截器 |
+| 图谱 | cytoscape | ^3.34.1 | 仅知识图谱页（`/kg`）的图渲染 |
 | 类型检查 | vue-tsc | ^2.1.10 | `npm run build` 前置 |
 
-**注意**：不使用 Vuex；不使用图表库（K 线/排名均用原生 HTML table + CSS，无 ECharts/Plotly 依赖——这与旧版不同）。
+**注意**：不使用 Vuex；不使用图表库（K 线/排名均用原生 HTML table + CSS，无 ECharts/Plotly 依赖——这与旧版不同；唯一例外是知识图谱页引入 cytoscape 做网络图渲染）。
 
 **npm 脚本**（`frontend/package.json`）：
 - `npm run dev` — 开发服务器（5173）
@@ -92,7 +93,8 @@ frontend/
     │   ├── AuctionPage.vue     # 集合竞价
     │   ├── ScanPage.vue        # 强势归类（自选/全市场同组件复用）
     │   ├── RotationPage.vue    # 板块轮动（SSE）
-    │   └── SectorManagePage.vue # 监控板块管理（勾选+多周期涨幅）
+    │   ├── SectorManagePage.vue # 监控板块管理（勾选+多周期涨幅）
+    │   └── KgGraphPage.vue     # 知识图谱（cytoscape 四视图：族群投影/个股星型/板块成分/组合定位）
     ├── components/
     │   └── dashboard/      # 看板子组件
     │       ├── TimeBar.vue         # 时间轴播放控件
@@ -171,6 +173,7 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 | `/market_scan` | market_scan | ScanPage | 🌐 全市场强势归类 |
 | `/rotation` | rotation | RotationPage | 🔮 板块轮动分析 |
 | `/sector_manage` | sector_manage | SectorManagePage | 🛠️ 监控板块管理 |
+| `/kg` | kg | KgGraphPage | 🕸️ 知识图谱 |
 
 **组件复用约定**：
 - `DashboardPage` 同时服务 `sector` 和 `custom` —— 用 `route.name === 'custom'` 区分数据源。
@@ -199,6 +202,7 @@ const http = axios.create({ timeout: 60000 })
 | `auction.ts` | `/api/auction/*` | 集合竞价 |
 | `scan.ts` | `/api/custom/scan`, `/api/market/scan` | 强势归类 |
 | `custom.ts` | `/api/custom/check_reload` | 自选分组热更新 |
+| `kg.ts` | `/api/kg/*` | 知识图谱（图谱供数 + 组合定位） |
 | `calendar.ts` | `/api/trade_calendar`, `/api/dates` | 交易日历 |
 | `session.ts` | `/api/session_status` | 交易时段 |
 
