@@ -12,7 +12,7 @@
   - **板块强度看板**：3s 轮询刷新板块强度 + 成分股四维评分排名
   - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
   - **自选强势归类**：iFinD MCP 自然语言选股后取自选股交集，再按自选分组统计命中
-  - **全市场强势归类**：自然语言选股（iFinD MCP `search_stocks`，4 组预置 + 自定义条件可存/重命名）→ 按管理页已勾选板块归类
+  - **全市场强势归类**：自然语言选股（iFinD MCP `search_stocks`，4 组预置 + 自定义条件可存/重命名）→ 知识图谱富集归类（全量板块按富集倍数/命中数排序，详见 docs/architecture/DESIGN-strong-stock-scan.md）
   - **板块轮动分析**：并发行情采集 → 分批 LLM 流式分析 → 对抗审查 → 综合结论；采集进度覆盖更新
   - 顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
 
@@ -218,7 +218,7 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回持仓标注字段） |
 | `GET /api/dashboard/members` | — | 单板块/分组全部有效成员按字段排序，仅返回前 10（实时看板点击成分股表头时按需调用） |
 | `GET /api/custom/scan` | — | **自选强势归类**（MCP 自然语言选股 → 取自选交集 → 按自选分组归类） |
-| `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → 按管理页已勾选板块归类；入参 `query`） |
+| `GET /api/market/scan` | — | **全市场强势归类**（MCP 选股 → 知识图谱富集归类：全量板块按富集倍数/命中数排序，每股带 ρ；入参 `query/order/min_hits/top_n`） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（`scope=sector` 按当前勾选板块；`scope=custom` 按自选分组） |
 | `GET /api/trade_calendar` | — | 交易日列表（供日期选择器过滤非交易日） |
