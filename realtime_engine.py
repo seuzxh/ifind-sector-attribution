@@ -694,16 +694,23 @@ class RealtimeEngine:
         }
 
 
-    # ========== 全市场强势归类（MCP 选股 + 当前勾选概念归类，不碰分时） ==========
-    def scan_market_groups(self, query: str) -> Dict:
+    # ========== 全市场强势归类（MCP 选股 + 知识图谱富集归类，不碰分时） ==========
+    def scan_market_groups(self, query: str, min_hits: int = 2, top_n: int = 30,
+                           order: str = "lift") -> Dict:
         """
-        全市场强势股概念板块归类：用 iFinD MCP search_stocks 自然语言选股，
-        把选出的股票按「监控板块管理」当前勾选板块归类统计。
+        全市场强势股板块归类：用 iFinD MCP search_stocks 自然语言选股，
+        把选出的股票按知识图谱富集归类（kg_analysis.classify_hits）。
+
+        归类规则（2026-08-18 起为 KG 版，旧版按勾选板块逐板块数命中已下线）：
+          - 全量图谱口径（650 板块），不再限定「监控板块管理」勾选集；
+            勾选板块在结果里带 is_watched 标记，前端高亮
+          - 排序默认按富集倍数 lift（组内命中率 ÷ 板块成员占全市场比例），
+            消除"融资融券"类大基数板块的命中噪音；order=hits 可切回命中数
+          - 一股属多板块各计（与旧版一致）；每股带 corr_20d（与该板块的 20 日 ρ）
 
         与 scan_custom_groups 的差异：
           - 命中股来自 MCP search_stocks（收盘数据），非分时筛选
-          - 归类维度是当前勾选概念板块（self._members_map），非自选分组
-          - 不依赖分时序列缓存，纯收盘 → 更轻量
+          - 归类维度是图谱板块（非自选分组），不依赖分时序列缓存
           - hits 指标只有 change_ratio（search_stocks 返回的涨跌幅）
 
         :param query: 自然语言选股条件（如 "涨幅大于7%并且小于12.1%；未涨停；非ST"）
@@ -711,9 +718,6 @@ class RealtimeEngine:
         """
         from mcp_proxy import MCPClient
 
-        self._ensure_maps()
-        if not self._members_map:
-            return {"error": "未配置监控板块，请到「监控板块管理」勾选"}
         if not query or not query.strip():
             return {"error": "请输入选股条件（query）"}
 
@@ -733,37 +737,40 @@ class RealtimeEngine:
                     "raw_preview": str(md_raw)[:300]}
         hit_codes = set(hit_lookup.keys())
 
-        # 3. 按监控板块归类（一股属多板块，各板块各计）
-        # self._members_map 已由 watched_concepts 表限定范围（_ensure_maps 读勾选集），
-        # 不再硬编码 884 —— 用户勾选哪些板块就按哪些归类。
-        members_map = self._members_map
-        group_names = self._concept_names
+        # 3. 知识图谱富集归类（全量板块，lift/命中数排序，每股带 ρ）
+        from kg_analysis import classify_hits
+        sectors = classify_hits(self.db, sorted(hit_codes),
+                                min_hits=min_hits, top_n=top_n, order=order)
+        watched = set(self.db.get_watched_concept_codes())
+
         groups_out = []
-        for gid, g_codes in members_map.items():
-            g_hit_codes = [c for c in g_codes if c in hit_codes]
-            if not g_hit_codes:
-                continue
+        for s in sectors:
             hits = []
-            for c in g_hit_codes:
-                m = hit_lookup[c]
+            for h in s["hits"]:
+                m = hit_lookup.get(h["code"], {})
+                chg = m.get("change_ratio")
                 hits.append({
-                    "code": c,
+                    "code": h["code"],
                     "name": m.get("name", ""),
-                    "change_ratio": round(float(m["change_ratio"]), 2),
+                    "change_ratio": round(float(chg), 2) if chg is not None else None,
+                    "corr_20d": h["corr_20d"],
                 })
-            hits.sort(key=lambda x: x["change_ratio"], reverse=True)
-            avg_chg = sum(h["change_ratio"] for h in hits) / len(hits)
+            hits.sort(key=lambda x: (x["change_ratio"] if x["change_ratio"] is not None else -99), reverse=True)
+            chg_list = [h["change_ratio"] for h in hits if h["change_ratio"] is not None]
             groups_out.append({
-                "group_id": gid,
-                "group_name": group_names.get(gid, gid),
-                "hit_count": len(g_hit_codes),
-                "member_total": len(g_codes),
-                "coverage": round(len(g_hit_codes) / len(g_codes), 4) if g_codes else 0,
-                "hit_avg_change": round(avg_chg, 2),
+                "group_id": s["sector_code"],
+                "group_name": s["sector_name"],
+                "sector_code": s["sector_code"],
+                "sector_type": s["sector_type"],
+                "is_watched": s["sector_code"] in watched,
+                "hit_count": s["hit_count"],
+                "member_total": s["members"],
+                "lift": s["lift"],
+                "coverage": round(s["hit_count"] / len(hit_codes), 4),
+                "hit_avg_change": round(sum(chg_list) / len(chg_list), 2) if chg_list else None,
                 "hits": hits,
             })
 
-        groups_out.sort(key=lambda x: (x["hit_count"], x["hit_avg_change"]), reverse=True)
         classified_codes = {
             hit["code"]
             for group in groups_out
@@ -773,8 +780,9 @@ class RealtimeEngine:
         return {
             "query": query,
             "pool_size": int(len(hit_codes)),          # 全市场选股命中
-            "hit_total": int(len(classified_codes)),   # 当前勾选板块内可归类的去重命中
+            "hit_total": int(len(classified_codes)),   # 图谱内可归类的去重命中
             "group_hit_count": len(groups_out),
+            "order": order,
             "groups": groups_out,
         }
 
@@ -1004,12 +1012,12 @@ def scan_custom_groups(query: str) -> Dict:
     return _engine_instance.scan_custom_groups(query=query)
 
 
-def scan_market_groups(query: str) -> Dict:
-    """全市场强势归类扫描（全局入口）。MCP 选股 + 当前勾选概念归类。"""
+def scan_market_groups(query: str, order: str = "lift", min_hits: int = 2, top_n: int = 30) -> Dict:
+    """全市场强势归类扫描（全局入口）。MCP 选股 + 知识图谱富集归类。"""
     global _engine_instance
     if _engine_instance is None:
         _engine_instance = RealtimeEngine()
-    return _engine_instance.scan_market_groups(query)
+    return _engine_instance.scan_market_groups(query, order=order, min_hits=min_hits, top_n=top_n)
 
 
 def clear_cache():

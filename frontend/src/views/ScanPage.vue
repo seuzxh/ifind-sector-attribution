@@ -19,6 +19,12 @@
         <input v-model="queryInput" type="text" class="query-input"
                placeholder="输入自然语言选股条件，如「涨幅大于7%并且小于12.1%；未涨停；非ST」" />
         <button class="btn primary" @click="applyScan" :disabled="loading">🔍 选股归类</button>
+        <template v-if="isMarket">
+          <label class="order-toggle">
+            <input type="radio" value="lift" v-model="order" @change="applyScan" /> 富集倍数
+            <input type="radio" value="hits" v-model="order" @change="applyScan" /> 命中数
+          </label>
+        </template>
         <button class="btn" @click="saveCustom">💾 存为条件</button>
         <button class="btn" @click="renameItem">✏️ 重命名</button>
         <button class="btn" @click="deleteCustom">🗑 删除</button>
@@ -41,16 +47,19 @@
         <div class="scan-group-head" @click="toggle(g.group_id)">
           <span class="arrow">▶</span>
           <span class="gname">#{{ i + 1 }} {{ g.group_name }}</span>
+          <span v-if="g.is_watched" class="watched-tag">已监控</span>
+          <span v-if="isMarket && g.lift != null" class="lift-tag" title="富集倍数 = 组内命中率 ÷ 板块成员占全市场比例">富集 {{ g.lift }}×</span>
           <span class="gstat">
-            命中 <b>{{ g.hit_count }}</b>/{{ g.member_total }}
-            <span class="cov-bar"><i :style="{ width: Math.min(100, g.coverage * 100 * 2) + '%' }"></i></span>
-            {{ (g.coverage * 100).toFixed(1) }}%
+            命中 <b>{{ g.hit_count }}</b>{{ isMarket ? `（组内 ${(g.coverage * 100).toFixed(0)}%）` : `/${g.member_total}` }}
+            <span v-if="!isMarket" class="cov-bar"><i :style="{ width: Math.min(100, g.coverage * 100 * 2) + '%' }"></i></span>
+            <span v-if="!isMarket">{{ (g.coverage * 100).toFixed(1) }}%</span>
           </span>
           <span class="gstat">均涨 <b class="up-text">{{ fmt(g.hit_avg_change) }}%</b></span>
         </div>
         <div class="scan-group-body">
           <div class="hit-chips">
-            <span v-for="h in g.hits" :key="h.code" class="hit-chip" :title="`${h.name} ${h.code}`">
+            <span v-for="h in g.hits" :key="h.code" class="hit-chip"
+                  :title="`${h.name} ${h.code}` + (h.corr_20d != null ? ` · ρ=${h.corr_20d}` : '')">
               <b class="up-text">{{ fmt(h.change_ratio) }}%</b> {{ h.name || h.code }}
             </span>
             <span v-if="!g.hits || g.hits.length === 0" class="faint">无</span>
@@ -110,9 +119,10 @@ const expanded = ref<Set<string>>(new Set())  // 展开的分组（内存级）
 
 const groups = computed<ScanGroup[]>(() => payload.value?.groups || [])
 const groupName = computed(() => isMarket.value ? '板块' : '分组')
+const order = ref<'lift' | 'hits'>('lift')
 const boardHint = computed(() =>
   isMarket.value
-    ? '（全市场选股 → 仅按“监控板块管理”已勾选板块归类，点“选股归类”触发）'
+    ? '（全市场选股 → 知识图谱富集归类：富集倍数暴露异常聚集的小圈子，命中数看最大公约数；已勾选监控的板块带「已监控」标记）'
     : '（自选强势归类：自然语言选股 → 取自选交集 → 按自选分组归类，点"选股归类"触发）'
 )
 
@@ -133,12 +143,12 @@ async function applyScan() {
   loading.value = true; error.value = ''; payload.value = null
   statusText.value = '选股归类中…'; statusCls.value = ''
   try {
-    const data = isMarket.value ? await scanMarketGroups(q) : await scanCustomGroups(q)
+    const data = isMarket.value ? await scanMarketGroups(q, order.value) : await scanCustomGroups(q)
     if (data.error) { error.value = data.error; statusText.value = ''; }
     else {
       payload.value = data
       statusText.value = isMarket.value
-        ? `全市场筛出 ${data.pool_size ?? 0} 只 · 勾选板块内归类 ${data.hit_total ?? 0} 只 → ${data.group_hit_count ?? 0} 个板块`
+        ? `全市场筛出 ${data.pool_size ?? 0} 只 · 图谱归类 ${data.hit_total ?? 0} 只 → ${data.group_hit_count ?? 0} 个板块（按${order.value === 'lift' ? '富集倍数' : '命中数'}）`
         : `自选 · 命中 ${data.hit_total ?? 0} 只 → ${data.group_hit_count ?? 0} 个分组`
       statusCls.value = 'live'
     }
@@ -260,4 +270,15 @@ watch(() => route.name, (name, oldName) => {
 .faint { color: #9ca3af; font-size: 12px; }
 .empty-msg { text-align: center; color: #9ca3af; padding: 32px; }
 .empty-msg.warn { color: #d97706; }
+/* market_scan：KG 富集归类元素 */
+.order-toggle { display: flex; align-items: center; font-size: 12px; color: #6b7280; }
+.order-toggle input { margin: 0 2px 0 10px; accent-color: #1e40af; }
+.watched-tag {
+  font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  background: #dcfce7; color: #15803d; white-space: nowrap;
+}
+.lift-tag {
+  font-size: 11px; padding: 1px 8px; border-radius: 8px; font-weight: 600;
+  background: #fee2e2; color: #dc2626; white-space: nowrap; cursor: help;
+}
 </style>
