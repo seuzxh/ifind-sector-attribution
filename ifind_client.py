@@ -308,6 +308,103 @@ class IFindClient:
         }
         return self._post(url, payload)
 
+    # ========== 特色数据: 智能选股（板块全集发现/搜索） ==========
+    # 文档：POST /api/v1/smart_stock_picking，searchtype=index 枚举指数，stock 查个股
+    # 实测 2026-09：概念指数 390 / 二级行业 90 / 三级行业 230，共 710 个板块动态可枚举
+
+    # searchstring → 板块分类的固定句式（枚举用）
+    BOARD_CATEGORY_QUERIES = {
+        "concept": "同花顺概念指数",        # 885xxx 概念板块
+        "industry_l2": "同花顺二级行业指数",  # 881xxx 二级行业
+        "industry_l3": "同花顺三级行业指数",  # 884xxx 三级行业
+    }
+
+    def smart_pick_boards(self, searchstring: str) -> List[Dict[str, Any]]:
+        """
+        智能选股接口枚举板块（searchtype=index）。
+        :param searchstring: 如 "同花顺概念指数" / "同花顺二级行业指数" / "同花顺三级行业指数"，
+                             也支持按名称搜索（如 "半导体"）
+        :return: [{"concept_code", "concept_name", "category", "change_ratio"(可能缺)}, ...]
+        """
+        url = f"{self.base_url_quant}/smart_stock_picking"
+        payload = {"searchstring": searchstring, "searchtype": "index"}
+        resp = self._post(url, payload)
+        tables = resp.get("tables", [])
+        if not tables:
+            return []
+        tbl = tables[0].get("table", {})
+        codes = tbl.get("指数代码", [])
+        names = tbl.get("指数简称", [])
+        # 分类/涨跌幅字段名因 query 而异，做兼容取值
+        cat_key = next((k for k in tbl if "级别" in k or ("同花顺" in k and k != "指数代码")), None)
+        chg_key = next((k for k in tbl if "涨跌幅" in k), None)
+        cats = tbl.get(cat_key, []) if cat_key else []
+        chgs = tbl.get(chg_key, []) if chg_key else []
+
+        boards = []
+        for i, code in enumerate(codes):
+            boards.append({
+                "concept_code": code,
+                "concept_name": names[i] if i < len(names) else "",
+                "category": cats[i] if i < len(cats) else searchstring,
+                "change_ratio": round(chgs[i], 2) if chgs and i < len(chgs) and chgs[i] is not None else None,
+            })
+        return boards
+
+    def get_all_ths_boards(self, levels: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """
+        动态枚举同花顺公共板块全集（概念 + 二级行业 + 三级行业）。
+        用途：刷新板块字典 / 发现新板块 / 替代硬编码 SECTOR_POOL_CODES。
+        :param levels: 要枚举的分类，默认全部 ["concept", "industry_l2", "industry_l3"]
+        :return: [{"concept_code", "concept_name", "category", "change_ratio", "level"}, ...]
+        """
+        levels = levels or list(self.BOARD_CATEGORY_QUERIES.keys())
+        seen = set()
+        boards = []
+        for level in levels:
+            q = self.BOARD_CATEGORY_QUERIES.get(level)
+            if not q:
+                continue
+            for b in self.smart_pick_boards(q):
+                if b["concept_code"] in seen:
+                    continue
+                seen.add(b["concept_code"])
+                b["level"] = level
+                boards.append(b)
+        return boards
+
+    def search_board_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """按名称搜单个板块（如 "半导体" → 881121.TI）。找不到返回 None。"""
+        boards = self.smart_pick_boards(name)
+        return boards[0] if boards else None
+
+    def smart_pick_stocks(self, searchstring: str) -> List[Dict[str, Any]]:
+        """
+        智能选股接口查个股（searchtype=stock）。
+        自然语言句式实测："机器人概念板块成分股" → 1227 只（带所属概念字段）。
+        :return: [{"stock_code", "stock_name", "concepts"(所属概念,可能缺)}, ...]；空列表=无数据
+        """
+        url = f"{self.base_url_quant}/smart_stock_picking"
+        payload = {"searchstring": searchstring, "searchtype": "stock"}
+        resp = self._post(url, payload)
+        if resp.get("errorcode") not in (0, None):
+            return []
+        tables = resp.get("tables", [])
+        if not tables:
+            return []
+        tbl = tables[0].get("table", {})
+        codes = tbl.get("股票代码", [])
+        names = tbl.get("股票简称", [])
+        concepts = tbl.get("所属概念", [])
+        rows = []
+        for i, code in enumerate(codes):
+            rows.append({
+                "stock_code": code,
+                "stock_name": names[i] if i < len(names) else "",
+                "concepts": concepts[i] if i < len(concepts) else "",
+            })
+        return rows
+
     # ========== 批量查询工具 ==========
     def batch_get_stock_concepts(
         self,
