@@ -14,6 +14,12 @@
           评分 {{ fmt(s.score) }} · S1 {{ fmtPct(s.s1_return) }} · S2 {{ (s.s2_breadth * 100).toFixed(0) }}%
           <template v-if="sortLoading[s.concept_code]"> · 排序中…</template>
         </span>
+        <!-- KG 同类折叠提示：相似/同族群板块已折叠进本卡（板块强度监控专用） -->
+        <div v-if="s.similar?.length" class="similar-line"
+             :title="'已折叠同类板块（KG 分类）：' + s.similar.map(x => x.concept_name).join('、')">
+          ◈ 同类 {{ s.similar.length }}：{{ s.similar.slice(0, 3).map(x => x.concept_name).join('、')
+          }}<template v-if="s.similar.length > 3"> 等</template>
+        </div>
       </div>
       <!-- 成分股表格 -->
       <table class="card-table">
@@ -220,6 +226,10 @@ defineExpose({ highlight })
   width: 18px; height: 18px; border-radius: 50%; background: rgba(255,255,255,0.25); font-size: 11px;
 }
 .meta { font-size: 11px; opacity: 0.9; font-weight: normal; }
+.similar-line {
+  font-size: 10px; opacity: 0.85; margin-top: 2px; cursor: help;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .card-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .card-table th, .card-table td {
   padding: 6px 8px; text-align: right; border-bottom: 1px solid #f3f4f6; white-space: nowrap;

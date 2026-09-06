@@ -23,6 +23,9 @@ export interface SectorEntry {
   member_count: number
   holding_in_group?: string[]  // 本分组含的持仓股（仅 custom）
   members_top10: MemberStock[]
+  // KG 分类去重（仅 sector 模式）：similar=被折叠的同类板块，community_id=族群
+  similar?: { concept_code: string; concept_name: string; score: number }[]
+  community_id?: number
 }
 
 // 市场统计
@@ -47,6 +50,13 @@ export interface DashboardPayload {
   top_sectors?: SectorEntry[]
   bottom_sectors?: SectorEntry[]
   zt_sectors?: SectorEntry[]      // 涨停分组（仅 custom）
+  kg_dedup?: {
+    rules: string
+    top_folded: number
+    top_hidden_hubs: string[]
+    bottom_folded: number
+    bottom_hidden_hubs: string[]
+  } | null
   holding_stocks?: string[]
   // auction 专用
   top_stocks?: any[]

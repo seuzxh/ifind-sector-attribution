@@ -288,6 +288,172 @@ def classify_hits(db: Database, stock_codes: List[str], min_hits: int = 2,
     return out[:top_n]
 
 
+# ============ 看板板块分类（板块强度监控去重，2026-08-18） ============
+
+# 分类快照缓存：看板 3s 轮询，重算 Jaccard/族群浓度太浪费。
+# 键 = (kg_community 日期, 板块集合指纹)；kg 数据或勾选集变化才失效。
+_DASH_CLASS_CACHE: Dict = {}
+
+# 阈值均经 2026-08-18 实测校准（详见 DESIGN-knowledge-graph.md §9.4）：
+#   hub_max_share=0.55：融资融券0.30/深股通0.31/国企改革0.35/专精特新0.50 被标记，
+#                       主题板块最低 无人驾驶0.61/固态电池0.66 保留，两侧均有余量
+#   jaccard_th=0.20：watched 内连通组= 煤炭开采↔煤炭概念 / HJT↔BC↔TOPCON /
+#                     智能穿戴↔消费电子↔AI眼镜 / 算力租赁↔华为昇腾↔云计算 等，粒度合适
+
+
+def dashboard_classification(db: Database, sector_codes: List[str],
+                             jaccard_th: float = 0.20,
+                             hub_max_share: float = 0.55,
+                             hub_min_members: int = 300) -> Dict:
+    """
+    看板板块分类快照（缓存版）：枢纽判定 + 马甲分组 + 族群归属。
+
+    三个语义（供看板展示规则消费）：
+      hub[code]        枢纽板块——成分股散布在多个族群（融资融券/深股通类横切标签），不展示
+      twin_group[code] 马甲组编号——成分高度重叠的板块同组（Jaccard≥阈值的连通分量）
+      community[code]  Louvain 族群号——产业链近邻（半导体材料/设备/分立器件同族群但成分零重叠，
+                       只有族群维度能把它们归到一起）
+
+    图谱缺失（未 kg_init/kg_corr）时返回空分类，调用方自动跳过去重。
+    """
+    import sqlite3
+    sector_codes = sorted(set(sector_codes))
+    if not sector_codes:
+        return {"hub": {}, "twin_group": {}, "community": {}, "n_groups": 0, "ready": False}
+
+    with sqlite3.connect(db.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        comm_date_row = conn.execute("SELECT MAX(calc_date) FROM kg_community").fetchone()
+        comm_date = comm_date_row[0] if comm_date_row else None
+        cache_key = (comm_date, tuple(sector_codes))
+        hit = _DASH_CLASS_CACHE.get(cache_key)
+        if hit:
+            return hit
+        if not comm_date:
+            _DASH_CLASS_CACHE[cache_key] = {"hub": {}, "twin_group": {}, "community": {}, "n_groups": 0, "ready": False}
+            return _DASH_CLASS_CACHE[cache_key]
+
+        # 板块成员集（KG open 边）
+        ph = ",".join("?" for _ in sector_codes)
+        members: Dict[str, Set[str]] = {c: set() for c in sector_codes}
+        for r in conn.execute(
+                f"SELECT dst_id, src_id FROM kg_edge WHERE valid_to IS NULL AND dst_id IN ({ph})",
+                [f"SECTOR:{c}" for c in sector_codes]):
+            members[r["dst_id"].split(":", 1)[1]].add(r["src_id"])
+
+        # 个股 → 族群（算枢纽浓度）；板块 → 族群（展示限额）
+        stock_comm: Dict[str, int] = {}
+        sector_comm: Dict[str, int] = {}
+        for r in conn.execute("SELECT node_id, community_id FROM kg_community WHERE calc_date = ?", (comm_date,)):
+            nid = r["node_id"]
+            if nid.startswith("STOCK:"):
+                stock_comm[nid] = r["community_id"]
+            else:
+                sector_comm[nid.split(":", 1)[1]] = r["community_id"]
+
+    # 枢纽：成员的族群集中度 max_share（横切标签的成员均匀散布在各族群）。
+    # 加 n≥hub_min_members 下限：小盘主题（如 TOPCON电池 40 只）成员少、浓度天然分散，
+    # 不能误判；真枢纽（融资融券 3852/深股通 1875/国企改革 1468）全部 ≥1200。
+    hub: Dict[str, bool] = {}
+    for code, ms in members.items():
+        if not ms:
+            continue
+        dist: Dict[int, int] = {}
+        for s in ms:
+            c = stock_comm.get(s)
+            if c is not None:
+                dist[c] = dist.get(c, 0) + 1
+        total = sum(dist.values())
+        hub[code] = bool(total >= hub_min_members and max(dist.values()) / total < hub_max_share)
+
+    # 马甲组：Jaccard ≥ 阈值的连通分量（并查集）
+    parent = {c: c for c in sector_codes}
+
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    codes_with_members = [c for c in sector_codes if members[c]]
+    for i in range(len(codes_with_members)):
+        for j in range(i + 1, len(codes_with_members)):
+            a, b = codes_with_members[i], codes_with_members[j]
+            inter = len(members[a] & members[b])
+            if inter and inter / len(members[a] | members[b]) >= jaccard_th:
+                parent[_find(a)] = _find(b)
+    twin_group = {c: _find(c) for c in sector_codes}
+
+    snap = {"hub": hub, "twin_group": twin_group, "community": sector_comm,
+            "n_groups": len(set(twin_group.values())), "ready": True}
+    _DASH_CLASS_CACHE[cache_key] = snap
+    return snap
+
+
+def dedup_dashboard_sectors(db: Database, ranked: List[Dict], top_n: int = 10,
+                            max_per_community: int = 2,
+                            jaccard_th: float = 0.20,
+                            hub_max_share: float = 0.55) -> Dict:
+    """
+    看板榜单去重：对按分排好的板块列表应用三层规则，返回补位到 top_n 的展示列表。
+
+    规则（顺序应用）：
+      ① 枢纽过滤：hub 板块（融资融券类横切标签）直接隐藏
+      ② 马甲折叠：同一 twin 组只保留最先出现（= 分最高）者，其余收进其 similar
+      ③ 族群限额：同一 Louvain 族群最多 max_per_community 席，超出折叠进同族群已展示项
+
+    :param ranked: 按分数降序的 [{concept_code, concept_name, score, ...}]
+    :return: {displayed: [...输入项的浅拷贝+similar/community_id], hidden_hubs: [name], folded: n, ready: bool}
+    """
+    cls = dashboard_classification(db, [r["concept_code"] for r in ranked],
+                                   jaccard_th=jaccard_th, hub_max_share=hub_max_share)
+    if not cls.get("ready") or not ranked:
+        return {"displayed": ranked[:top_n], "hidden_hubs": [], "folded": 0, "ready": False}
+
+    displayed: List[Dict] = []
+    hidden_hubs: List[str] = []
+    folded = 0
+    community_slots: Dict[int, int] = {}
+    rep_of_group: Dict = {}   # twin 组号 → 已展示项
+
+    for item in ranked:
+        code = item["concept_code"]
+        if len(displayed) >= top_n:
+            break
+        if cls["hub"].get(code):
+            hidden_hubs.append(item.get("concept_name", code))
+            continue
+        entry = dict(item)
+        entry["similar"] = []
+        entry["community_id"] = cls["community"].get(code)
+
+        # ② 马甲组折叠
+        gid = cls["twin_group"].get(code, code)
+        rep = rep_of_group.get(gid)
+        if rep is not None:
+            rep["similar"].append({"concept_code": code, "concept_name": entry.get("concept_name", code),
+                                   "score": entry.get("score")})
+            folded += 1
+            continue
+        # ③ 族群限额
+        cid = entry["community_id"]
+        if cid is not None and community_slots.get(cid, 0) >= max_per_community:
+            # 折叠进同族群最后一个展示项
+            last = next((d for d in reversed(displayed) if d.get("community_id") == cid), None)
+            if last is not None:
+                last["similar"].append({"concept_code": code, "concept_name": entry.get("concept_name", code),
+                                        "score": entry.get("score")})
+            folded += 1
+            continue
+
+        community_slots[cid] = community_slots.get(cid, 0) + 1
+        rep_of_group[gid] = entry
+        displayed.append(entry)
+
+    return {"displayed": displayed, "hidden_hubs": hidden_hubs, "folded": folded, "ready": True}
+
+
+
 
 
 def linked_stocks(db: Database, stock_code: str, top_n: int = 10,

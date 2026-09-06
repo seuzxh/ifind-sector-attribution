@@ -445,8 +445,38 @@ class RealtimeEngine:
                                                                 .sort_values("s1_return", ascending=False)
 
         strength_sorted = strength_df.sort_values("score", ascending=False)
-        top_df = strength_sorted.head(top_n)
-        bottom_df = strength_sorted.tail(top_n).iloc[::-1]
+
+        # KG 分类去重（仅 sector 模式；自选分组是用户手工整理，不去重）：
+        # ①枢纽过滤（融资融券类横切标签）②马甲折叠（成分高度重叠）③同族群每榜最多 2 席。
+        # 在全量排序上折叠并补位到 top_n，避免折叠后榜单变短。见 kg_analysis.dedup_dashboard_sectors。
+        kg_dedup_meta = None
+        if not custom_mode:
+            from kg_analysis import dedup_dashboard_sectors
+            rank_list = [
+                {"concept_code": r["concept_code"],
+                 "concept_name": active_concept_names.get(r["concept_code"], r["concept_code"]),
+                 "score": float(r["score"])}
+                for _, r in strength_sorted.iterrows()
+            ]
+            top_d = dedup_dashboard_sectors(self.db, rank_list, top_n)
+            bot_d = dedup_dashboard_sectors(self.db, list(reversed(rank_list)), top_n)
+            extra_by_code = {}
+            for entry in top_d["displayed"] + bot_d["displayed"]:
+                extra_by_code.setdefault(entry["concept_code"],
+                                         {"similar": entry["similar"], "community_id": entry["community_id"]})
+            top_df = strength_sorted[strength_sorted["concept_code"].isin(
+                [e["concept_code"] for e in top_d["displayed"]])].head(top_n)
+            bottom_df = strength_sorted[strength_sorted["concept_code"].isin(
+                [e["concept_code"] for e in bot_d["displayed"]])].tail(top_n).iloc[::-1]
+            if top_d.get("ready") or bot_d.get("ready"):
+                kg_dedup_meta = {
+                    "rules": "枢纽过滤+马甲折叠(Jaccard≥0.2)+族群限额(每族群2席)",
+                    "top_folded": top_d["folded"], "top_hidden_hubs": top_d["hidden_hubs"],
+                    "bottom_folded": bot_d["folded"], "bottom_hidden_hubs": bot_d["hidden_hubs"],
+                }
+        else:
+            top_df = strength_sorted.head(top_n)
+            bottom_df = strength_sorted.tail(top_n).iloc[::-1]
 
         # 6. 板块成分股排名
         stock_name_map = self._stock_names or {}
@@ -488,6 +518,13 @@ class RealtimeEngine:
 
         top_sectors = [_build_sector_entry(row, asc=False) for _, row in top_df.iterrows()]
         bottom_sectors = [_build_sector_entry(row, asc=True) for _, row in bottom_df.iterrows()]
+        # 附加 KG 分类信息（similar=被折叠的同主题板块，community_id=族群）
+        if not custom_mode:
+            for entry in top_sectors + bottom_sectors:
+                extra = extra_by_code.get(entry["concept_code"])
+                if extra:
+                    entry["similar"] = extra["similar"]
+                    entry["community_id"] = extra["community_id"]
 
         # ZT 涨停分组：custom 模式下，分组名以 "ZT" 开头的单独成区，不参与 top/bottom 排序
         zt_sectors = []
@@ -508,6 +545,7 @@ class RealtimeEngine:
             "top_sectors": top_sectors,
             "bottom_sectors": bottom_sectors,
             "zt_sectors": zt_sectors,   # ZT 涨停分组（仅 custom 模式，独立统计不参与 top/bottom）
+            "kg_dedup": kg_dedup_meta,  # KG 分类去重元信息（仅 sector 模式；null=未启用/无图谱）
             "holding_stocks": holding_stocks,   # 持仓股清单（仅 custom 模式非空，供前端醒目标注）
         }
 

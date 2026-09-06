@@ -26,6 +26,10 @@
             <span v-if="isCustom && (s.holding_in_group?.length || 0) > 0" class="holding-badge">
               持仓{{ s.holding_in_group!.length }}
             </span>
+            <span v-if="s.similar?.length" class="similar-badge"
+                  :title="'已折叠同类板块（KG 分类）：' + s.similar.map(x => x.concept_name).join('、')">
+              ◈同类{{ s.similar.length }}
+            </span>
             <div class="code-sub">{{ s.concept_code }}</div>
           </td>
           <td :class="changeCls(s.s1_return)" :data-v="s.s1_return">{{ fmt(s.s1_return) }}%</td>
@@ -152,6 +156,7 @@ tr.has-holding { background: linear-gradient(90deg, #fef9c3 0%, #fffbeb 100%) !i
 tr.has-holding td { color: #92400e; }
 tr.has-holding:hover { background: #fef3c7 !important; }
 .holding-badge { padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 700; background: #f59e0b; color: #fff; margin-left: 5px; }
+.similar-badge { padding: 1px 6px; border-radius: 8px; font-size: 10px; background: #ede9fe; color: #6d28d9; margin-left: 5px; cursor: help; }
 
 .empty { text-align: center; color: #9ca3af; padding: 24px; cursor: default; }
 </style>

@@ -83,7 +83,7 @@
 | `sector_manage.py` | 监控板块管理：多周期涨幅计算（1d/3d/5d）+ 候选板块列表组装 | 中（改管理页看这） |
 | `kg_sources.py` | 知识图谱数据源适配层（SourceAdapter 协议 + iFinD 接口2主源/接口1验证源两个 Adapter，未来加申万/问财只写新 Adapter） | 低 |
 | `kg_builder.py` | 知识图谱构建：`kg_bootstrap`（幂等）+ 统计报告 + 周维护 `kg_update`（diff 状态机，旧态从边 confidence 恢复） | 中（改图谱构建/周维护看这） |
-| `kg_analysis.py` | 知识图谱分析（P3）：`compute_corr_20d`（ρ 边权，先 join 后 tail 对齐）+ `detect_communities`（Louvain）+ `hub_sectors`/`linked_stocks`/`locate_sectors`（组合定位：一批股→板块富集/命中双指标） | 中（改图谱分析看这） |
+| `kg_analysis.py` | 知识图谱分析（P3）：`compute_corr_20d`（ρ 边权，先 join 后 tail 对齐）+ `detect_communities`（Louvain）+ `hub_sectors`/`linked_stocks`/`locate_sectors`（组合定位：一批股→板块富集/命中双指标）/`dedup_dashboard_sectors`（看板三层去重，分类快照有缓存） | 中（改图谱分析看这） |
 | `llm_agent.py` | LLM 客户端封装（火山方舟 Coding Plan，OpenAI 兼容；`OpenAICompatibleAgent` 供 rotation_agent 调用） | 低 |
 | `mcp_proxy.py` | iFinD MCP 客户端代理（hexin-ifind-ds-stock-mcp / -index-mcp，JWT 鉴权） | 低 |
 | `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。8 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理/知识图谱（cytoscape 四视图：族群投影/个股星型/板块成分/组合定位）。结构详见 `docs/architecture/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
@@ -168,7 +168,7 @@ schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATAB
 | `GET /api/sector/rankings` | — | 板块强度排名（含多周期融合分） |
 | `POST /api/attribution/stock` | — | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
-| `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页有效板块，分时切片） |
+| `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页有效板块，分时切片；强弱榜带 KG 三层去重：枢纽过滤+马甲折叠+族群限额2席，板块项含 similar/community_id，响应含 kg_dedup） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回 `holding_stocks`/`holding_in_group`） |
 | `GET /api/custom/scan` | — | **自选强势归类**（MCP 自然语言选股 → 取自选交集 → 按自选分组归类） |
 | `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → **知识图谱富集归类**：全量 650 板块按 lift/命中数排序，每股带 ρ，勾选板块带 is_watched；入参 `query/order/min_hits/top_n`，不碰分时） |
