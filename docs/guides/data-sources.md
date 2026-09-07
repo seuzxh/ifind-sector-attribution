@@ -16,8 +16,8 @@ description: 7 个看板页面各自的数据来源、推导口径与计算公�
 | 📊 板块强度监控 | `GET /api/realtime/dashboard` | kline-fetcher 分时（中焯 API） | 板块三维强度 + 个股四维评分 |
 | ⭐ 自选分组监控 | `GET /api/custom/dashboard` | 同上（分组换成 custom_group 表） | 同上 + 持仓标注 |
 | ⚡ 集合竞价 | `GET /api/auction/dashboard` | 分时 pre_market 竞价序列 | 竞价四因子 + 分组聚合 |
-| 🎯 自选强势归类 | `GET /api/custom/scan` | iFinD MCP `search_stocks` | 选股 ∩ 自选 → 分组统计 |
-| 🌐 全市场强势归类 | `GET /api/market/scan` | 同上 | 选股 → 按勾选板块归类 |
+| 🎯 自选强势归类 | `GET /api/custom/scan` | iFinD REST `smart_stock_picking` | 选股 ∩ 自选 → 分组统计 |
+| 🌐 全市场强势归类 | `GET /api/market/scan` | 同上 + 知识图谱（kg_node/kg_edge） | 选股 → 图谱富集归类（lift） |
 | 🔮 板块轮动分析 | `GET /api/rotation/analyze`（SSE） | kline-fetcher + DB + LLM | 四阶段智能体分析 |
 | 🛠️ 监控板块管理 | `GET /api/sector_manage/list` | iFinD 实时行情 + 接口3 日K | 指数级指标直读 + 多日涨幅 |
 
@@ -85,14 +85,19 @@ description: 7 个看板页面各自的数据来源、推导口径与计算公�
 
 ## 🎯 自选强势归类 / 🌐 全市场强势归类
 
-**数据来源**：iFinD MCP `search_stocks` 自然语言选股（MCP 返回的是日频口径；盘中调用反映当日实时值，盘后为当日收盘）。后端解析 Markdown 表格得到 `代码 / 名称 / 涨跌幅`。
+**选股数据来源**：iFinD REST `smart_stock_picking` 自然语言选股接口（走 `ACCESS_TOKEN` 鉴权，与 MCP 配额无关；`_rest_search` 带重试）。返回 `代码 / 名称 / 涨跌幅`，收盘数据口径（盘中实时表现以接口实际返回为准）。
 
-**归类逻辑**：
+**自选页归类**：命中股 = 选股结果 ∩ 自选分组股票全集，按全部自选分组归类；`hit_count` 为该组命中数（一股属多组各组各计），`coverage = hit_count / member_total`，`hit_avg_change` 为命中股平均涨幅。
 
-- 自选页：命中股 = MCP 结果 ∩ 自选分组股票全集，按全部自选分组归类。
-- 全市场页：命中股按「监控板块管理」当前勾选板块归类，无法归类的只计入全市场命中数。
+**全市场页归类（2026-08-18 起知识图谱版，`kg_analysis.classify_hits`）**：
 
-**统计口径**：`hit_count` 该组命中数（一股属多组则各组各计）；`coverage = hit_count / member_total`；`hit_avg_change` 命中股平均涨幅。详见[设计：强势归类扫描](../architecture/DESIGN-strong-stock-scan.md)。
+- 范围：**全量图谱板块（约 650 个）**，不再限定「监控板块管理」勾选集；勾选板块带 `is_watched` 标记，前端高亮。
+- 富集倍数 `lift = 组内命中率 ÷ 该板块成员占全市场比例`——消除"融资融券"类大基数板块的命中噪音；默认按 lift 降序，可切回命中数（`order=hits`）。
+- 每股带 `corr_20d`：该股与板块的 20 日相关系数 ρ（来自图谱边 `kg_edge.corr_20d`）。
+- 成员数口径：概念字典快照 `member_count` 优先，图谱开放边度数兜底；`coverage = hit_count / 选股池大小`。
+- 展示阈值：板块命中 ≥2（`min_hits`）、最多 30 个板块（`top_n`）。
+
+历史版本（按勾选板块逐板块数命中）已下线，演进细节见[设计：强势归类扫描](../architecture/DESIGN-strong-stock-scan.md)。
 
 ## 🔮 板块轮动分析
 
