@@ -31,7 +31,7 @@ description: iFinD 行业归因与板块强度检测系统 · 项目文档
 | 章节 | 内容 | 适合谁 |
 |---|---|---|
 | [快速开始](getting-started.md) | 依赖安装、token 配置、初始化、启动服务、定时任务 | 首次部署者 |
-| [使用指南](guides.md) | [交互指南](guides/interaction.md) · [API 参考](guides/api.md) | 日常使用者 / 二次开发 |
+| [使用指南](guides.md) | [交互指南](guides/interaction.md) · [API 参考](guides/api.md) · [页面数据与计算](guides/data-sources.md) | 日常使用者 / 二次开发 |
 | [架构与设计](architecture.md) | 架构总览、前端架构、4 篇功能设计文档 | 改代码的开发者 |
 | [运维部署](ops.md) | systemd 服务、公网访问、故障排查 | 运维 |
 | [参考](reference.md) | 更新日志 | 所有人 |
