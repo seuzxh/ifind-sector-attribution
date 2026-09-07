@@ -19,11 +19,6 @@ REFRESH_TOKEN = os.environ.get("IFIND_REFRESH_TOKEN", "")
 # 默认从环境变量读，config_local.py（已 gitignore）的 * 导入会覆盖此默认值。
 KLINE_API_BASE_URL = os.environ.get("KLINE_API_BASE_URL", "")
 
-# ========== iFinD MCP 配置（轮动分析智能体 / 实时引擎用）==========
-# MCP server 的 JWT 鉴权 token（敏感，放 config_local.py 或环境变量，勿入库）。
-# 用于 rotation_agent / realtime_engine 调用 hexin-ifind-ds-stock-mcp / -index-mcp。
-IFIND_MCP_TOKEN = os.environ.get("IFIND_MCP_TOKEN", "")
-
 # ========== LLM 配置（板块轮动分析智能体的"大脑"）==========
 # 火山方舟 Coding Plan（OpenAI 兼容，走 Plan 额度），供 rotation_agent 调用：
 #   - base_url 必须用 /api/coding/v3（切勿用 /api/v3，后者不消耗 Plan 额度会产生额外费用）

@@ -42,9 +42,6 @@ REFRESH_TOKEN = "你的 refresh token"
 # 中焯行情 API 地址（盘中实时监控用，敏感不入库）
 KLINE_API_BASE_URL = "http://your-kline-api-host:port"
 
-# iFinD MCP server 鉴权 JWT（轮动分析 / 强势归类选股用）
-IFIND_MCP_TOKEN = "你的 mcp jwt token"
-
 # 轮动分析 LLM（火山方舟 Coding Plan）
 # 注意：base_url 必须用 /api/coding/v3（走 Plan 额度），用 /api/v3 会产生额外费用
 LLM_API_KEY = "你的 ark api key"
@@ -129,6 +126,6 @@ python main.py server --host 0.0.0.0 --port 8000
 | 接口报 `errorcode:-1302` / HTTP 401 | `ACCESS_TOKEN` 过期；程序会自动用 `REFRESH_TOKEN` 刷新重试，无需手动处理 |
 | 实时看板无数据 | 检查 `KLINE_API_BASE_URL` 是否配置、kline-fetcher 是否安装 |
 | `daily` 传入非交易日返回空 | 换交易日日期（见 `GET /api/trade_calendar`） |
-| 轮动分析报错 | 检查 `LLM_API_KEY` 与 `IFIND_MCP_TOKEN` 是否配置 |
+| 轮动分析报错 | 检查 `LLM_API_KEY` 是否配置 |
 
 更多配置项说明见仓库根目录 `README.md`；部署细节（公网访问、SSH 隧道、故障排查）见[部署手册](ops/DEPLOYMENT.md)。

@@ -396,12 +396,17 @@ class IFindClient:
         codes = tbl.get("股票代码", [])
         names = tbl.get("股票简称", [])
         concepts = tbl.get("所属概念", [])
+        # 涨跌幅列名带日期后缀（如"涨跌幅:前复权[20260907]"），按前缀匹配
+        chg_key = next((k for k in tbl if k.startswith("涨跌幅")), None)
+        chgs = tbl.get(chg_key, []) if chg_key else []
         rows = []
         for i, code in enumerate(codes):
+            chg = chgs[i] if chgs and i < len(chgs) else None
             rows.append({
                 "stock_code": code,
                 "stock_name": names[i] if i < len(names) else "",
                 "concepts": concepts[i] if i < len(concepts) else "",
+                "change_ratio": round(float(chg), 2) if chg is not None else None,
             })
         return rows
 

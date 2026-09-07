@@ -11,8 +11,8 @@
 - **盘中实时监控（多看板 Tab）**：基于分时数据（kline-fetcher）的可视化网站
   - **板块强度看板**：3s 轮询刷新板块强度 + 成分股四维评分排名
   - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
-  - **自选强势归类**：iFinD MCP 自然语言选股后取自选股交集，再按自选分组统计命中
-  - **全市场强势归类**：自然语言选股（iFinD MCP `search_stocks`，4 组预置 + 自定义条件可存/重命名）→ 知识图谱富集归类（全量板块按富集倍数/命中数排序，详见 docs/architecture/DESIGN-strong-stock-scan.md）
+  - **自选强势归类**：iFinD REST 智能选股（smart_stock_picking）后取自选股交集，再按自选分组统计命中
+  - **全市场强势归类**：自然语言选股（iFinD REST `smart_stock_picking`，4 组预置 + 自定义条件可存/重命名）→ 知识图谱富集归类（全量板块按富集倍数/命中数排序，详见 docs/architecture/DESIGN-strong-stock-scan.md）
   - **板块轮动分析**：并发行情采集 → 分批 LLM 流式分析 → 对抗审查 → 综合结论；采集进度覆盖更新
   - 顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
 
@@ -82,12 +82,9 @@ KLINE_API_BASE_URL = "http://your-kline-api-host:port"
 LLM_API_KEY = "你的 ark api key"
 LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
 LLM_MODEL = "doubao-seed-2.0-pro"   # 可选 10 个模型
-
-# iFinD MCP server 鉴权 JWT（轮动分析 / 实时引擎调 iFinD 工具用，敏感不入库）
-IFIND_MCP_TOKEN = "你的 mcp jwt token"
 ```
 
-轮动分析可用模型（`doubao-seed-2.0-pro`/`code`/`lite`、`doubao-seed-code`、`minimax-latest`、`glm-latest`、`deepseek-v4-flash`/`pro`、`kimi-k2.6`、`kimi-k2.7-code`）。`LLM_API_KEY` / `IFIND_MCP_TOKEN` 未配置时轮动分析智能体无法运行。
+轮动分析可用模型（`doubao-seed-2.0-pro`/`code`/`lite`、`doubao-seed-code`、`minimax-latest`、`glm-latest`、`deepseek-v4-flash`/`pro`、`kimi-k2.6`、`kimi-k2.7-code`）。`LLM_API_KEY` 未配置时轮动分析智能体无法运行。
 
 ### 3. 运行接口测试
 
@@ -217,8 +214,8 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页有效板块，分时切片） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回持仓标注字段） |
 | `GET /api/dashboard/members` | — | 单板块/分组全部有效成员按字段排序，仅返回前 10（实时看板点击成分股表头时按需调用） |
-| `GET /api/custom/scan` | — | **自选强势归类**（MCP 自然语言选股 → 取自选交集 → 按自选分组归类） |
-| `GET /api/market/scan` | — | **全市场强势归类**（MCP 选股 → 知识图谱富集归类：全量板块按富集倍数/命中数排序，每股带 ρ；入参 `query/order/min_hits/top_n`） |
+| `GET /api/custom/scan` | — | **自选强势归类**（REST 智能选股 → 取自选交集 → 按自选分组归类） |
+| `GET /api/market/scan` | — | **全市场强势归类**（REST 智能选股 → 知识图谱富集归类：全量板块按富集倍数/命中数排序，每股带 ρ；入参 `query/order/min_hits/top_n`） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（`scope=sector` 按当前勾选板块；`scope=custom` 按自选分组） |
 | `GET /api/trade_calendar` | — | 交易日列表（供日期选择器过滤非交易日） |
@@ -248,7 +245,6 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `HOLDING_GROUP_NAME` | "CC" | 持仓分组名（自选看板金色标注用，按 block_name 精确匹配） |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | （空）/ `.../api/coding/v3` / `doubao-seed-2.0-pro` | 轮动分析主模型（火山方舟 Coding Plan），用 `config_local.py` 覆盖 |
 | `LLM_MODEL_BATCH` | （空，跟随主模型） | 轮动分析分批阶段的轻量模型 |
-| `IFIND_MCP_TOKEN` | （空） | iFinD MCP server JWT（轮动分析/实时引擎调工具用），用 `config_local.py` 覆盖 |
 
 ## 数据模型
 

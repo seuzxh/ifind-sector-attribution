@@ -661,8 +661,6 @@ class RealtimeEngine:
         :param query: 自然语言选股条件
         :return: {query, pool_size, hit_total, group_hit_count, groups:[...]}
         """
-        from mcp_proxy import MCPClient
-
         self._ensure_maps()
         if not query or not query.strip():
             return {"error": "请输入选股条件（query）"}
@@ -673,29 +671,18 @@ class RealtimeEngine:
         group_names = self.db.get_custom_group_names()
         custom_codes = set(self.db.get_custom_all_stock_codes())  # 自选股票全集（取交集用）
 
-        # 1. 调 MCP search_stocks 选股（带重试，防间歇性失败）
-        try:
-            md_raw = _mcp_search_with_retry(query)
-        except Exception as e:
-            return {"error": f"MCP 选股失败：{e}", "query": query}
-        if isinstance(md_raw, dict) and md_raw.get("error"):
-            return {"error": f"MCP 选股失败：{md_raw.get('error')}", "query": query}
-
-        # 2. 解析 markdown → {code: {name, change_ratio}}
-        all_hit_lookup = _parse_search_stocks_md(str(md_raw))
-        if not all_hit_lookup:
-            err = all_hit_lookup.get("__error__", "选股结果为空或解析失败") if isinstance(all_hit_lookup, dict) else "选股结果为空或解析失败"
-            return {"error": err, "query": query,
-                    "raw_preview": str(md_raw)[:300]}
-        # 如果 _parse 返回了 __error__ 键（MCP 未找到），也报错
-        if "__error__" in all_hit_lookup:
+        # 1. REST smart_stock_picking 选股（走 ACCESS_TOKEN，与 MCP 配额无关）
+        all_hit_lookup = _rest_search(query)
+        if isinstance(all_hit_lookup, dict) and all_hit_lookup.get("__error__"):
             return {"error": all_hit_lookup["__error__"], "query": query}
+        if not all_hit_lookup:
+            return {"error": "选股结果为空（条件可能过严或表述不被理解）", "query": query}
 
-        # 3. 取自选交集：只保留在自选分组里的命中股
+        # 2. 取自选交集：只保留在自选分组里的命中股
         hit_lookup = {c: v for c, v in all_hit_lookup.items() if c in custom_codes}
         hit_codes = set(hit_lookup.keys())
 
-        # 4. 按自选分组归类（一股属多组，各组各计）
+        # 3. 按自选分组归类（一股属多组，各组各计）
         groups_out = []
         for gid, g_codes in members_map.items():
             g_hit_codes = [c for c in g_codes if c in hit_codes]
@@ -747,32 +734,22 @@ class RealtimeEngine:
           - 一股属多板块各计（与旧版一致）；每股带 corr_20d（与该板块的 20 日 ρ）
 
         与 scan_custom_groups 的差异：
-          - 命中股来自 MCP search_stocks（收盘数据），非分时筛选
+          - 命中股来自 REST smart_stock_picking（收盘数据），非分时筛选
           - 归类维度是图谱板块（非自选分组），不依赖分时序列缓存
-          - hits 指标只有 change_ratio（search_stocks 返回的涨跌幅）
+          - hits 指标只有 change_ratio（smart_stock_picking 返回的涨跌幅）
 
         :param query: 自然语言选股条件（如 "涨幅大于7%并且小于12.1%；未涨停；非ST"）
         :return: {query, pool_size, hit_total, group_hit_count, groups:[...]}（与 scan 同 schema）
         """
-        from mcp_proxy import MCPClient
-
         if not query or not query.strip():
             return {"error": "请输入选股条件（query）"}
 
-        # 1. 调 MCP search_stocks 选股（带重试，防间歇性失败）
-        try:
-            md_raw = _mcp_search_with_retry(query)
-        except Exception as e:
-            return {"error": f"MCP 选股失败：{e}", "query": query}
-        if isinstance(md_raw, dict) and md_raw.get("error"):
-            return {"error": f"MCP 选股失败：{md_raw.get('error')}", "query": query}
-
-        # 2. 解析 markdown → {code: {name, change_ratio}}
-        hit_lookup = _parse_search_stocks_md(str(md_raw))
-        if not hit_lookup or "__error__" in hit_lookup:
-            err = hit_lookup.get("__error__", "选股结果为空或解析失败") if isinstance(hit_lookup, dict) and hit_lookup else "选股结果为空或解析失败"
-            return {"error": err, "query": query,
-                    "raw_preview": str(md_raw)[:300]}
+        # 1. REST smart_stock_picking 选股（走 ACCESS_TOKEN，与 MCP 配额无关）
+        hit_lookup = _rest_search(query)
+        if isinstance(hit_lookup, dict) and hit_lookup.get("__error__"):
+            return {"error": hit_lookup["__error__"], "query": query}
+        if not hit_lookup:
+            return {"error": "选股结果为空（条件可能过严或表述不被理解）", "query": query}
         hit_codes = set(hit_lookup.keys())
 
         # 3. 知识图谱富集归类（全量板块，lift/命中数排序，每股带 ρ）
@@ -825,97 +802,47 @@ class RealtimeEngine:
         }
 
 
-def _mcp_search_with_retry(query: str, max_retries: int = 2) -> str:
+def _rest_search(query: str, max_retries: int = 2) -> Dict[str, dict]:
     """
-    调 MCP search_stocks，带重试。
-    MCP 间歇性返回"未找到"（服务端不稳定/限流），重试可大幅降低失败率。
-    只在返回"未找到/无符合"时重试（正常返回数据不重试）。
+    REST smart_stock_picking 自然语言选股（走 ACCESS_TOKEN，与 MCP 配额无关）。
+    带重试：间歇性返回空/网络抖动时等 1s 重试，最多 max_retries 次。
+
+    :param query: 自然语言选股条件
+    :return: {code: {"name": str, "change_ratio": float}}；
+             出错返回 {"__error__": str}；无结果返回 {}
     """
-    from mcp_proxy import MCPClient
     import time
-    mcp = MCPClient.instance()
+    from ifind_client import IFindClient
+
+    client = IFindClient()
+    last_empty = False
     for attempt in range(max_retries + 1):
-        md = str(mcp.call_tool("stock", "search_stocks", {"query": query}))
-        # 有数据（含表格）→ 直接返回
-        if "|股票代码" in md:
-            return md
-        # 无数据 → 最后一次也返回（让调用方处理）
+        try:
+            rows = client.smart_pick_stocks(query)
+        except Exception as e:
+            if attempt >= max_retries:
+                return {"__error__": f"选股接口异常：{e}"}
+            time.sleep(1)
+            continue
+        if rows:
+            lookup = {}
+            for r in rows:
+                code = r.get("stock_code", "")
+                if not config.is_a_share_code(code):
+                    continue
+                lookup[code] = {
+                    "name": r.get("stock_name", ""),
+                    "change_ratio": r.get("change_ratio") or 0.0,
+                }
+            if lookup:
+                return lookup
+        # 空结果：可能条件过严，也可能是服务端抖动，重试一次
+        last_empty = True
         if attempt < max_retries:
             time.sleep(1)
-    return md
-
-
-def _parse_search_stocks_md(md: str) -> Dict[str, dict]:
-    """
-    解析 MCP search_stocks 返回的 markdown 表格，提取 {股票代码: {name, change_ratio}}。
-
-    表格形如：
-        |股票代码|股票简称|涨跌幅:前复权[YYYYMMDD]|收盘价...|...
-        |---|---|---|...
-        |000955.SZ|欣龙控股|7.34341253|4.97|...
-
-    列顺序可能随 query 变化，故先解析表头定位"涨跌幅"列索引，再按索引取值。
-    :return: {code: {"name": str, "change_ratio": float}}
-    """
-    import json
-    # md 可能是纯 markdown，也可能是 JSON 包装（一层或两层）。
-    # MCP search_stocks 实际返回：{"code":1,"data":"{\"answer\":\"# 选股结果...|股票代码|...\", ...}"}
-    #   —— data 是字符串化的 JSON，真实表格在 data.answer 里。
-    try:
-        j = json.loads(md)
-        if isinstance(j, dict):
-            data = j.get("data")
-            # data 可能是 dict（直接取 result/answer），也可能是字符串化的 JSON（二次解析）
-            if isinstance(data, str):
-                try:
-                    data = json.loads(data)
-                except (ValueError, TypeError):
-                    pass
-            if isinstance(data, dict):
-                md = data.get("answer") or data.get("result") or ""
-            elif isinstance(data, str) and data:
-                md = data
-    except (ValueError, TypeError):
-        pass
-
-    # MCP 返回"未找到/无符合"时，明确提示（而非笼统的"解析失败"）
-    if "未找到" in md or "无符合" in md or "未能成功处理" in md:
-        return {"__error__": "MCP 未找到符合要求的股票（条件可能过严或表述不被理解，尝试用'涨幅'代替'实体涨幅'等术语）"}
-
-    lines = [ln for ln in md.split("\n") if ln.strip().startswith("|")]
-    if len(lines) < 2:
+    if last_empty:
         return {}
-
-    # 表头：找"股票代码""股票简称""涨跌幅"的列索引
-    header = [c.strip() for c in lines[0].strip("|").split("|")]
-    idx_code = idx_name = idx_chg = -1
-    for i, h in enumerate(header):
-        if "股票代码" in h and idx_code < 0:
-            idx_code = i
-        elif "股票简称" in h and idx_name < 0:
-            idx_name = i
-        elif "涨跌幅" in h and idx_chg < 0:
-            idx_chg = i
-    if idx_code < 0:
-        return {}
-
-    result = {}
-    for ln in lines:
-        cells = [c.strip() for c in ln.strip("|").split("|")]
-        if len(cells) <= max(idx_code, idx_name, idx_chg):
-            continue
-        code = cells[idx_code]
-        if not config.is_a_share_code(code):
-            continue  # 只认 A 股代码
-        name = cells[idx_name] if idx_name >= 0 else ""
-        chg = 0.0
-        if idx_chg >= 0:
-            try:
-                chg = float(cells[idx_chg])
-            except (ValueError, IndexError):
-                chg = 0.0
-        result[code] = {"name": name, "change_ratio": chg}
-    return result
+    return {}
 
 
 # ========== 全局入口（带缓存） ==========

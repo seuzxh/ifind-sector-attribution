@@ -25,7 +25,6 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import requests
 
 import config
-from mcp_proxy import MCPClient, MCPError
 
 
 # Agent 循环最多调用工具的次数（防死循环）
@@ -74,11 +73,11 @@ class LLMAgent:
 
 class OpenAICompatibleAgent(LLMAgent):
     """
-    OpenAI 兼容接口的 Agent（DeepSeek / 通义 / GLM 等）。
+    OpenAI 兼容接口的 Agent 基座（火山方舟 Coding Plan 等）。
 
-    工具调用循环：
-      1. 把 MCP 工具 schema 转成 OpenAI tools 定义喂给 LLM
-      2. LLM 若返回 tool_calls → 执行对应 MCP 工具 → 结果作为 tool 角色消息回喂
+    工具调用循环（工具由子类注入，如 RotationAgent 的 kline__/custom__ 本地工具）：
+      1. 子类 _build_tools_param 把工具 schema 转成 OpenAI tools 定义喂给 LLM
+      2. LLM 若返回 tool_calls → 子类 _run_tool 执行 → 结果作为 tool 角色消息回喂
       3. 重复直到 LLM 输出纯文本回答，流式 yield 给前端
     """
 
@@ -86,13 +85,12 @@ class OpenAICompatibleAgent(LLMAgent):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.mcp = MCPClient.instance()
 
     def _build_tools_param(self, available_tools: List[Dict[str, Any]]) -> List[dict]:
-        """把 MCP 工具元数据转成 OpenAI tools 定义。"""
+        """把工具元数据转成 OpenAI tools 定义（子类可重写注入本地工具）。"""
         tools = []
         for t in available_tools:
-            # 把 server 编码进工具名，避免不同 server 重名；调用时再拆开
+            # 把 server 编码进工具名，避免不同来源重名；调用时再拆开
             full_name = f"{t['server']}__{t['name']}"
             tools.append({
                 "type": "function",
@@ -105,14 +103,8 @@ class OpenAICompatibleAgent(LLMAgent):
         return tools
 
     def _run_tool(self, full_name: str, arguments: dict) -> str:
-        """执行 LLM 选定的工具（拆出 server/tool），返回结果文本。"""
-        if "__" not in full_name:
-            return f"[工具名格式错误: {full_name}]"
-        server, tool_name = full_name.split("__", 1)
-        try:
-            return self.mcp.call_tool(server, tool_name, arguments)
-        except MCPError as e:
-            return f"[工具调用失败: {e}]"
+        """执行 LLM 选定的工具（子类必须重写；基类无工具实现）。"""
+        return f"[基类未实现工具执行，子类需重写 _run_tool: {full_name}]"
 
     def chat(
         self,

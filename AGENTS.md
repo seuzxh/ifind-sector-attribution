@@ -14,7 +14,7 @@
 - 本机运行库的 `stock_concept_map` 当前为空（2026-07-24 实测）；实时监控不受影响，但下一次 daily 个股归因前必须重跑 init 映射流程，不能把历史 `stock_attribution` 行误认为映射仍就绪。
 - 本机没有为本项目安装 daily crontab，`daily_kline` 最新日期为 20260717（2026-07-24 实测）；盘后数据是否补齐需显式运行 `main.py daily` 并复核，README/DEPLOYMENT 中的 crontab 只是建议配置。
 - 轮动分析采用行情并发采集、分批 LLM 流式分析、对抗审查与综合结论；`LLM_MODEL_BATCH` 可为批次分析指定轻量模型，留空时使用 `LLM_MODEL`。
-- 两个 token 别混：成分股接口使用 `ACCESS_TOKEN`（401 时自动刷新），MCP 使用 `IFIND_MCP_TOKEN`（JWT）。
+- 强势归类选股走 REST `smart_stock_picking`（`ACCESS_TOKEN`，`ifind_client.smart_pick_stocks`），**不走 MCP**（MCP search_stocks 有每日配额且曾反复打满，已于 2026-09-07 彻底移除 MCP 链路：mcp_proxy.py 已删、IFIND_MCP_TOKEN 已清）。
 
 ## 🔑 运维知识：access_token 过期自动刷新（重要，别再踩）
 
@@ -43,7 +43,6 @@
 | 交易日历缓存 | `data/trade_calendar.txt`（`trade_calendar.py` 三级缓存的本地落盘，缺失会自动重建） |
 | 服务器 / 部署 | **115.191.14.82:8000**；systemd 服务 `ifind-monitor`，一键装 `sudo bash install_service.sh`（详见 `docs/ops/DEPLOYMENT.md`） |
 | **轮动分析 LLM** | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_MODEL_BATCH`（火山方舟 Coding Plan）：base_url **必须用 `/api/coding/v3`**（`/api/v3` 不消耗 Plan 额度会产生额外费用）。批次模型留空则跟随主模型。 |
-| **MCP（轮动/实时用）** | `IFIND_MCP_TOKEN`（iFinD MCP server 的 JWT 鉴权）：配在 `config_local.py` 或环境变量，供 rotation_agent / realtime_engine 调 iFinD 工具 |
 | **可用模型** | Coding Plan 白名单 10 个（`llm_agent._CODING_PLAN_MODELS`）：doubao-seed-2.0-pro/code/lite、doubao-seed-code、minimax-latest、glm-latest、deepseek-v4-flash/pro、kimi-k2.6/k2.7-code |
 
 > ⚠️ 上述 `config_local.py` 已 gitignore，**勿提交、勿外传**（含真实 token）。跑命令前务必用上面的 conda python，否则缺 `fastapi`/`pandas`/`numpy`/`plotly` 等依赖；盘中实时链路还需 `kline-fetcher`。
@@ -84,8 +83,7 @@
 | `kg_sources.py` | 知识图谱数据源适配层（SourceAdapter 协议 + iFinD 接口2主源/接口1验证源两个 Adapter，未来加申万/问财只写新 Adapter） | 低 |
 | `kg_builder.py` | 知识图谱构建：`kg_bootstrap`（幂等）+ 统计报告 + 周维护 `kg_update`（diff 状态机，旧态从边 confidence 恢复） | 中（改图谱构建/周维护看这） |
 | `kg_analysis.py` | 知识图谱分析（P3）：`compute_corr_20d`（ρ 边权，先 join 后 tail 对齐）+ `detect_communities`（Louvain）+ `hub_sectors`/`linked_stocks`/`locate_sectors`（组合定位：一批股→板块富集/命中双指标）/`dedup_dashboard_sectors`（看板三层去重，分类快照有缓存） | 中（改图谱分析看这） |
-| `llm_agent.py` | LLM 客户端封装（火山方舟 Coding Plan，OpenAI 兼容；`OpenAICompatibleAgent` 供 rotation_agent 调用） | 低 |
-| `mcp_proxy.py` | iFinD MCP 客户端代理（hexin-ifind-ds-stock-mcp / -index-mcp，JWT 鉴权） | 低 |
+| `llm_agent.py` | LLM 客户端封装（火山方舟 Coding Plan，OpenAI 兼容；`OpenAICompatibleAgent` 工具循环基座，供 rotation_agent 继承，工具为本地 kline__/custom__） | 低 |
 | `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。8 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理/知识图谱（cytoscape 四视图：族群投影/个股星型/板块成分/组合定位）。结构详见 `docs/architecture/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
 | `static/` | 前端构建产物（FastAPI `mount('/static')` 托管；已 gitignore，勿手改） | — |
 | `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
@@ -170,8 +168,8 @@ schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATAB
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
 | `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页有效板块，分时切片；强弱榜带 KG 三层去重：枢纽过滤+马甲折叠+族群限额2席，板块项含 similar/community_id，响应含 kg_dedup） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回 `holding_stocks`/`holding_in_group`） |
-| `GET /api/custom/scan` | — | **自选强势归类**（MCP 自然语言选股 → 取自选交集 → 按自选分组归类） |
-| `GET /api/market/scan` | — | **全市场强势归类**（MCP `search_stocks` 选股 → **知识图谱富集归类**：全量 650 板块按 lift/命中数排序，每股带 ρ，勾选板块带 is_watched；入参 `query/order/min_hits/top_n`，不碰分时） |
+| `GET /api/custom/scan` | — | **自选强势归类**（REST `smart_stock_picking` 自然语言选股 → 取自选交集 → 按自选分组归类） |
+| `GET /api/market/scan` | — | **全市场强势归类**（REST `smart_stock_picking` 选股 → **知识图谱富集归类**：全量 650 板块按 lift/命中数排序，每股带 ρ，勾选板块带 is_watched；入参 `query/order/min_hits/top_n`，不碰分时） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（`scope=sector` 当前勾选板块；`scope=custom` 自选分组；均按收盘涨幅展示） |
 | `GET /api/auction/dashboard` | — | 集合竞价看板 |
@@ -213,9 +211,9 @@ schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATAB
 | 改前端（加 Tab / 改看板） | `frontend/src/`（Vue SPA）：`views/` 加页 + `router/index.ts` 加路由 + `AppLayout.vue` 加 Tab；接口在 `api/<域>.ts` 封装。详见 `docs/architecture/FRONTEND.md` |
 | 时间条播放异常（时刻跳变） | 检查 `usePolling` 的共享请求序号守卫是否被破坏（防异步乱序覆盖） |
 | 改轮动分析 LLM 模型 | `llm_agent._CODING_PLAN_MODELS` 白名单；`config.LLM_MODEL` 改主模型，`config.LLM_MODEL_BATCH` 改批次模型。**base_url 必须用 `/api/coding/v3`** |
-| 轮动分析报错 / 不调工具 | 检查 `LLM_API_KEY` + `IFIND_MCP_TOKEN` 是否配在 `config_local.py`；rotation_agent 依赖 llm_agent + mcp_proxy |
+| 轮动分析报错 / 不调工具 | 检查 `LLM_API_KEY` 是否配在 `config_local.py`；rotation_agent 依赖 llm_agent（本地工具，无 MCP） |
 | 改全市场选股预置条件 | `frontend/src/views/ScanPage.vue` 的预置条件数组；自定义条件存浏览器 localStorage（`market_scan_custom_queries`，结构 `{label,query}`），页面可存/重命名/删除 |
-| 全市场选股归类慢 / 报错 | `/api/market/scan` 调 MCP `search_stocks` 约 4.5s；报错看 `IFIND_MCP_TOKEN` 是否配置、query 表达是否被 MCP 理解 |
+| 全市场选股归类慢 / 报错 | `/api/market/scan` 走 REST `smart_stock_picking`（ACCESS_TOKEN，401 自动刷新）；报错看 token 是否过期、query 表述是否清晰（支持'实体涨幅'） |
 
 ## 深入阅读
 

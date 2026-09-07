@@ -18,7 +18,7 @@ description: 全部 REST 端点的入参、返回结构与调用示例
 | 盘后数据 | 4 | 板块强度排名、个股/组合归因、概念字典 |
 | 实时看板 | 6 | 板块/自选看板切片、成员排序、缓存管理 |
 | 历史与竞价 | 2 | 历史收盘看板、集合竞价看板 |
-| 强势归类 | 2 | MCP 选股 + 归类 |
+| 强势归类 | 2 | REST 智能选股 + 归类 |
 | 板块管理 | 5 | 勾选保存、后台刷新 |
 | 基础设施 | 5 | 日历、时段状态、轮动分析、自选重导 |
 
@@ -141,7 +141,7 @@ curl "http://localhost:8000/api/sector/rankings?date=20260817&top_n=10"
 
 ## 强势归类
 
-两个端点同 schema，仅归类范围不同；选股由 iFinD MCP `search_stocks` 执行（约 4.5 秒）。
+两个端点同 schema，仅归类范围不同；选股由 iFinD REST `smart_stock_picking`（ACCESS_TOKEN）执行，与 MCP 配额无关。
 
 ### GET /api/custom/scan —— 自选强势归类
 
@@ -149,7 +149,7 @@ curl "http://localhost:8000/api/sector/rankings?date=20260817&top_n=10"
 |---|---|---|
 | `query` | str | 必填，自然语言条件，如 `涨幅大于7%并且小于12.1%；未涨停；非ST` |
 
-命中股 = MCP 选股结果 ∩ 自选分组股票，按自选分组归类。
+命中股 = REST 选股结果 ∩ 自选分组股票，按自选分组归类。
 
 ### GET /api/market/scan —— 全市场强势归类
 
@@ -226,10 +226,10 @@ curl "http://localhost:8000/api/sector/rankings?date=20260817&top_n=10"
 
 ### GET /api/rotation/analyze
 
-板块轮动分析（**SSE 流式**，`text/event-stream`）。三阶段：数据采集 → 第一性分析 → 对抗审查 → 综合结论；`data:` 事件为 `{"type":"delta","text":"..."}` 增量，结束发 `{"type":"done"}`。依赖 `LLM_API_KEY` 与 `IFIND_MCP_TOKEN`。
+板块轮动分析（**SSE 流式**，`text/event-stream`）。三阶段：数据采集 → 第一性分析 → 对抗审查 → 综合结论；`data:` 事件为 `{"type":"delta","text":"..."}` 增量，结束发 `{"type":"done"}`。依赖 `LLM_API_KEY`。
 
 ## 错误约定
 
-- 业务错误统一返回 `{"error": "中文原因"}`（HTTP 200），如 MCP 选股失败、未配置监控板块。
+- 业务错误统一返回 `{"error": "中文原因"}`（HTTP 200），如选股接口失败、未配置监控板块。
 - 参数错误由 FastAPI 校验返回 422。
 - iFinD 侧 401 由客户端自动刷新 token 重试，调用方无需处理。

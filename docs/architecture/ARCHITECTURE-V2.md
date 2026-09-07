@@ -30,9 +30,9 @@ nav_order: 1
 │    │  计算层（纯函数）  core_calculator / stock_scorer   │      │
 │    ├─────────────────────────────────────────────────────┤      │
 │    │  数据层  database(SQLite,9表) / intraday_fetcher    │      │
-│    │           ifind_client / mcp_proxy                  │      │
+│    │           ifind_client (REST)                        │      │
 │    ├─────────────────────────────────────────────────────┤      │
-│    │  AI 层  llm_agent / mcp_proxy                       │      │
+│    │  AI 层  llm_agent                                    │      │
 │    ├─────────────────────────────────────────────────────┤      │
 │    │  基础  config(leaf) / trade_calendar(三级缓存)       │      │
 │    └─────────────────────────────────────────────────────┘      │
@@ -54,10 +54,9 @@ config (leaf)
 ├─ database ← config
 ├─ core_calculator ← config              (纯计算，无 I/O)
 ├─ stock_scorer ← (stdlib)               (纯计算，最干净的叶子)
-├─ mcp_proxy ← config
 ├─ ifind_client ← config
 ├─ intraday_fetcher ← config, kline_fetcher(外部)
-├─ llm_agent ← config, mcp_proxy
+├─ llm_agent ← config
 ├─ trade_calendar ← config (+ lazy database/kline_fetcher)
 ├─ sync_pipeline ← ifind_client, database, core_calculator
 ├─ realtime_engine ← database, intraday_fetcher, core_calculator, stock_scorer
@@ -74,7 +73,7 @@ config (leaf)
 | **服务层** | api_server.py | HTTP 路由、参数校验、响应组装 | ❌ 不内联业务计算（见审查项3） |
 | **引擎层** | realtime/auction/rotation_engine | 编排数据获取+计算+缓存 | ❌ 不直接碰 HTTP |
 | **计算层** | core_calculator, stock_scorer | 纯函数，无副作用 | ❌ 不做 I/O（config 只读） |
-| **数据层** | database, ifind_client, intraday_fetcher, mcp_proxy | 读写外部存储/API | — |
+| **数据层** | database, ifind_client, intraday_fetcher | 读写外部存储/API | — |
 | **基础** | config(只读常量), trade_calendar | 全局配置、日历 | config 不导入业务模块 |
 
 ### 后端接口清单（24 个）
