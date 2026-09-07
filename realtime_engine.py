@@ -651,12 +651,12 @@ class RealtimeEngine:
     # ========== 强势股归类扫描 ==========
     def scan_custom_groups(self, query: str) -> Dict:
         """
-        自选股强势归类：用 iFinD MCP search_stocks 自然语言选股，
+        自选股强势归类：用 REST smart_stock_picking 自然语言选股，
         把选出的股票与自选分组股票取交集，再按自选分组归类统计。
 
         与 scan_market_groups 的差异：
           - 归类维度是自选分组（custom_group 表），非 884 概念板块
-          - 命中股取 search_stocks 结果 ∩ 自选分组股票（只看自选范围内的强势股）
+          - 命中股取 smart_stock_picking 结果 ∩ 自选分组股票（只看自选范围内的强势股）
 
         :param query: 自然语言选股条件
         :return: {query, pool_size, hit_total, group_hit_count, groups:[...]}
@@ -719,11 +719,11 @@ class RealtimeEngine:
         }
 
 
-    # ========== 全市场强势归类（MCP 选股 + 知识图谱富集归类，不碰分时） ==========
+    # ========== 全市场强势归类（REST smart_stock_picking 选股 + 知识图谱富集归类，不碰分时） ==========
     def scan_market_groups(self, query: str, min_hits: int = 2, top_n: int = 30,
                            order: str = "lift") -> Dict:
         """
-        全市场强势股板块归类：用 iFinD MCP search_stocks 自然语言选股，
+        全市场强势股板块归类：用 REST smart_stock_picking 自然语言选股，
         把选出的股票按知识图谱富集归类（kg_analysis.classify_hits）。
 
         归类规则（2026-08-18 起为 KG 版，旧版按勾选板块逐板块数命中已下线）：
@@ -970,7 +970,7 @@ def get_realtime_member_ranking(
 
 
 def scan_custom_groups(query: str) -> Dict:
-    """自选股强势归类扫描（全局入口，复用 engine 单例）。MCP 选股 + 自选交集 + 自选分组归类。"""
+    """自选股强势归类扫描（全局入口，复用 engine 单例）。REST smart_stock_picking 选股 + 自选交集 + 自选分组归类。"""
     global _engine_instance
     if _engine_instance is None:
         _engine_instance = RealtimeEngine()
@@ -978,7 +978,7 @@ def scan_custom_groups(query: str) -> Dict:
 
 
 def scan_market_groups(query: str, order: str = "lift", min_hits: int = 2, top_n: int = 30) -> Dict:
-    """全市场强势归类扫描（全局入口）。MCP 选股 + 知识图谱富集归类。"""
+    """全市场强势归类扫描（全局入口）。REST smart_stock_picking 选股 + 知识图谱富集归类。"""
     global _engine_instance
     if _engine_instance is None:
         _engine_instance = RealtimeEngine()

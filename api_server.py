@@ -269,7 +269,7 @@ def get_dashboard_members(
 @app.get("/api/custom/scan")
 def get_custom_scan(query: str):
     """
-    自选股强势归类：用 iFinD MCP search_stocks 自然语言选股，
+    自选股强势归类：用 REST smart_stock_picking 自然语言选股，
     取与自选分组股票的交集，再按自选分组归类统计。
 
     与 /api/market/scan 的差异：命中股限定在自选分组范围内（取交集），
@@ -284,11 +284,11 @@ def get_custom_scan(query: str):
 @app.get("/api/market/scan")
 def get_market_scan(query: str, order: str = "lift", min_hits: int = 2, top_n: int = 30):
     """
-    全市场强势股板块归类：用 iFinD MCP search_stocks 自然语言选股，
+    全市场强势股板块归类：用 REST smart_stock_picking 自然语言选股，
     按知识图谱富集归类（全量 650 板块，富集倍数/命中数双指标，每股带 ρ）。
     「监控板块管理」勾选的板块带 is_watched=true。
 
-    与 /api/custom/scan 的差异：命中股来自 MCP 选股（收盘数据），归类维度是
+    与 /api/custom/scan 的差异：命中股来自 REST smart_stock_picking 选股（收盘数据），归类维度是
     图谱板块，不依赖分时序列。选股约 4.5s，归类纯内存。
 
     :param query: 自然语言选股条件（如 "涨幅大于7%并且小于12.1%；未涨停；非ST"）
