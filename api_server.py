@@ -34,6 +34,16 @@ if os.path.isdir(_STATIC_DIR):
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
+# 静态资源缓存策略：带内容 hash 的 assets 可永久缓存（immutable），
+# 其余 static 文件（favicon 等）与 SPA 入口交给根路由的 no-cache。
+@app.middleware("http")
+async def _static_cache_control(request, call_next):
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/assets/"):
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
 # ========== 请求模型 ==========
 class StockAttributionRequest(BaseModel):
     stock_codes: List[str]
