@@ -258,6 +258,88 @@ class Database:
                     update_date
                 ))
 
+    def refresh_concept_dict_replace(self, boards: List[Dict[str, str]]) -> Dict:
+        """
+        以 smart_stock_picking 枚举结果为准全量替换板块字典（统一以新接口数据为主）。
+
+        级联清理（仅活跃表，历史快照 concept_strength/stock_attribution 不动）：
+          - concept_members：删除不在新字典内的板块成分股
+          - watched_concepts：被清理的勾选板块先尝试按名称迁移到新码（去Ⅲ后缀精确匹配），
+                             迁移失败才删除
+
+        :param boards: [{"concept_code", "concept_name", "category", "level", ...}]
+        :return: {added, removed, migrated: [(old, new, name)], dropped_watched: [(code, name)]}
+        """
+        update_date = datetime.now().strftime("%Y-%m-%d")
+        new_codes = {b["concept_code"] for b in boards}
+        new_name_map = {b["concept_code"]: b["concept_name"] for b in boards}
+
+        with self._connect() as conn:
+            old_codes = {r[0] for r in conn.execute("SELECT concept_code FROM ths_concept_dict")}
+            removed_codes = old_codes - new_codes
+            added_codes = new_codes - old_codes
+
+            # 勾选板块按名称迁移：旧名去Ⅲ后精确匹配新名，仅迁往观察池前缀（884/885/886）。
+            # 881 二级行业不入观察池（用户决策），名称只存在于 881 的遗留勾选直接清理。
+            migrated, dropped_watched = [], []
+            old_name_map = {
+                r["concept_code"]: r["concept_name"]
+                for r in conn.execute("SELECT concept_code, concept_name FROM ths_concept_dict")
+            }
+            observe_prefixes = getattr(config, "OBSERVE_CONCEPT_PREFIXES", ("884", "885", "886"))
+            name_to_new = {}
+            for nc, nm in new_name_map.items():
+                if nc[:3] in observe_prefixes:
+                    name_to_new.setdefault(nm, nc)
+            for r in conn.execute("SELECT concept_code FROM watched_concepts").fetchall():
+                cc = r["concept_code"]
+                if cc in new_codes:
+                    continue
+                old_name = old_name_map.get(cc, "")
+                base_name = old_name.rstrip("Ⅲ").rstrip("Ⅱ").rstrip("Ⅰ").strip()
+                target = name_to_new.get(base_name)
+                if target:
+                    migrated.append((cc, target, old_name))
+                    conn.execute(
+                        "UPDATE watched_concepts SET concept_code=? WHERE concept_code=?",
+                        (target, cc),
+                    )
+                else:
+                    dropped_watched.append((cc, old_name))
+
+            # 全量替换字典
+            conn.execute("DELETE FROM ths_concept_dict")
+            conn.executemany("""
+                INSERT INTO ths_concept_dict
+                (concept_code, concept_name, full_name, update_date)
+                VALUES (?, ?, ?, ?)
+            """, [
+                (b["concept_code"], b["concept_name"],
+                 b.get("category", "") or "", update_date)
+                for b in boards
+            ])
+
+            # 级联清理：所有被移除旧码的成分股（含已迁移的——新码成分股由后续流程重拉）
+            #           + 迁移失败被删的勾选
+            dead_codes = sorted(removed_codes)
+            if dead_codes:
+                ph = ",".join("?" * len(dead_codes))
+                conn.execute(f"DELETE FROM concept_members WHERE concept_code IN ({ph})", dead_codes)
+            if dropped_watched:
+                ph2 = ",".join("?" * len(dropped_watched))
+                conn.execute(
+                    f"DELETE FROM watched_concepts WHERE concept_code IN ({ph2})",
+                    [c for c, _ in dropped_watched],
+                )
+
+        return {
+            "added": len(added_codes),
+            "removed": len(removed_codes),
+            "total": len(new_codes),
+            "migrated": migrated,
+            "dropped_watched": dropped_watched,
+        }
+
     def get_all_concept_codes(self) -> List[str]:
         """获取所有概念代码"""
         with self._connect() as conn:

@@ -132,6 +132,85 @@ def cmd_kg_init(args):
         sys.exit(1)
 
 
+def cmd_refresh_boards(args):
+    """
+    统一以 smart_stock_picking 枚举结果刷新板块字典（行业 + 概念全集）。
+
+    流程：动态枚举 710 板块 → 全量替换 ths_concept_dict（清理遗留旧码）
+        → 被清理的勾选板块按名称自动迁移（白酒Ⅲ→白酒）→ 新板块补拉成分股（接口2）
+    观察/归因白名单不变（884/885/886），881 二级行业仅入字典不进观察池。
+    """
+    from datetime import datetime
+    from database import Database
+    from ifind_client import IFindClient
+    import config as _config
+
+    db = Database()
+    client = IFindClient()
+
+    # 1. 动态枚举板块全集
+    print("[REFRESH-BOARDS] 枚举同花顺板块全集（行业+概念）...")
+    boards = client.get_all_ths_boards()
+    if not boards:
+        print("[REFRESH-BOARDS] ❌ 枚举失败（接口无返回），中止")
+        sys.exit(1)
+    from collections import Counter
+    prefix_cnt = Counter(b["concept_code"][:3] for b in boards)
+    print(f"[REFRESH-BOARDS] 枚举到 {len(boards)} 个板块: {dict(prefix_cnt)}")
+
+    # 2. 全量替换字典 + 级联清理 + 勾选名称迁移
+    result = db.refresh_concept_dict_replace(boards)
+    print(f"[REFRESH-BOARDS] 字典已刷新: 新增 {result['added']} / 移除 {result['removed']} / 总数 {result['total']}")
+    for old, new, name in result["migrated"]:
+        print(f"  勾选迁移: {name} {old} → {new}")
+    for code, name in result["dropped_watched"]:
+        print(f"  ⚠ 勾选被删（无同名新码，需手动重选）: {name} {code}")
+
+    # 3. 新板块补拉成分股（接口2，仅观察池前缀且缺成分股的）
+    if args.skip_members:
+        print("[REFRESH-BOARDS] --skip-members，跳过成分股补拉")
+    else:
+        import sqlite3
+        with sqlite3.connect(db.db_path) as conn:
+            have_members = {r[0] for r in conn.execute(
+                "SELECT DISTINCT concept_code FROM concept_members")}
+        need = [
+            cc for cc in db.get_observe_concept_codes()
+            if cc not in have_members
+        ]
+        # 迁移后的新码也需补拉
+        need += [new for _, new, _ in result["migrated"] if new not in have_members and new not in need]
+        print(f"[REFRESH-BOARDS] 需补拉成分股的新板块: {len(need)} 个（接口2）")
+        if need:
+            member_date = datetime.now().strftime("%Y%m%d")
+            ok, fail = 0, 0
+            for cc in need:
+                try:
+                    resp = client.get_concept_members(cc, member_date)
+                    tables = resp.get("tables", [])
+                    if tables:
+                        rows = []
+                        t = tables[0].get("table", {})
+                        # p03473 字段映射：f001=日期, f002=股票代码, f003=股票名称
+                        codes = t.get("p03473_f002", [])
+                        names = t.get("p03473_f003", [])
+                        for i, sc in enumerate(codes):
+                            if _config.is_a_share_code(sc):
+                                rows.append({"stock_code": sc,
+                                             "stock_name": names[i] if i < len(names) else ""})
+                        if rows:
+                            db.save_concept_members(cc, rows, member_date)
+                            ok += 1
+                            continue
+                    fail += 1
+                except Exception as e:
+                    fail += 1
+                    print(f"  {cc} 拉取失败: {e}")
+            print(f"[REFRESH-BOARDS] 成分股补拉完成: 成功 {ok} / 失败 {fail}")
+
+    print("[REFRESH-BOARDS] ✅ 完成。板块管理页候选将以新字典为准。")
+
+
 def cmd_kg_query(args):
     """知识图谱简易查询：个股→板块 / 板块→成分股 / 联动股。"""
     import sqlite3
@@ -330,6 +409,13 @@ def main():
     ig_parser = subparsers.add_parser("import-groups", help="导入同花顺自选股分组 JSON（幂等，可重复导入更新）")
     ig_parser.add_argument("--json", type=str, default=CUSTOM_GROUPS_JSON, help="自选分组 JSON 文件路径")
     ig_parser.set_defaults(func=cmd_import_groups)
+
+    # refresh-boards
+    rb_parser = subparsers.add_parser(
+        "refresh-boards",
+        help="以 smart_stock_picking 枚举刷新板块字典（统一行业+概念全集，清理遗留旧码，勾选自动迁移）")
+    rb_parser.add_argument("--skip-members", action="store_true", help="跳过新板块成分股补拉（接口2）")
+    rb_parser.set_defaults(func=cmd_refresh_boards)
 
     # push（股池归因定时推送，由 crontab 调用）
     push_parser = subparsers.add_parser("push", help="股池归因定时推送（按时间槽选股归类并推送飞书）")

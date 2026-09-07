@@ -198,6 +198,7 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `init [--stocks FILE]` | 首次部署：拉取字典+成分股+映射，补全概念板块全集 |
 | `daily --date DATE [--codes FILE]` | 每日：同步 K 线 + 板块强度 + 个股归因 |
 | `import-groups [--json FILE]` | **导入自选股分组 JSON**（幂等覆盖），自选看板用 |
+| `refresh-boards [--skip-members]` | **smart_stock_picking 刷新板块字典**（710 全集+清理遗留+勾选迁移+新板块成分股） |
 | `server [--host H] [--port P]` | 启动 FastAPI 服务（API + 可视化页面） |
 | `test` | 测试 5 个 iFinD 接口连通性 |
 | `purge [--vacuum]` | 删除海外数据，仅保留 A 股 |

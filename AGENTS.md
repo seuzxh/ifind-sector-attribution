@@ -14,6 +14,7 @@
 - 本机运行库的 `stock_concept_map` 当前为空（2026-07-24 实测）；实时监控不受影响，但下一次 daily 个股归因前必须重跑 init 映射流程，不能把历史 `stock_attribution` 行误认为映射仍就绪。
 - 本机没有为本项目安装 daily crontab，`daily_kline` 最新日期为 20260717（2026-07-24 实测）；盘后数据是否补齐需显式运行 `main.py daily` 并复核，README/DEPLOYMENT 中的 crontab 只是建议配置。
 - 轮动分析采用行情并发采集、分批 LLM 流式分析、对抗审查与综合结论；`LLM_MODEL_BATCH` 可为批次分析指定轻量模型，留空时使用 `LLM_MODEL`。
+- 板块字典（ths_concept_dict 710 个=881×90+884×230+885×293+886×97）由 `refresh-boards` 命令用 smart_stock_picking 动态枚举维护；881 二级行业仅入字典**不进观察池**（OBSERVE_CONCEPT_PREFIXES=884/885/886）。
 - 强势归类选股走 REST `smart_stock_picking`（`ACCESS_TOKEN`，`ifind_client.smart_pick_stocks`），**不走 MCP**（MCP search_stocks 有每日配额且曾反复打满，已于 2026-09-07 彻底移除 MCP 链路：mcp_proxy.py 已删、IFIND_MCP_TOKEN 已清）。
 
 ## 🔑 运维知识：access_token 过期自动刷新（重要，别再踩）

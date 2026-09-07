@@ -343,11 +343,16 @@ class IFindClient:
 
         boards = []
         for i, code in enumerate(codes):
+            chg = chgs[i] if chgs and i < len(chgs) else None
+            try:
+                chg = round(float(chg), 2) if chg is not None else None
+            except (TypeError, ValueError):
+                chg = None
             boards.append({
                 "concept_code": code,
                 "concept_name": names[i] if i < len(names) else "",
                 "category": cats[i] if i < len(cats) else searchstring,
-                "change_ratio": round(chgs[i], 2) if chgs and i < len(chgs) and chgs[i] is not None else None,
+                "change_ratio": chg,
             })
         return boards
 
