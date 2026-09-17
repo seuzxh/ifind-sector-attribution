@@ -50,3 +50,4 @@ static/
 
 # data 全目录运行时产物（数据库/回测库/报告快照，均不入库）
 data/
+.worktrees/
