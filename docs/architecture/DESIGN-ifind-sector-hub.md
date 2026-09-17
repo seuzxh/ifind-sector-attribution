@@ -1,10 +1,10 @@
 ---
-title: "设计：板块/概念数据层抽离（sector-hub）"
+title: "设计：板块/概念数据层抽离（ifind-sector-hub）"
 parent: "架构与设计"
 nav_order: 11
 ---
 
-# 板块/概念数据层抽离（sector-hub）
+# 板块/概念数据层抽离（ifind-sector-hub）
 
 > 状态：需求与设计已确认，待实施 | 日期：2026-09-17 | 版本：v1.0
 
@@ -14,7 +14,7 @@ monitor 项目经多轮迭代，已沉淀出一套完整的**板块/概念数据
 
 该能力目前与监控业务耦合在 `ifind_client.py` / `sync_pipeline.py` / `database.py` 中，且存在重复建设的实证：`/root/Projects/ifind-concept-trend` 已独立实现第二套 IfindClient（token 自动续期、限流、成分股接口），两套代码在 token 管理与接口语义上各自演化。
 
-本次将该能力抽离为公共组件 **sector-hub**，作为板块/概念数据层供 monitor 及未来其他平台复用，消除重复、统一 token 与数据口径。
+本次将该能力抽离为公共组件 **ifind-sector-hub**，作为板块/概念数据层供 monitor 及未来其他平台复用，消除重复、统一 token 与数据口径。
 
 ## 二、目标与非目标
 
@@ -40,8 +40,8 @@ monitor 项目经多轮迭代，已沉淀出一套完整的**板块/概念数据
 | 2 | 能力边界 | **纯数据层**：client + 字典/成分股/映射的同步与缓存。watched 勾选管理、观察池/成员数资格规则等监控平台私有业务**留守 monitor** |
 | 3 | 存储架构 | **存储抽象 + 沿用现库**：组件存储层面向接口编程，默认 SQLite 实现指向任意库文件；monitor 指向现有 `sector_attribution.db`，零数据迁移 |
 | 4 | 首期范围 | **组件 + monitor 全量切换**（含裸 SQL 收编），行为等价替换；其他平台接入放后续 |
-| 5 | 包名/目录 | 包名 `sector-hub`，目录 `/root/Projects/sector-hub`（独立 git 仓库，同 kline-fetcher 惯例） |
-| 6 | token 持久化 | `FileTokenStore(data/sectorhub_token.json)` 取代改写 `config_local.py`；`config_local.py` 与环境变量降级为首次 bootstrap 来源 |
+| 5 | 包名/目录 | 包名 `ifind-sector-hub`（Python 导入名 `ifind_sector_hub`），目录 `/root/Projects/ifind-sector-hub`（独立 git 仓库，同 kline-fetcher 惯例） |
+| 6 | token 持久化 | `FileTokenStore(data/ifind_sector_hub_token.json)` 取代改写 `config_local.py`；`config_local.py` 与环境变量降级为首次 bootstrap 来源 |
 
 ## 四、能力边界
 
@@ -58,9 +58,9 @@ monitor 项目经多轮迭代，已沉淀出一套完整的**板块/概念数据
 ## 五、包结构与部署形态
 
 ```
-/root/Projects/sector-hub/          # 独立 git 仓库
+/root/Projects/ifind-sector-hub/          # 独立 git 仓库
 ├── pyproject.toml                  # 核心依赖仅 requests；[project.optional-dependencies] service = fastapi/pydantic
-├── sectorhub/
+├── ifind_sector_hub/
 │   ├── __init__.py                 # SectorHub 门面 + HubConfig
 │   ├── codes.py                    # A股代码/前缀过滤
 │   ├── tokens.py                   # TokenStore：内存默认 + FileTokenStore(flock)
@@ -71,7 +71,7 @@ monitor 项目经多轮迭代，已沉淀出一套完整的**板块/概念数据
 └── tests/                          # mock HTTP 单测
 ```
 
-- 安装：`pip install -e /root/Projects/sector-hub`（vibe-trading 环境）；monitor `requirements.txt` 注明本地依赖（同 kline-fetcher 写法）。
+- 安装：`pip install -e /root/Projects/ifind-sector-hub`（vibe-trading 环境）；monitor `requirements.txt` 注明本地依赖（同 kline-fetcher 写法）。
 - 门面：`hub = SectorHub(HubConfig(db_path=..., token_store=FileTokenStore(...)))`，下挂 `hub.client` / `hub.store` / `hub.sync`。
 
 ## 六、核心接口设计
@@ -87,7 +87,7 @@ monitor 项目经多轮迭代，已沉淀出一套完整的**板块/概念数据
 - token 解析顺序：**显式传入 > token 文件 > 环境变量**（`IFIND_ACCESS_TOKEN` / `IFIND_REFRESH_TOKEN`）。
 - 默认内存态（与现状一致：进程内刷新、重启重新引导）。
 - `FileTokenStore`：JSON 落盘 `{access_token, refresh_token, updated_at}` + `fcntl` 文件锁；401 刷新时"锁→读文件→已变则复用→未变则刷新并写回"，REFRESH_TOKEN 轮换自动持久化。
-- monitor 接 `FileTokenStore(data/sectorhub_token.json)`（gitignore）。
+- monitor 接 `FileTokenStore(data/ifind_sector_hub_token.json)`（gitignore）。
 
 ### 6.3 Storage（三表）
 
@@ -143,7 +143,7 @@ monitor 项目经多轮迭代，已沉淀出一套完整的**板块/概念数据
 
 ## 九、测试与验收
 
-**组件单测**（sector-hub/tests，mock HTTP）
+**组件单测**（ifind-sector-hub/tests，mock HTTP）
 
 - client：token 刷新流（401→刷新→重试）、REFRESH_TOKEN 轮换持久化、指数退避、批量分片、smart_pick 解析。
 - storage：快照语义、`replace_concept_dict` 级联清理与 migrate_hook 同事务、新增访问器。
@@ -171,9 +171,9 @@ monitor 项目经多轮迭代，已沉淀出一套完整的**板块/概念数据
 
 ## 十一、文件清单
 
-**新增**：`/root/Projects/sector-hub/` 全部（pyproject.toml、sectorhub/ 六模块、tests/）。
+**新增**：`/root/Projects/ifind-sector-hub/` 全部（pyproject.toml、ifind_sector_hub/ 六模块、tests/）。
 
-**monitor 修改**：`database.py`（门面化+删 get_concept_stocks）、`ifind_client.py`（**删除**，由组件替代）、`sync_pipeline.py`（板块半边薄编排）、`main.py`（refresh-boards 重排）、`api_server.py`（2 处收编+hub 初始化）、`realtime_engine.py`、`sector_manage.py`、`theme_catalyst.py`、`auction_engine.py`、`kg_sources.py`（各 1 处收编）、`scripts/backfill_style_history.py`（直连 ifind_client，import 切换组件）、`scripts/backfill_daily.py`（走 Database 门面，签名不变，仅回归验证）、`config.py`（网络参数/A股过滤迁出后的引用调整）、`requirements.txt`、`install_service.sh`、`AGENTS.md` / `README.md` / `docs/architecture/ARCHITECTURE.md`、`.gitignore`（sectorhub_token.json）。
+**monitor 修改**：`database.py`（门面化+删 get_concept_stocks）、`ifind_client.py`（**删除**，由组件替代）、`sync_pipeline.py`（板块半边薄编排）、`main.py`（refresh-boards 重排）、`api_server.py`（2 处收编+hub 初始化）、`realtime_engine.py`、`sector_manage.py`、`theme_catalyst.py`、`auction_engine.py`、`kg_sources.py`（各 1 处收编）、`scripts/backfill_style_history.py`（直连 ifind_client，import 切换组件）、`scripts/backfill_daily.py`（走 Database 门面，签名不变，仅回归验证）、`config.py`（网络参数/A股过滤迁出后的引用调整）、`requirements.txt`、`install_service.sh`、`AGENTS.md` / `README.md` / `docs/architecture/ARCHITECTURE.md`、`.gitignore`（ifind_sector_hub_token.json）。
 
 **不动**：`core_calculator.py`、`kg_builder.py`、`kg_analysis.py`、`scan_push.py`、`open_scan_engine.py`、`rotation_agent.py`、`frontend/` 全部、数据库文件。
 
