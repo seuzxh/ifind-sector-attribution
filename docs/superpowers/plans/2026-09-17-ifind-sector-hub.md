@@ -1607,7 +1607,7 @@ def build_router(hub) -> APIRouter:
 ```bash
 cd /root/Projects/ifind-sector-hub && $PY -m unittest discover -s tests -v
 ```
-Expected: PASS（codes 2 + tokens 6 + client 10 + storage 7 + sync 6 + service 3 = 34 tests）
+Expected: PASS（codes 2 + tokens 6 + client 10 + storage 6 + sync 6 + service 3 = 33 tests）
 
 - [ ] **Step 5: 写包 README 并提交**
 
