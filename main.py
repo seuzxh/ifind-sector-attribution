@@ -136,29 +136,28 @@ def cmd_refresh_boards(args):
     """
     统一以 smart_stock_picking 枚举结果刷新板块字典（行业 + 概念全集）。
 
-    流程：动态枚举 710 板块 → 全量替换 ths_concept_dict（清理遗留旧码）
-        → 被清理的勾选板块按名称自动迁移（白酒Ⅲ→白酒）→ 新板块补拉成分股（接口2）
+    流程：动态枚举 → 全量替换字典（级联清理+勾选迁移，组件同事务）
+        → 新板块并发补拉成分股（接口2，A股过滤）。
     观察/归因白名单不变（884/885/886），881 二级行业仅入字典不进观察池。
     """
     from datetime import datetime
+    from collections import Counter
     from database import Database
-    from ifind_client import IFindClient
-    import config as _config
+    from ifind_hub import get_hub
 
     db = Database()
-    client = IFindClient()
+    hub = get_hub()
 
     # 1. 动态枚举板块全集
     print("[REFRESH-BOARDS] 枚举同花顺板块全集（行业+概念）...")
-    boards = client.get_all_ths_boards()
+    boards = hub.client.get_all_ths_boards()
     if not boards:
         print("[REFRESH-BOARDS] ❌ 枚举失败（接口无返回），中止")
         sys.exit(1)
-    from collections import Counter
     prefix_cnt = Counter(b["concept_code"][:3] for b in boards)
     print(f"[REFRESH-BOARDS] 枚举到 {len(boards)} 个板块: {dict(prefix_cnt)}")
 
-    # 2. 全量替换字典 + 级联清理 + 勾选名称迁移
+    # 2. 全量替换字典 + 级联清理 + 勾选名称迁移（watched 钩子在 Database 内，同事务）
     result = db.refresh_concept_dict_replace(boards)
     print(f"[REFRESH-BOARDS] 字典已刷新: 新增 {result['added']} / 移除 {result['removed']} / 总数 {result['total']}")
     for old, new, name in result["migrated"]:
@@ -166,47 +165,20 @@ def cmd_refresh_boards(args):
     for code, name in result["dropped_watched"]:
         print(f"  ⚠ 勾选被删（无同名新码，需手动重选）: {name} {code}")
 
-    # 3. 新板块补拉成分股（接口2，仅观察池前缀且缺成分股的）
+    # 3. 新板块补拉成分股（仅观察池前缀且缺成分股的；组件并发内核，A股过滤）
     if args.skip_members:
         print("[REFRESH-BOARDS] --skip-members，跳过成分股补拉")
     else:
-        import sqlite3
-        with sqlite3.connect(db.db_path) as conn:
-            have_members = {r[0] for r in conn.execute(
-                "SELECT DISTINCT concept_code FROM concept_members")}
-        need = [
-            cc for cc in db.get_observe_concept_codes()
-            if cc not in have_members
-        ]
-        # 迁移后的新码也需补拉
-        need += [new for _, new, _ in result["migrated"] if new not in have_members and new not in need]
-        print(f"[REFRESH-BOARDS] 需补拉成分股的新板块: {len(need)} 个（接口2）")
+        have_members = {cc for cc in db.get_latest_members_snapshot()[1]}
+        need = [cc for cc in db.get_observe_concept_codes() if cc not in have_members]
+        need += [new for _, new, _ in result["migrated"]
+                 if new not in have_members and new not in need]
+        print(f"[REFRESH-BOARDS] 需补拉成分股的新板块: {len(need)} 个（接口2并发）")
         if need:
             member_date = datetime.now().strftime("%Y%m%d")
-            ok, fail = 0, 0
-            for cc in need:
-                try:
-                    resp = client.get_concept_members(cc, member_date)
-                    tables = resp.get("tables", [])
-                    if tables:
-                        rows = []
-                        t = tables[0].get("table", {})
-                        # p03473 字段映射：f001=日期, f002=股票代码, f003=股票名称
-                        codes = t.get("p03473_f002", [])
-                        names = t.get("p03473_f003", [])
-                        for i, sc in enumerate(codes):
-                            if _config.is_a_share_code(sc):
-                                rows.append({"stock_code": sc,
-                                             "stock_name": names[i] if i < len(names) else ""})
-                        if rows:
-                            db.save_concept_members(cc, rows, member_date)
-                            ok += 1
-                            continue
-                    fail += 1
-                except Exception as e:
-                    fail += 1
-                    print(f"  {cc} 拉取失败: {e}")
-            print(f"[REFRESH-BOARDS] 成分股补拉完成: 成功 {ok} / 失败 {fail}")
+            hub.sync.sync_concept_members(
+                need, member_date,
+                stock_filter=lambda sc: sc.endswith((".SH", ".SZ", ".BJ")))
 
     print("[REFRESH-BOARDS] ✅ 完成。板块管理页候选将以新字典为准。")
 

@@ -7,15 +7,13 @@
 
 import sys
 import os
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict
 
-from ifind_client import IFindClient
+from ifind_hub import get_hub
 from database import Database
 from core_calculator import calc_all_sectors_strength, calc_multi_period_score, l1_stock_attribution
 import config
@@ -25,230 +23,49 @@ class SyncPipeline:
     """数据同步管线"""
 
     def __init__(self):
-        self.client = IFindClient()
+        self.hub = get_hub()
+        self.client = self.hub.client  # 行情半边（sync_daily_kline 等）继续用，接口不变
         self.db = Database()
 
-    # ========== 首次部署：初始化 ==========
+    # ========== 首次部署：初始化（板块半边委托 ifind-sector-hub 组件） ==========
     def init_concept_dict(self):
         """步骤0: 初始化概念板块字典（永久缓存，仅 A股相关概念）"""
-        print("[INIT] 开始初始化概念板块字典...")
-        # 过滤掉海外行业指数（861xxx[US]/871xxx[HK] 等），只保留 A股概念
-        a_share_codes = [c for c in config.ALL_CONCEPT_CODES if config.is_a_share_concept(c)]
-        skipped = len(config.ALL_CONCEPT_CODES) - len(a_share_codes)
-        if skipped:
-            print(f"[INIT] 过滤 {skipped} 个海外行业指数概念，仅保留 A股概念 {len(a_share_codes)} 个")
-        concepts = self.client.batch_get_concept_basic_info(
-            a_share_codes,
-            batch_size=100
-        )
-        self.db.save_concept_dict(concepts)
-        print(f"[INIT] 已保存 {len(concepts)} 个概念板块到字典")
-        return concepts
+        return self.hub.sync.init_concept_dict(config.ALL_CONCEPT_CODES)
 
     def init_stock_concept_map(self, stock_codes: List[str], map_date: str = None):
         """步骤1: 初始化个股-概念映射（永久缓存）"""
-        map_date = map_date or datetime.now().strftime("%Y-%m-%d")
-        print(f"[INIT] 开始初始化个股-概念映射，日期={map_date}...")
-
-        mappings = self.client.batch_get_stock_concepts(stock_codes, map_date)
-        self.db.save_stock_concept_map(mappings, map_date)
-        print(f"[INIT] 已保存 {len(mappings)} 只个股的概念映射")
-        return mappings
-
-    def _fetch_one_concept_members(self, concept_code: str, member_date: str):
-        """
-        拉取单个概念的成分股（供线程池 worker 调用）
-        :return: (concept_code, members) 成功； (concept_code, None) 失败
-        """
-        try:
-            resp = self.client.get_concept_members(concept_code, member_date)
-            if "tables" in resp and len(resp["tables"]) > 0:
-                table = resp["tables"][0].get("table", {})
-                stock_codes = table.get("p03473_f002", [])
-                stock_names = table.get("p03473_f003", [])
-
-                members = []
-                for i in range(len(stock_codes)):
-                    members.append({
-                        "stock_code": stock_codes[i],
-                        "stock_name": stock_names[i] if i < len(stock_names) else ""
-                    })
-                return (concept_code, members)
-            # 无成分股数据（如部分指数类概念），视为空成功
-            return (concept_code, [])
-        except Exception as e:
-            print(f"[WARN] 获取 {concept_code} 成分股失败: {e}")
-            return (concept_code, None)
+        return self.hub.sync.sync_stock_concept_map(stock_codes, map_date)
 
     def init_concept_members(self, member_date: str = None):
-        """步骤2: 初始化概念板块成分股（永久缓存，并发拉取）"""
+        """步骤2: 初始化概念板块成分股（永久缓存，并发拉取；范围受 watched 限制，monitor 口径）"""
         member_date = member_date or datetime.now().strftime("%Y%m%d")
         print(f"[INIT] 开始初始化概念板块成分股，日期={member_date}...")
         concept_codes = self.db.get_a_share_concept_codes()
         print(f"[INIT] 共 {len(concept_codes)} 个概念")
-        return self._fetch_concept_members_batch(concept_codes, member_date)
+        return self.hub.sync.sync_concept_members(concept_codes, member_date)
 
     def refresh_observe_members(self, member_date: str = None):
         """
         一键刷新观察池全集（884+885+886）的板块字典 + 成分股（管理页刷新按钮用）。
-
-        与 init_concept_dict/init_concept_members 的区别：
-          - 字典：对【全集】调接口5（init_concept_dict 只刷 884，885/886 字典历史缺口）
-          - 成分股：对【全集】调接口2（init_concept_members 受 watched 表限制，只刷勾选的）
-        不跑 init_concept_universe（要扫全市场5500股，太慢；885/886 字典直接刷接口5即可补）。
-
-        :return: {dict_count, member_concepts, saved_records, failed_concepts}
+        编排留 monitor（观察池口径），数据侧走组件。
         """
         member_date = member_date or datetime.now().strftime("%Y%m%d")
-        print(f"[REFRESH] 开始刷新观察池板块信息，日期={member_date}...")
-
-        # 1) 刷字典：对全集调接口5（batch_get_concept_basic_info 支持批量100/批）
         observe_codes = self.db.get_observe_concept_codes()
-        print(f"[REFRESH] 观察池全集 {len(observe_codes)} 个概念")
-        a_share_codes = [c for c in observe_codes if config.is_a_share_concept(c)]
-        concepts = self.client.batch_get_concept_basic_info(a_share_codes, batch_size=100)
-        self.db.save_concept_dict(concepts)
-        print(f"[REFRESH] 字典已刷新 {len(concepts)} 个概念")
-
-        # 2) 刷成分股：对全集调接口2（8线程并发，约1-2分钟）
-        #    重新取全集（字典刷新后可能新增概念）
-        all_codes = self.db.get_observe_concept_codes()
-        saved = self._fetch_concept_members_batch(all_codes, member_date)
-        print(f"[REFRESH] 完成：{len(all_codes)} 个概念，{saved} 条成分股记录")
-        return {
-            "dict_count": len(concepts),
-            "member_concepts": len(all_codes),
-            "saved_records": saved,
-            "member_date": member_date,
-        }
+        return self.hub.sync.refresh_dict_and_members(observe_codes, member_date)
 
     def init_concept_universe(self, map_date: str = None):
-        """
-        扫描全市场股票收集实际在用的概念板块码（885xxx/886xxx 等），
-        并补全这些概念的字典信息与成分股。
-
-        背景：config.ALL_CONCEPT_CODES 只含行业分类码（700xxx/884xxx），
-        而接口1 返回的个股概念是另一套编码（885xxx），两套交集为 0，
-        导致 get_stock_concepts 的 JOIN 恒为空、归因无法工作。
-        本方法增量补充概念板块码，让两套体系统一可用于归因。
-
-        注意：板块池启用（仅 884）时跳过此扫描——884 池不依赖 885/886，
-        且归因改从 concept_members 反推，无需补全概念标签码。
-        """
-        if config.SECTOR_POOL_ENABLED and config.SECTOR_POOL_CODES:
-            print("[UNIVERSE] 板块池已启用（仅 884），跳过 885/886 概念扫描")
-            return
-        print("=" * 60)
-        print("  补全概念板块全集（扫描全市场股票）")
-        print("=" * 60)
-        map_date = map_date or datetime.now().strftime("%Y-%m-%d")
-
-        # 1) 全市场股票
-        all_stocks = self.db.get_all_member_stock_codes()
-        print(f"[UNIVERSE] 全市场股票 {len(all_stocks)} 只")
-
-        # 2) 分批扫描接口1，收集概念码 + 累积全市场个股-概念映射
-        collected = {}  # {concept_code: concept_name}（接口1 同时返回名字）
-        all_mappings = {}  # {stock_code: [{concept_name, concept_code}, ...]} 全市场映射
-        batch_size = config.BATCH_SIZE
-        for i in range(0, len(all_stocks), batch_size):
-            batch = all_stocks[i:i + batch_size]
-            mappings = self.client.batch_get_stock_concepts(batch, map_date)
-            # 过滤掉海外概念，只保留 A股概念映射
-            for stock_code, concepts in mappings.items():
-                a_concepts = [c for c in concepts if config.is_a_share_concept(c.get("concept_code", ""))]
-                if a_concepts:
-                    all_mappings[stock_code] = a_concepts
-                    for c in a_concepts:
-                        cc = c.get("concept_code")
-                        if cc and cc not in collected:
-                            collected[cc] = c.get("concept_name", "")
-            if (i // batch_size) % 5 == 0:
-                print(f"[UNIVERSE] 扫描进度 {min(i + batch_size, len(all_stocks))}/{len(all_stocks)}，已收集 A股概念码 {len(collected)}，映射 {len(all_mappings)} 只")
-        print(f"[UNIVERSE] 扫描完成，共收集 A股概念码 {len(collected)} 个，映射 {len(all_mappings)} 只股票")
-
-        # 2.5) 把全市场映射存入 stock_concept_map（归因依赖此表）
-        self.db.save_stock_concept_map(all_mappings, map_date)
-        print(f"[UNIVERSE] 已更新 stock_concept_map：{len(all_mappings)} 只股票")
-
-        # 3) 筛选字典里还没有的 A股概念码（过滤海外概念 861/871 等）
-        existing = set(self.db.get_a_share_concept_codes())
-        new_codes = [
-            cc for cc in collected
-            if cc not in existing and config.is_a_share_concept(cc)
-        ]
-        skipped_overseas = len(collected) - len([c for c in collected if config.is_a_share_concept(c)])
-        if skipped_overseas:
-            print(f"[UNIVERSE] 过滤 {skipped_overseas} 个海外概念，仅补充 A股概念")
-        print(f"[UNIVERSE] 其中字典里已有的: {len(collected) - len(new_codes) - skipped_overseas}，需新增: {len(new_codes)}")
-
-        if not new_codes:
-            print("[UNIVERSE] 无需补充，概念字典已覆盖")
-            return 0
-
-        # 4) 接口5 批量补全概念字典（名字等）
-        print(f"[UNIVERSE] 调用接口5 补全 {len(new_codes)} 个概念的字典信息...")
-        concepts_info = self.client.batch_get_concept_basic_info(new_codes, batch_size=100)
-        # 接口5 返回的结构与 save_concept_dict 期望一致
-        self.db.save_concept_dict(concepts_info)
-        print(f"[UNIVERSE] 字典已补全 {len(concepts_info)} 个概念")
-
-        # 5) 接口2 并发补全成分股（复用现有并发逻辑）
-        print(f"[UNIVERSE] 调用接口2 补全 {len(new_codes)} 个概念的成分股...")
-        today_compact = datetime.now().strftime("%Y%m%d")
-        # 直接复用 init_concept_members 的并发内核，传入限定概念列表
-        self._fetch_concept_members_batch(new_codes, today_compact)
-
-        print("=" * 60)
-        print("  概念板块全集补全完成")
-        print("=" * 60)
-        return len(new_codes)
+        """补全概念板块全集（扫全市场）。板块池开关与"已参与"口径是 monitor 语义，参数化传入。"""
+        return self.hub.sync.init_concept_universe(
+            map_date,
+            skip=bool(config.SECTOR_POOL_ENABLED and config.SECTOR_POOL_CODES),
+            batch_size=config.BATCH_SIZE,
+            existing_codes=set(self.db.get_a_share_concept_codes()),
+        )
 
     def _fetch_concept_members_batch(self, concept_codes: List[str], member_date: str):
-        """
-        并发拉取给定概念列表的成分股并入库（从 init_concept_members 抽出的复用内核）。
-        """
-        total_concepts = len(concept_codes)
-        concurrency = getattr(config, "CONCEPT_MEMBERS_CONCURRENCY", 8)
-        progress_every = getattr(config, "CONCEPT_MEMBERS_PROGRESS_EVERY", 100)
+        """兼容入口（kg_sources 在用）：委托组件并发内核。"""
+        return self.hub.sync.sync_concept_members(concept_codes, member_date)
 
-        done_count = 0
-        saved_records = 0
-        counter_lock = threading.Lock()
-        failed_codes = []
-        success_count = 0
-
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            future_to_code = {
-                executor.submit(self._fetch_one_concept_members, cc, member_date): cc
-                for cc in concept_codes
-            }
-            for future in as_completed(future_to_code):
-                code, members = future.result()
-                if members is None:
-                    failed_codes.append(code)
-                else:
-                    if members:
-                        self.db.save_concept_members(code, members, member_date)
-                    success_count += 1
-                    saved_records += len(members)
-                with counter_lock:
-                    done_count += 1
-                    if done_count % progress_every == 0 or done_count == total_concepts:
-                        print(
-                            f"[UNIVERSE] 成分股进度 {done_count}/{total_concepts}"
-                            f"（成功 {success_count}，失败 {len(failed_codes)}，已入库 {saved_records} 条）"
-                        )
-
-        print(
-            f"[UNIVERSE] 已保存共 {saved_records} 条成分股记录"
-            f"（{total_concepts} 个概念中成功 {success_count} 个，失败 {len(failed_codes)} 个）"
-        )
-        if failed_codes:
-            preview = ", ".join(failed_codes[:20])
-            more = "" if len(failed_codes) <= 20 else f" ...（共 {len(failed_codes)} 个）"
-            print(f"[UNIVERSE] 失败概念码: {preview}{more}")
-        return saved_records
 
     # ========== 每日收盘后：行情同步 ==========
     def sync_daily_kline(
