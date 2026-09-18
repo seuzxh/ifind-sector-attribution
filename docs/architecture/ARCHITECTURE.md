@@ -10,6 +10,12 @@ nav_order: 2
 
 ## 目录
 
+> **2026-09-18 起**：板块/概念数据层（ifind client + 三表存储 + 同步编排）已抽离为公共组件
+> `ifind-sector-hub`（`/root/Projects/ifind-sector-hub`）。monitor 经 `ifind_hub.py` 单例接入，
+> `Database` 类三表方法委托组件 `SectorStore`（同库文件零迁移），token 改由 `FileTokenStore`
+> 落盘管理。设计详见 `DESIGN-ifind-sector-hub.md`。
+
+
 - [1. 双概念编码体系](#1-双概念编码体系)
 - [2. 永久缓存语义](#2-永久缓存语义)
 - [3. 多周期融合算法](#3-多周期融合算法)

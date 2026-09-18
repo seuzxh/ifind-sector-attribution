@@ -11,5 +11,9 @@ pydantic>=2.5.0
 #   或 pip install git+https://github.com/seuzxh/kline-fetcher.git
 PyYAML>=6.0
 
+# 板块/概念数据层公共组件（本地包，需单独安装，不在 PyPI）：
+#   pip install -e /root/Projects/ifind-sector-hub
+ifind-sector-hub @ file:///root/Projects/ifind-sector-hub
+
 # 知识图谱（族群初探/图算法，kg_builder 用）
 networkx>=3.0

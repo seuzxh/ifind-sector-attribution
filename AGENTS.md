@@ -21,14 +21,13 @@
 
 **问题背景**：iFinD 数据接口的 `ACCESS_TOKEN` **7 天过期**（报 `errorcode:-1302` / HTTP 401），历史上多次卡住数据拉取。
 
-**已落地方案**（`ifind_client.py`）：
-- `refresh_access_token()`：用 `REFRESH_TOKEN` 调 `https://quantapi.51ifind.com/api/v1/get_access_token` 换新 token，同步更新 `config.ACCESS_TOKEN` + `config.HEADERS["access_token"]`（两处都要更新，否则已构造的 HEADERS 仍带旧值）。
-- `IFindClient._post()`：检测到 **HTTP 401 自动刷新并重试**（带进程锁防并发重复刷新）。
+**已落地方案**（组件 `ifind-sector-hub` 的 `tokens.py`，monitor 经 `ifind_hub.py` 单例接入）：
+- `TokenStore.refresh_access_token()`：用 `REFRESH_TOKEN` 调 `https://quantapi.51ifind.com/api/v1/get_access_token` 换新 token；**双检锁**防并发重复刷新。
+- `IFindClient._post()`：检测到 **HTTP 401 自动刷新并重试**（仅刷一次防死循环）。
 - **REFRESH_TOKEN 长期有效**（与账号到期日一致），只要它不过期，ACCESS_TOKEN 就能自动刷新。
+- monitor 用 **`FileTokenStore`（`data/ifind_sector_hub_token.json` + flock）**：刷新结果与 REFRESH_TOKEN 轮换自动落盘、跨进程共享，**不再改写 `config_local.py`**；`config_local.py` / 环境变量仅作首次 bootstrap（文件缺失时用其种子引导）。
 
-**注意**：自动刷新只更新**进程内存**里的 token。若希望重启后也用新 token，需手动把刷新后的值同步回 `config_local.py`（或重启时让它自动刷新一次——`_post` 已覆盖此场景）。
-
-**手动刷新**（调试用）：`python -c "from ifind_client import refresh_access_token; print(refresh_access_token())"`
+**手动刷新**（调试用）：`PYTHONPATH=. python -c "from ifind_hub import refresh_token_now; print(refresh_token_now())"`
 
 ## 运行环境（关键，别猜）
 
@@ -37,7 +36,8 @@
 | 项目根目录 | `/root/projects/2.monitor_940/ifind-sector-attribution` |
 | Python | conda 环境 **`vibe-trading`**：`/root/Projects/5.test-autoresearch/qlib/miniconda3/envs/vibe-trading/bin/python` |
 | 工作目录约定 | 所有命令须在本项目根目录执行（`config_local.py`、`data/` 均为相对路径），跑 main.py 需 `PYTHONPATH=.` |
-| iFinD token | `ACCESS_TOKEN` / `REFRESH_TOKEN`：读 `config_local.py` 或环境变量 `IFIND_ACCESS_TOKEN` / `IFIND_REFRESH_TOKEN` |
+| iFinD token | `ACCESS_TOKEN` / `REFRESH_TOKEN`：读 `config_local.py` 或环境变量 `IFIND_ACCESS_TOKEN` / `IFIND_REFRESH_TOKEN`（仅首次引导，运行期看 `data/ifind_sector_hub_token.json`） |
+| **板块数据层组件** | **`ifind-sector-hub` 本地包（不在 PyPI，须单独装）**：`pip install -e /root/Projects/ifind-sector-hub`（client/三表存储/同步；monitor 经 `ifind_hub.py` 单例接入） |
 | **分时数据依赖** | **`kline-fetcher` 本地包（不在 PyPI，须单独装）**：`pip install -e /root/Projects/kline-fetcher`，或 `pip install git+https://github.com/seuzxh/kline-fetcher.git` |
 | **kline API 地址** | `KLINE_API_BASE_URL`（中焯行情 API，盘中实时监控用）：配在 `config_local.py` 或环境变量，**不配则实时链路不可用** |
 | 数据库 | `data/sector_attribution.db`（SQLite，14 张现役表；本机退役 `watchlist` 已于 2026-07-24 删除） |
@@ -70,10 +70,11 @@
 |---|---|---|
 | `config.py` | token、概念代码、计算权重（SCORE_WEIGHTS / PERIOD_WEIGHTS）、A股过滤白名单、分时数据源配置（KLINE_API_BASE_URL / INTRADAY_*） | 偶尔 |
 | `config_local.py` | 本地 token + KLINE_API_BASE_URL，**已 gitignore** | — |
-| `ifind_client.py` | iFinD 5 个接口封装（指数退避重试、批量分片） | 低 |
+| `ifind_hub.py` | **板块数据层组件接入点**：`get_hub()` 进程级单例（FileTokenStore 落 token）+ `refresh_token_now()` 手动刷新 | 低 |
+| `ifind-sector-hub`（外部包） | 板块/概念数据层公共组件（`/root/Projects/ifind-sector-hub`）：IFindClient、三表存储 SectorStore、同步 SectorSync、可选 service 层 | 低（独立仓库） |
 | `intraday_fetcher.py` | 分时数据批量并发封装（kline-fetcher TrendFetcher，32线程），盘中实时用 | 低 |
-| `database.py` | SQLite 封装；所有表的读写方法都在这 | 中 |
-| `sync_pipeline.py` | 数据同步与计算管线（init/daily 编排） | 中 |
+| `database.py` | SQLite 封装；所有表的读写方法都在这。板块三表（字典/成分股/映射）已委托 `ifind-sector-hub` 组件 SectorStore（同库文件，watched 勾选留 monitor） | 中 |
+| `sync_pipeline.py` | 数据同步与计算管线（init/daily 编排）。板块同步半边委托组件 hub.sync；行情/计算半边不变 | 中 |
 | `core_calculator.py` | 板块强度 + 多周期融合 + L1 归因算法 | 中（改算法看这） |
 | `stock_scorer.py` | 盘中成分股四维评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速 | 低 |
 | `realtime_engine.py` | 盘中实时引擎（分时序列缓存 + 时刻切片 + 内存计算，**不入库**） | 低 |
@@ -92,7 +93,7 @@
 
 ## 数据库（必读）
 
-schema 权威来源是 `database.py::_init_db()`。本机若存在 **`data/DATABASE_MANIFEST.json`**，它是 gitignore 的运行库快照（行数、日期范围、样本和常见查询），查询本机数据库前应先读，但不能假设其他 checkout 一定存在或仍是最新。
+schema 权威来源：monitor 私有表看 `database.py::_init_db()`，板块三表（`ths_concept_dict`/`stock_concept_map`/`concept_members`）看组件 `ifind_sector_hub/storage.py`（同一库文件）。本机若存在 **`data/DATABASE_MANIFEST.json`**，它是 gitignore 的运行库快照（行数、日期范围、样本和常见查询），查询本机数据库前应先读，但不能假设其他 checkout 一定存在或仍是最新。
 
 9 张业务表：`ths_concept_dict` / `stock_concept_map` / `concept_members` / `daily_kline` / `min1_kline`（空）/ `concept_strength` / `stock_attribution` / **`custom_group`** / `watched_concepts`。另有 **知识图谱 5 表**：`kg_node`（股票+板块节点）/ `kg_edge`（双时态归属边，多源并存+confidence 分级+`corr_20d` ρ 边权列）/ `kg_snapshot`（版本快照）/ `kg_change`（变更日志）/ `kg_community`（Louvain 族群，P3）——设计见 `docs/architecture/DESIGN-knowledge-graph.md`。本机已删除退役 `watchlist`；其他未清理的旧数据库仍可能残留该历史表。
 

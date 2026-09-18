@@ -60,6 +60,8 @@ pip install -r requirements.txt
 
 # 分时数据依赖（盘中实时监控用，需单独装）
 pip install -e /root/Projects/kline-fetcher
+   # 板块/概念数据层公共组件（本地包）：
+   pip install -e /root/Projects/ifind-sector-hub
 # 或从 GitHub 安装：pip install git+https://github.com/seuzxh/kline-fetcher.git
 ```
 

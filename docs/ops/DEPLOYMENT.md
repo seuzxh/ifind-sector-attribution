@@ -28,6 +28,7 @@ nav_order: 1
 | 项目目录 | `/root/projects/2.monitor_940/ifind-sector-attribution` |
 | token 配置 | `config_local.py`（含 `ACCESS_TOKEN` / `REFRESH_TOKEN`，已 gitignore） |
 | 数据库 | `data/sector_attribution.db`（SQLite，首次 init 自动创建） |
+| **ifind-sector-hub** | 板块/概念数据层公共组件（本地包）：`pip install -e /root/Projects/ifind-sector-hub` |
 | **Node.js** | **>= 18**（前端 Vue 工程构建用；仅部署/改前端时需要，运行时不依赖） |
 | 操作系统 | Linux（systemd） |
 | 权限 | root（因 conda 环境在 /root 下） |

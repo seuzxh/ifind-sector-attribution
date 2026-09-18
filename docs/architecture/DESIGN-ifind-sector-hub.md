@@ -92,7 +92,7 @@ monitor 项目经多轮迭代，已沉淀出一套完整的**板块/概念数据
 ### 6.3 Storage（三表）
 
 - 三表 DDL 与全部读方法**原样迁移**：快照语义（日期参数缺省取 `MAX(date)`）、`get_concept_members_map` 单连接批量优化、`refresh_concept_dict_replace` 的级联清理。
-- 新增两个访问器（收编现裸 SQL）：`get_concept_names()`（字典 code→name）、`get_latest_member_date()`。
+- 新增访问器（收编现裸 SQL，实施中按需扩至 5 个）：`get_concept_names()`（字典 code→name）、`get_latest_member_date()`、`get_latest_member_stock_names()`（最新快照股名）、`get_all_member_stock_names()`（全历史股名）、`get_latest_members_snapshot()`（最新快照全体成分）。
 - 顺带清理：`get_concept_stocks`（database.py:701）经确认无调用方，**不迁移、直接删除**（实施时以 grep 复核）。
 - `watched_concepts` 建表/种子/读写**不迁移**，留守 monitor 的 `Database._init_db`（建表顺序：先组件三表、后 monitor 私有表，全部 `IF NOT EXISTS` 幂等）。
 
@@ -101,7 +101,7 @@ monitor 项目经多轮迭代，已沉淀出一套完整的**板块/概念数据
 - `sync_concept_members(codes, date)`：并发拉取内核（现 `_fetch_concept_members_batch`，8 线程 + 进度日志），kg_sources 的复用点改走此接口。
 - `init_concept_dict(codes)` / `sync_stock_concept_map(stock_codes, date)` / `init_concept_universe(...)`：板块池开关等 monitor 语义由调用方以参数传入。
 - `replace_concept_dict(boards, migrate_hook)`：字典全量替换 + `concept_members` 级联清理在**同一事务**内执行；watched 名称迁移（白酒Ⅲ→白酒）通过 `migrate_hook(conn)` 回调由 monitor 注入，保持现 `database.py:261-341` 的原子性。
-- monitor 的 `refresh_observe_members`（观察池编排）与 refresh-boards 的 CLI 编排留守，内部改调组件。
+- monitor 的 `refresh_observe_members`（观察池编排）与 refresh-boards 的 CLI 编排留守，内部改调组件（组件侧对应 `refresh_dict_and_members`，返回键不含旧 docstring 提及的 `failed_concepts`——旧实现实际也从未返回该键）。
 
 ## 七、monitor 接入改造
 
