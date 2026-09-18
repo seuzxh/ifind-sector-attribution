@@ -474,10 +474,5 @@ def _explore_communities(db: Database, concept_names: Dict[str, str]):
 
 
 def _load_concept_names(db: Database) -> Dict[str, str]:
-    import sqlite3
-    names = {}
-    with sqlite3.connect(db.db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        for row in conn.execute("SELECT concept_code, concept_name FROM ths_concept_dict"):
-            names[row["concept_code"]] = row["concept_name"]
-    return names
+    """字典 code → name（委托组件访问器）。"""
+    return db.get_concept_names()

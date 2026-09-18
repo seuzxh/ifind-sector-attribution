@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
-from ifind_client import IFindClient
+from ifind_hub import get_hub
 
 
 def print_response(title: str, resp: dict, max_len: int = 2000):
@@ -25,7 +25,7 @@ def print_response(title: str, resp: dict, max_len: int = 2000):
 
 def test_interface_1_stock_concepts():
     """测试接口1: 个股所属同花顺概念"""
-    client = IFindClient()
+    client = get_hub().client
     resp = client.get_stock_concepts(
         stock_codes=["688001.SH", "600004.SH", "000001.SZ", "300001.SZ"],
         date="2026-06-13"
@@ -36,7 +36,7 @@ def test_interface_1_stock_concepts():
 
 def test_interface_2_concept_members():
     """测试接口2: 概念板块成分股 (p03473)"""
-    client = IFindClient()
+    client = get_hub().client
     resp = client.get_concept_members(
         concept_code="886102.TI",
         date="20260613"
@@ -47,7 +47,7 @@ def test_interface_2_concept_members():
 
 def test_interface_3_history_quotation():
     """测试接口3: 历史行情日K"""
-    client = IFindClient()
+    client = get_hub().client
     resp = client.get_history_quotation(
         codes=["300033.SZ", "600030.SH"],
         start_date="2026-06-01",
@@ -60,7 +60,7 @@ def test_interface_3_history_quotation():
 
 def test_interface_4_high_frequency():
     """测试接口4: 高频序列1min K"""
-    client = IFindClient()
+    client = get_hub().client
     resp = client.get_high_frequency(
         codes=["300033.SZ"],
         start_time="2026-06-13 09:30:00",
@@ -73,7 +73,7 @@ def test_interface_4_high_frequency():
 
 def test_interface_5_concept_basic_info():
     """测试接口5: 概念基本信息（字典初始化）"""
-    client = IFindClient()
+    client = get_hub().client
     # 取少量概念代码测试
     test_codes = ["700301.TI", "700302.TI", "700303.TI", "700304.TI", "700305.TI"]
     resp = client.get_concept_basic_info(test_codes)
@@ -83,7 +83,7 @@ def test_interface_5_concept_basic_info():
 
 def test_batch_concept_basic_info():
     """测试批量获取概念基本信息"""
-    client = IFindClient()
+    client = get_hub().client
     test_codes = ["700301.TI", "700302.TI", "700303.TI", "700304.TI", "700305.TI"]
     result = client.batch_get_concept_basic_info(test_codes, batch_size=3)
     print(f"\n{'='*60}")

@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import ifind_client  # noqa: E402
+from ifind_hub import get_hub  # noqa: E402
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "style_backtest.db"
 INDICES = {"883926.TI": "高贝塔值", "883409.TI": "近期强势", "883910.TI": "同花顺热股"}
@@ -60,7 +60,7 @@ def get_db():
 
 class Backfiller:
     def __init__(self, sleep_s: float = 0.25):
-        self.client = ifind_client.IFindClient()
+        self.client = get_hub().client
         self.sleep_s = sleep_s
         self.db = get_db()
         self._calls = 0

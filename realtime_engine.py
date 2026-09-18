@@ -71,19 +71,8 @@ class RealtimeEngine:
         }
         self._members_map = members_map
 
-        with sqlite3.connect(self.db.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            self._concept_names = {
-                row["concept_code"]: row["concept_name"]
-                for row in conn.execute("SELECT concept_code, concept_name FROM ths_concept_dict")
-            }
-            self._stock_names = {}
-            for row in conn.execute(
-                "SELECT stock_code, stock_name FROM concept_members "
-                "WHERE member_date = (SELECT MAX(member_date) FROM concept_members)"
-            ):
-                if row["stock_code"] not in self._stock_names:
-                    self._stock_names[row["stock_code"]] = row["stock_name"]
+        self._concept_names = self.db.get_concept_names()
+        self._stock_names = self.db.get_latest_member_stock_names()
         print(f"[REALTIME] 缓存就绪：{len(members_map)} 个概念")
 
     def _get_managed_stock_codes(self) -> List[str]:
@@ -812,9 +801,9 @@ def _rest_search(query: str, max_retries: int = 2) -> Dict[str, dict]:
              出错返回 {"__error__": str}；无结果返回 {}
     """
     import time
-    from ifind_client import IFindClient
+    from ifind_hub import get_hub
 
-    client = IFindClient()
+    client = get_hub().client
     last_empty = False
     for attempt in range(max_retries + 1):
         try:

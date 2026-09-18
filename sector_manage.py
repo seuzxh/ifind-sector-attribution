@@ -37,7 +37,7 @@ def compute_sector_quotes_from_ifind(db: Database) -> List[Dict]:
     """
     import time
     from datetime import datetime, timedelta
-    from ifind_client import IFindClient
+    from ifind_hub import get_hub
 
     concept_codes = db.get_observe_concept_codes()
     if not concept_codes:
@@ -48,10 +48,10 @@ def compute_sector_quotes_from_ifind(db: Database) -> List[Dict]:
         if config.is_monitorable_member_count(len(members_map.get(cc, [])))
     ]
     members_map = {cc: members_map[cc] for cc in concept_codes}
-    concept_names = _load_concept_names(db)
+    concept_names = db.get_concept_names()
     watched = set(db.get_watched_concept_codes())
 
-    client = IFindClient()
+    client = get_hub().client
     t0 = time.time()
 
     # —— 1. 实时行情：changeRatio / open / latest / riseCount / fallCount / upLimitCount ——
@@ -131,14 +131,3 @@ def compute_sector_quotes_from_ifind(db: Database) -> List[Dict]:
         })
     rows.sort(key=lambda r: (r["change_ratio"] is None, -(r["change_ratio"] or 0)))
     return rows
-
-
-def _load_concept_names(db: Database) -> Dict[str, str]:
-    """加载 concept_code → concept_name 映射。"""
-    import sqlite3
-    names = {}
-    with sqlite3.connect(db.db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        for row in conn.execute("SELECT concept_code, concept_name FROM ths_concept_dict"):
-            names[row["concept_code"]] = row["concept_name"]
-    return names

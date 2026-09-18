@@ -51,17 +51,7 @@ class AuctionEngine:
         """懒加载股票名称（从 concept_members 最新快照，custom_group 无 name 列）"""
         if self._stock_names is not None:
             return
-        import sqlite3
-        names = {}
-        with sqlite3.connect(self.db.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            for row in conn.execute(
-                "SELECT stock_code, stock_name FROM concept_members "
-                "WHERE member_date = (SELECT MAX(member_date) FROM concept_members)"
-            ):
-                if row["stock_code"] not in names:
-                    names[row["stock_code"]] = row["stock_name"]
-        self._stock_names = names
+        self._stock_names = self.db.get_latest_member_stock_names()
 
     def _ensure_stock_groups(self):
         """懒加载 个股→所属自选分组名 反向映射（供展示个股分组归属）"""

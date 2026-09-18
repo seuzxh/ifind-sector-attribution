@@ -425,8 +425,6 @@ def get_history_dashboard(
     :param force_calc: 无数据时是否自动拉取并计算（耗时约2分钟）
     :param scope: sector=当前勾选监控板块；custom=自选分组
     """
-    import sqlite3
-
     if scope not in ("sector", "custom"):
         return {"error": f"不支持的历史范围：{scope}", "date": date}
 
@@ -478,27 +476,14 @@ def get_history_dashboard(
             return {"error": f"日期 {date} 无数据，可点击\"拉取并计算\"获取", "date": date, "can_calc": True}
 
     # 概念名映射
-    concept_names = {}
-    with sqlite3.connect(db.db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        for row in conn.execute("SELECT concept_code, concept_name FROM ths_concept_dict"):
-            concept_names[row["concept_code"]] = row["concept_name"]
+    concept_names = db.get_concept_names()
 
     # 当日个股涨幅（成分股排名用）
     daily_df = pd.DataFrame(daily_data) if daily_data else pd.DataFrame()
     change_map = dict(zip(daily_df["code"], daily_df["change_ratio"])) if not daily_df.empty else {}
 
     # 成分股名称映射
-    stock_names = {}
-    import sqlite3 as _sqlite3
-    with _sqlite3.connect(db.db_path) as _conn:
-        _conn.row_factory = _sqlite3.Row
-        for _row in _conn.execute(
-            "SELECT stock_code, stock_name FROM concept_members "
-            "WHERE member_date = (SELECT MAX(member_date) FROM concept_members)"
-        ):
-            if _row["stock_code"] not in stock_names:
-                stock_names[_row["stock_code"]] = _row["stock_name"]
+    stock_names = db.get_latest_member_stock_names()
 
     if scope == "custom":
         members_map = db.get_custom_members_map()

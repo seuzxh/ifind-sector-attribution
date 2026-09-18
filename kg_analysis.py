@@ -37,7 +37,7 @@ def compute_corr_20d(db: Database, window: int = 20, min_obs: int = 8) -> Dict:
                     pct_change 再减 1 → 实际样本约 9，故默认放宽到 8。
     :return: 统计 {edges, updated, avg_abs_corr, coverage}
     """
-    from ifind_client import IFindClient
+    from ifind_hub import get_hub
 
     t0 = time.time()
     # 窗口锚定本地 daily_kline 最新交易日（本地个股数据可能滞后于自然日，
@@ -53,7 +53,7 @@ def compute_corr_20d(db: Database, window: int = 20, min_obs: int = 8) -> Dict:
 
     # —— 1. 板块指数收益（接口3，全量观察池板块分批，窗口对齐本地数据）——
     sector_codes = db.get_observe_concept_codes()
-    client = IFindClient()
+    client = get_hub().client
     sector_ret: Dict[str, pd.Series] = {}   # {sector_code: 收益序列(index=日期)}
     for i in range(0, len(sector_codes), 100):
         batch = sector_codes[i:i + 100]

@@ -70,10 +70,7 @@ class IfindMembersAdapter:
         return pairs
 
     def _latest_snapshot_date(self) -> str:
-        import sqlite3
-        with sqlite3.connect(self.db.db_path) as conn:
-            row = conn.execute("SELECT MAX(member_date) FROM concept_members").fetchone()
-            return row[0] or ""
+        return self.db.get_latest_member_date()
 
 
 class IfindStockConceptAdapter:
@@ -88,11 +85,11 @@ class IfindStockConceptAdapter:
         self.db = db
 
     def fetch_pairs(self) -> List[Pair]:
-        from ifind_client import IFindClient
+        from ifind_hub import get_hub
         date = datetime.now().strftime("%Y-%m-%d")
         stocks = self.db.get_all_member_stock_codes()
         print(f"[KG-SOURCE] 验证源拉取 {len(stocks)} 只个股的概念归属（接口1）...")
-        client = IFindClient()
+        client = get_hub().client
         mappings = client.batch_get_stock_concepts(stocks, date)
 
         pairs: List[Pair] = []
