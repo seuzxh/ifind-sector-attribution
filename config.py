@@ -60,29 +60,15 @@ DB_BUSY_TIMEOUT_MS = 5000
 # 历史含 700/861/871/881 等前缀，已清理；init/daily 只处理 884 池。
 # ALL_CONCEPT_CODES 在 SECTOR_POOL_CODES 定义后赋值（见下方）。
 
-# ========== A股市场过滤 ==========
+# ========== A股市场过滤（实现迁至 ifind-sector-hub 组件，此处 re-export 保持调用方不变） ==========
 # 同花顺概念体系同时覆盖 A股 / 美股 / 港股 / 欧股等行业指数。
 # 本系统只处理 A股（沪深北），以下工具用于在 init/daily 各环节过滤。
-
-# A股个股代码后缀（沪深北交易所）
-A_SHARE_SUFFIXES = (".SH", ".SZ", ".BJ")
-
-# 有效 A股概念前缀白名单（成分股均为A股的概念编码段）
-# 700/881/883/884/885/886 = A股行业与概念；其余 861/864/865/871/875 为海外
-A_SHARE_CONCEPT_PREFIXES = ("700", "881", "883", "884", "885", "886")
-
-
-def is_a_share_code(code: str) -> bool:
-    """判断个股代码是否为 A股（沪深北交易所）"""
-    return code is not None and code.endswith(A_SHARE_SUFFIXES)
-
-
-def is_a_share_concept(concept_code: str) -> bool:
-    """
-    判断概念代码是否为 A股相关概念（按编码前缀白名单）。
-    海外行业指数（861xxx[US]/871xxx[HK] 等）返回 False。
-    """
-    return concept_code is not None and concept_code[:3] in A_SHARE_CONCEPT_PREFIXES
+from ifind_sector_hub.codes import (  # noqa: F401
+    A_SHARE_CONCEPT_PREFIXES,
+    A_SHARE_SUFFIXES,
+    is_a_share_code,
+    is_a_share_concept,
+)
 
 
 # ========== 板块池白名单（归因/筛选的种子与空表兜底）==========

@@ -11,6 +11,7 @@ from typing import List, Dict, Optional, Any
 from contextlib import contextmanager
 
 import config
+from ifind_sector_hub import SectorStore
 
 
 class Database:
@@ -22,6 +23,8 @@ class Database:
         db_dir = os.path.dirname(self.db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
+        # 板块三表（字典/成分股/映射）归 ifind-sector-hub 组件管理（同库文件，幂等建表）
+        self.sector_store = SectorStore(self.db_path)
         self._init_db()
 
     @contextmanager
@@ -42,39 +45,8 @@ class Database:
             conn.close()
 
     def _init_db(self):
-        """初始化数据库表结构"""
+        """初始化数据库表结构（板块三表已由 ifind-sector-hub 组件建表，此处只建 monitor 私有表）"""
         ddl = """
-        -- 同花顺概念板块字典
-        CREATE TABLE IF NOT EXISTS ths_concept_dict (
-            concept_code  TEXT PRIMARY KEY,
-            concept_name  TEXT NOT NULL,
-            full_name     TEXT,
-            index_code    TEXT,
-            main_code     TEXT,
-            thscode       TEXT,
-            update_date   TEXT
-        );
-
-        -- 个股-概念多对多映射（永久缓存）
-        CREATE TABLE IF NOT EXISTS stock_concept_map (
-            stock_code    TEXT NOT NULL,
-            concept_code  TEXT NOT NULL,
-            map_date      TEXT NOT NULL,
-            weight        REAL DEFAULT 1.0,
-            PRIMARY KEY (stock_code, concept_code, map_date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_scm_concept ON stock_concept_map(concept_code);
-
-        -- 概念板块成分股（永久缓存）
-        CREATE TABLE IF NOT EXISTS concept_members (
-            concept_code  TEXT NOT NULL,
-            stock_code    TEXT NOT NULL,
-            stock_name    TEXT,
-            member_date   TEXT NOT NULL,
-            PRIMARY KEY (concept_code, stock_code, member_date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_cm_concept ON concept_members(concept_code);
-
         -- 日K线行情（个股 + 概念指数）
         CREATE TABLE IF NOT EXISTS daily_kline (
             code          TEXT NOT NULL,
@@ -240,111 +212,48 @@ class Database:
 
     # ========== 概念字典操作 ==========
     def save_concept_dict(self, concepts: List[Dict[str, str]], update_date: str = None):
-        """保存概念板块字典"""
-        update_date = update_date or datetime.now().strftime("%Y-%m-%d")
-        with self._connect() as conn:
-            for c in concepts:
-                conn.execute("""
-                    INSERT OR REPLACE INTO ths_concept_dict
-                    (concept_code, concept_name, full_name, index_code, main_code, thscode, update_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    c.get("concept_code"),
-                    c.get("short_name", ""),
-                    c.get("full_name", ""),
-                    c.get("index_code", ""),
-                    c.get("main_code", ""),
-                    c.get("thscode", ""),
-                    update_date
-                ))
+        """保存概念板块字典（委托 ifind-sector-hub 组件）"""
+        self.sector_store.save_concept_dict(concepts, update_date)
+
+    def _migrate_watched_hook(self, conn, removed_codes, old_name_map, new_name_map):
+        """字典全量替换时的 watched 勾选迁移（在组件 replace 的同一事务内执行）。"""
+        observe_prefixes = getattr(config, "OBSERVE_CONCEPT_PREFIXES", ("884", "885", "886"))
+        name_to_new = {}
+        for nc, nm in new_name_map.items():
+            if nc[:3] in observe_prefixes:
+                name_to_new.setdefault(nm, nc)
+        migrated, dropped_watched = [], []
+        for r in conn.execute("SELECT concept_code FROM watched_concepts").fetchall():
+            cc = r["concept_code"]
+            if cc in new_name_map:
+                continue
+            old_name = old_name_map.get(cc, "")
+            base_name = old_name.rstrip("Ⅲ").rstrip("Ⅱ").rstrip("Ⅰ").strip()
+            target = name_to_new.get(base_name)
+            if target:
+                migrated.append((cc, target, old_name))
+                conn.execute("UPDATE watched_concepts SET concept_code=? WHERE concept_code=?",
+                             (target, cc))
+            else:
+                dropped_watched.append((cc, old_name))
+        if dropped_watched:
+            ph = ",".join("?" * len(dropped_watched))
+            conn.execute(f"DELETE FROM watched_concepts WHERE concept_code IN ({ph})",
+                         [c for c, _ in dropped_watched])
+        return migrated, dropped_watched
 
     def refresh_concept_dict_replace(self, boards: List[Dict[str, str]]) -> Dict:
         """
-        以 smart_stock_picking 枚举结果为准全量替换板块字典（统一以新接口数据为主）。
-
-        级联清理（仅活跃表，历史快照 concept_strength/stock_attribution 不动）：
-          - concept_members：删除不在新字典内的板块成分股
-          - watched_concepts：被清理的勾选板块先尝试按名称迁移到新码（去Ⅲ后缀精确匹配），
-                             迁移失败才删除
-
+        以 smart_stock_picking 枚举结果为准全量替换板块字典（委托组件，同事务）。
+        级联清理 concept_members + watched 勾选按名称迁移（钩子在组件事务内执行）。
         :param boards: [{"concept_code", "concept_name", "category", "level", ...}]
         :return: {added, removed, migrated: [(old, new, name)], dropped_watched: [(code, name)]}
         """
-        update_date = datetime.now().strftime("%Y-%m-%d")
-        new_codes = {b["concept_code"] for b in boards}
-        new_name_map = {b["concept_code"]: b["concept_name"] for b in boards}
-
-        with self._connect() as conn:
-            old_codes = {r[0] for r in conn.execute("SELECT concept_code FROM ths_concept_dict")}
-            removed_codes = old_codes - new_codes
-            added_codes = new_codes - old_codes
-
-            # 勾选板块按名称迁移：旧名去Ⅲ后精确匹配新名，仅迁往观察池前缀（884/885/886）。
-            # 881 二级行业不入观察池（用户决策），名称只存在于 881 的遗留勾选直接清理。
-            migrated, dropped_watched = [], []
-            old_name_map = {
-                r["concept_code"]: r["concept_name"]
-                for r in conn.execute("SELECT concept_code, concept_name FROM ths_concept_dict")
-            }
-            observe_prefixes = getattr(config, "OBSERVE_CONCEPT_PREFIXES", ("884", "885", "886"))
-            name_to_new = {}
-            for nc, nm in new_name_map.items():
-                if nc[:3] in observe_prefixes:
-                    name_to_new.setdefault(nm, nc)
-            for r in conn.execute("SELECT concept_code FROM watched_concepts").fetchall():
-                cc = r["concept_code"]
-                if cc in new_codes:
-                    continue
-                old_name = old_name_map.get(cc, "")
-                base_name = old_name.rstrip("Ⅲ").rstrip("Ⅱ").rstrip("Ⅰ").strip()
-                target = name_to_new.get(base_name)
-                if target:
-                    migrated.append((cc, target, old_name))
-                    conn.execute(
-                        "UPDATE watched_concepts SET concept_code=? WHERE concept_code=?",
-                        (target, cc),
-                    )
-                else:
-                    dropped_watched.append((cc, old_name))
-
-            # 全量替换字典
-            conn.execute("DELETE FROM ths_concept_dict")
-            conn.executemany("""
-                INSERT INTO ths_concept_dict
-                (concept_code, concept_name, full_name, update_date)
-                VALUES (?, ?, ?, ?)
-            """, [
-                (b["concept_code"], b["concept_name"],
-                 b.get("category", "") or "", update_date)
-                for b in boards
-            ])
-
-            # 级联清理：所有被移除旧码的成分股（含已迁移的——新码成分股由后续流程重拉）
-            #           + 迁移失败被删的勾选
-            dead_codes = sorted(removed_codes)
-            if dead_codes:
-                ph = ",".join("?" * len(dead_codes))
-                conn.execute(f"DELETE FROM concept_members WHERE concept_code IN ({ph})", dead_codes)
-            if dropped_watched:
-                ph2 = ",".join("?" * len(dropped_watched))
-                conn.execute(
-                    f"DELETE FROM watched_concepts WHERE concept_code IN ({ph2})",
-                    [c for c, _ in dropped_watched],
-                )
-
-        return {
-            "added": len(added_codes),
-            "removed": len(removed_codes),
-            "total": len(new_codes),
-            "migrated": migrated,
-            "dropped_watched": dropped_watched,
-        }
+        return self.sector_store.replace_concept_dict(boards, migrate_hook=self._migrate_watched_hook)
 
     def get_all_concept_codes(self) -> List[str]:
         """获取所有概念代码"""
-        with self._connect() as conn:
-            cursor = conn.execute("SELECT concept_code FROM ths_concept_dict")
-            return [row["concept_code"] for row in cursor.fetchall()]
+        return self.sector_store.get_all_concept_codes()
 
     def get_a_share_concept_codes(self) -> List[str]:
         """
@@ -591,85 +500,28 @@ class Database:
 
     def get_all_member_stock_codes(self) -> List[str]:
         """
-        从成分股表反查全部 A 股股票代码（全市场股票池）。
-        成分股表覆盖主板/创业板/科创板/北交所，作为 daily 同步 K 线的默认代码来源。
-        取最新一份快照，避免历史重复。只返回 A 股（沪深北），过滤海外代码。
+        从成分股表反查全部 A 股股票代码（全市场股票池）。委托组件（快照语义不变）。
         """
-        with self._connect() as conn:
-            cursor = conn.execute("""
-                SELECT DISTINCT stock_code FROM concept_members
-                WHERE member_date = (SELECT MAX(member_date) FROM concept_members)
-                  AND (stock_code LIKE '%.SH' OR stock_code LIKE '%.SZ' OR stock_code LIKE '%.BJ')
-            """)
-            return [row["stock_code"] for row in cursor.fetchall()]
+        return self.sector_store.get_all_member_stock_codes()
 
     def get_all_mapped_stock_codes(self) -> List[str]:
         """
-        获取 stock_concept_map 中有概念映射的 A 股独立股票代码（取最新快照）。
-        用于归因计算，避免对全市场无映射股票空查。只返回 A 股（沪深北）。
+        获取 stock_concept_map 中有概念映射的 A 股独立股票代码（取最新快照）。委托组件。
         """
-        with self._connect() as conn:
-            cursor = conn.execute("""
-                SELECT DISTINCT stock_code FROM stock_concept_map
-                WHERE map_date = (SELECT MAX(map_date) FROM stock_concept_map)
-                  AND (stock_code LIKE '%.SH' OR stock_code LIKE '%.SZ' OR stock_code LIKE '%.BJ')
-            """)
-            return [row["stock_code"] for row in cursor.fetchall()]
+        return self.sector_store.get_all_mapped_stock_codes()
 
     def get_concept_name(self, concept_code: str) -> str:
         """获取概念名称"""
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT concept_name FROM ths_concept_dict WHERE concept_code = ?",
-                (concept_code,)
-            )
-            row = cursor.fetchone()
-            return row["concept_name"] if row else concept_code
+        return self.sector_store.get_concept_name(concept_code)
 
     # ========== 个股-概念映射操作 ==========
     def save_stock_concept_map(self, mappings: Dict[str, List[Dict[str, str]]], map_date: str):
-        """
-        保存个股-概念映射
-        :param mappings: {stock_code: [{concept_name, concept_code}, ...]}
-        :param map_date: 映射日期
-        """
-        with self._connect() as conn:
-            for stock_code, concepts in mappings.items():
-                # 等权分配
-                weight = 1.0 / len(concepts) if concepts else 1.0
-                for concept in concepts:
-                    conn.execute("""
-                        INSERT OR REPLACE INTO stock_concept_map
-                        (stock_code, concept_code, map_date, weight)
-                        VALUES (?, ?, ?, ?)
-                    """, (stock_code, concept["concept_code"], map_date, weight))
+        """保存个股-概念映射（委托组件）"""
+        self.sector_store.save_stock_concept_map(mappings, map_date)
 
     def get_stock_concepts(self, stock_code: str, map_date: str = None) -> List[Dict]:
-        """
-        获取某个股的概念映射
-        :param map_date: 映射快照日期；不传则取最新一份（永久缓存语义）
-        """
-        with self._connect() as conn:
-            if map_date is None:
-                cursor = conn.execute("""
-                    SELECT scm.concept_code, tcd.concept_name, scm.weight
-                    FROM stock_concept_map scm
-                    JOIN ths_concept_dict tcd ON scm.concept_code = tcd.concept_code
-                    WHERE scm.stock_code = ? AND scm.map_date = (
-                        SELECT MAX(map_date) FROM stock_concept_map WHERE stock_code = ?
-                    )
-                """, (stock_code, stock_code))
-            else:
-                cursor = conn.execute("""
-                    SELECT scm.concept_code, tcd.concept_name, scm.weight
-                    FROM stock_concept_map scm
-                    JOIN ths_concept_dict tcd ON scm.concept_code = tcd.concept_code
-                    WHERE scm.stock_code = ? AND scm.map_date = ?
-                """, (stock_code, map_date))
-            return [
-                {"concept_code": row["concept_code"], "concept_name": row["concept_name"], "weight": row["weight"]}
-                for row in cursor.fetchall()
-            ]
+        """获取某个股的概念映射（委托组件；不传日期取最新快照）"""
+        return self.sector_store.get_stock_concepts(stock_code, map_date)
 
     def get_stock_concepts_from_members(self, stock_code: str) -> List[Dict]:
         """
@@ -698,87 +550,39 @@ class Database:
                 if config.is_in_sector_pool(row["concept_code"])
             ]
 
-    def get_concept_stocks(self, concept_code: str, map_date: str = None) -> List[str]:
-        """
-        获取某概念包含的所有个股
-        :param map_date: 映射快照日期；不传则取最新一份（永久缓存语义）
-        """
-        with self._connect() as conn:
-            if map_date is None:
-                cursor = conn.execute("""
-                    SELECT stock_code FROM stock_concept_map
-                    WHERE concept_code = ? AND map_date = (
-                        SELECT MAX(map_date) FROM stock_concept_map WHERE concept_code = ?
-                    )
-                """, (concept_code, concept_code))
-            else:
-                cursor = conn.execute("""
-                    SELECT stock_code FROM stock_concept_map
-                    WHERE concept_code = ? AND map_date = ?
-                """, (concept_code, map_date))
-            return [row["stock_code"] for row in cursor.fetchall()]
-
     # ========== 概念成分股操作 ==========
     def save_concept_members(self, concept_code: str, members: List[Dict], member_date: str):
-        """保存概念板块成分股"""
-        with self._connect() as conn:
-            for m in members:
-                conn.execute("""
-                    INSERT OR REPLACE INTO concept_members
-                    (concept_code, stock_code, stock_name, member_date)
-                    VALUES (?, ?, ?, ?)
-                """, (concept_code, m.get("stock_code"), m.get("stock_name", ""), member_date))
+        """保存概念板块成分股（委托组件）"""
+        self.sector_store.save_concept_members(concept_code, members, member_date)
 
     def get_concept_members(self, concept_code: str, member_date: str = None) -> List[Dict]:
-        """
-        获取概念板块成分股列表
-        :param member_date: 成分股快照日期；不传则取最新一份（永久缓存语义）
-        """
-        with self._connect() as conn:
-            if member_date is None:
-                cursor = conn.execute("""
-                    SELECT stock_code, stock_name FROM concept_members
-                    WHERE concept_code = ? AND member_date = (
-                        SELECT MAX(member_date) FROM concept_members WHERE concept_code = ?
-                    )
-                """, (concept_code, concept_code))
-            else:
-                cursor = conn.execute("""
-                    SELECT stock_code, stock_name FROM concept_members
-                    WHERE concept_code = ? AND member_date = ?
-                """, (concept_code, member_date))
-            return [
-                {"stock_code": row["stock_code"], "stock_name": row["stock_name"]}
-                for row in cursor.fetchall()
-            ]
+        """获取概念板块成分股列表（委托组件；不传日期取最新快照）"""
+        return self.sector_store.get_concept_members(concept_code, member_date)
 
     def get_concept_members_map(self, concept_codes: List[str]) -> Dict[str, List[Dict]]:
-        """批量读取各概念最新成分股快照，避免逐概念建立 SQLite 连接。"""
-        if not concept_codes:
-            return {}
-        placeholders = ",".join("?" for _ in concept_codes)
-        sql = f"""
-            WITH latest AS (
-                SELECT concept_code, MAX(member_date) AS member_date
-                FROM concept_members
-                WHERE concept_code IN ({placeholders})
-                GROUP BY concept_code
-            )
-            SELECT cm.concept_code, cm.stock_code, cm.stock_name
-            FROM concept_members cm
-            JOIN latest l
-              ON cm.concept_code = l.concept_code
-             AND cm.member_date = l.member_date
-            ORDER BY cm.concept_code, cm.stock_code
-        """
-        result: Dict[str, List[Dict]] = {}
-        with self._connect() as conn:
-            for row in conn.execute(sql, concept_codes):
-                result.setdefault(row["concept_code"], []).append({
-                    "stock_code": row["stock_code"],
-                    "stock_name": row["stock_name"],
-                })
-        return result
+        """批量读取各概念最新成分股快照（委托组件，单连接批量优化保留）"""
+        return self.sector_store.get_concept_members_map(concept_codes)
+
+    # ========== 三表只读访问器（收编原各处裸 SQL，委托组件） ==========
+    def get_concept_names(self) -> Dict[str, str]:
+        """字典 code → name 全量映射"""
+        return self.sector_store.get_concept_names()
+
+    def get_latest_member_date(self) -> str:
+        """成分股表最新快照日期，空表返回空串"""
+        return self.sector_store.get_latest_member_date()
+
+    def get_latest_member_stock_names(self) -> Dict[str, str]:
+        """最新快照股票名映射（首个出现优先）"""
+        return self.sector_store.get_latest_member_stock_names()
+
+    def get_all_member_stock_names(self) -> Dict[str, str]:
+        """全历史股票名映射 MAX(stock_name)"""
+        return self.sector_store.get_all_member_stock_names()
+
+    def get_latest_members_snapshot(self):
+        """最新快照全体成分：(snap_date, {concept_code: [(stock_code, stock_name), ...]})"""
+        return self.sector_store.get_latest_members_snapshot()
 
     # ========== 日K线操作 ==========
     def save_daily_kline(self, records: List[Dict]):
