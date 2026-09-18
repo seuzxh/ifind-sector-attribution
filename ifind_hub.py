@@ -26,9 +26,11 @@ def get_hub() -> SectorHub:
             if _hub is None:
                 _hub = SectorHub(HubConfig(
                     db_path=config.DB_PATH,
-                    access_token=config.ACCESS_TOKEN,
-                    refresh_token=config.REFRESH_TOKEN,
-                    token_store=FileTokenStore(_TOKEN_FILE),
+                    token_store=FileTokenStore(
+                        _TOKEN_FILE,
+                        access_token=config.ACCESS_TOKEN,
+                        refresh_token=config.REFRESH_TOKEN,
+                    ),
                 ))
     return _hub
 
