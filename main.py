@@ -61,9 +61,14 @@ def cmd_server(args):
 
 
 def cmd_test(args):
-    """运行接口测试"""
-    from tests.test_api import run_all_tests
-    run_all_tests()
+    """运行接口测试（真实 API 冒烟，走 tests/test_api.py 的 unittest 套件）"""
+    import os
+    import unittest
+    os.environ.setdefault("IFIND_SMOKE", "1")
+    from tests import test_api
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_api)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    sys.exit(0 if result.wasSuccessful() else 1)
 
 
 def cmd_purge(args):
