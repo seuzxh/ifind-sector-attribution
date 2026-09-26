@@ -16,7 +16,6 @@ description: 从零部署：环境、依赖、token 配置、初始化到启动�
 | iFinD 账号 | 提供数据接口的 `ACCESS_TOKEN` / `REFRESH_TOKEN` |
 | 中焯行情 API（可选） | 盘中实时监控的分时数据源，不配则实时链路不可用，其余功能不受影响 |
 | kline-fetcher（可选） | 分时数据 SDK，本地包需单独安装 |
-| LLM API Key（可选） | 板块轮动分析用，不配则该 Tab 不可用 |
 
 ## 2. 安装依赖
 
@@ -41,12 +40,6 @@ REFRESH_TOKEN = "你的 refresh token"
 
 # 中焯行情 API 地址（盘中实时监控用，敏感不入库）
 KLINE_API_BASE_URL = "http://your-kline-api-host:port"
-
-# 轮动分析 LLM（火山方舟 Coding Plan）
-# 注意：base_url 必须用 /api/coding/v3（走 Plan 额度），用 /api/v3 会产生额外费用
-LLM_API_KEY = "你的 ark api key"
-LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
-LLM_MODEL = "doubao-seed-2.0-pro"
 
 # 飞书归因推送 webhook（定时推送用）
 PUSH_WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
@@ -126,6 +119,5 @@ python main.py server --host 0.0.0.0 --port 8000
 | 接口报 `errorcode:-1302` / HTTP 401 | `ACCESS_TOKEN` 过期；程序会自动用 `REFRESH_TOKEN` 刷新重试，无需手动处理 |
 | 实时看板无数据 | 检查 `KLINE_API_BASE_URL` 是否配置、kline-fetcher 是否安装 |
 | `daily` 传入非交易日返回空 | 换交易日日期（见 `GET /api/trade_calendar`） |
-| 轮动分析报错 | 检查 `LLM_API_KEY` 是否配置 |
 
 更多配置项说明见仓库根目录 `README.md`；部署细节（公网访问、SSH 隧道、故障排查）见[部署手册](ops/DEPLOYMENT.md)。

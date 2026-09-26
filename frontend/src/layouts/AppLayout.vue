@@ -38,7 +38,6 @@ const tabs = [
   { name: 'auction', title: '集合竞价', icon: '⚡' },
   { name: 'scan', title: '自选强势归类', icon: '🎯' },
   { name: 'market_scan', title: '全市场强势归类', icon: '🌐' },
-  { name: 'rotation', title: '板块轮动分析', icon: '🔮' },
   { name: 'sector_manage', title: '监控板块管理', icon: '🛠️' },
   { name: 'kg', title: '知识图谱', icon: '🕸️' },
 ] as const
@@ -50,9 +49,9 @@ function onTabClick(name: string) {
   router.push({ name })
 }
 
-// 所有依赖自选分组的页面进入前都检查 JSON，避免直接打开竞价/轮动时使用旧范围。
+// 所有依赖自选分组的页面进入前都检查 JSON，避免直接打开竞价页时使用旧范围。
 watch(activeTab, async (name) => {
-  if (name === 'custom' || name === 'scan' || name === 'auction' || name === 'rotation') {
+  if (name === 'custom' || name === 'scan' || name === 'auction') {
     try {
       const d = await checkCustomReload()
       if (d.reloaded) {

@@ -20,7 +20,7 @@ description: 全部 REST 端点的入参、返回结构与调用示例
 | 历史与竞价 | 2 | 历史收盘看板、集合竞价看板 |
 | 强势归类 | 2 | REST 智能选股 + 归类 |
 | 板块管理 | 5 | 勾选保存、后台刷新 |
-| 基础设施 | 5 | 日历、时段状态、轮动分析、自选重导 |
+| 基础设施 | 4 | 日历、时段状态、自选重导 |
 
 ## 盘后数据
 
@@ -223,10 +223,6 @@ curl "http://localhost:8000/api/sector/rankings?date=20260817&top_n=10"
 ### POST /api/custom/check_reload
 
 检测自选分组 JSON 是否变更（mtime 比对），变更则自动全量重导。前端切入自选 Tab 时调用。
-
-### GET /api/rotation/analyze
-
-板块轮动分析（**SSE 流式**，`text/event-stream`）。三阶段：数据采集 → 第一性分析 → 对抗审查 → 综合结论；`data:` 事件为 `{"type":"delta","text":"..."}` 增量，结束发 `{"type":"done"}`。依赖 `LLM_API_KEY`。
 
 ## 错误约定
 

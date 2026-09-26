@@ -1,3 +1,9 @@
+---
+title: "计划：ifind-sector-hub 抽离实施"
+parent: "架构与设计"
+nav_order: 20
+---
+
 # ifind-sector-hub 抽离实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

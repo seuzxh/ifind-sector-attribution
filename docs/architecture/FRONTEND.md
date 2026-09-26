@@ -92,7 +92,6 @@ frontend/
     │   ├── DashboardPage.vue   # 板块强度 / 自选分组（同组件复用）
     │   ├── AuctionPage.vue     # 集合竞价
     │   ├── ScanPage.vue        # 强势归类（自选/全市场同组件复用）
-    │   ├── RotationPage.vue    # 板块轮动（SSE）
     │   ├── SectorManagePage.vue # 监控板块管理（勾选+多周期涨幅）
     │   └── KgGraphPage.vue     # 知识图谱（cytoscape 四视图：族群投影/个股星型/板块成分/组合定位）
     ├── components/
@@ -115,7 +114,7 @@ frontend/
     │   └── session.ts      # 交易时段状态
     ├── utils/
     │   ├── format.ts       # fmt/fmtPct/changeCls 等格式化
-    │   └── markdown.ts     # Markdown 渲染（Rotation 用）
+    │   └── markdown.ts     # Markdown 渲染
     └── styles/
         └── global.css      # 全局样式 + CSS 变量
 ```
@@ -171,7 +170,6 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 | `/auction` | auction | AuctionPage | ⚡ 集合竞价 |
 | `/scan` | scan | ScanPage | 🎯 自选强势归类 |
 | `/market_scan` | market_scan | ScanPage | 🌐 全市场强势归类 |
-| `/rotation` | rotation | RotationPage | 🔮 板块轮动分析 |
 | `/sector_manage` | sector_manage | SectorManagePage | 🛠️ 监控板块管理 |
 | `/kg` | kg | KgGraphPage | 🕸️ 知识图谱 |
 
@@ -179,10 +177,6 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 - `DashboardPage` 同时服务 `sector` 和 `custom` —— 用 `route.name === 'custom'` 区分数据源。
 - `ScanPage` 同时服务 `scan` 和 `market_scan` —— 同理按路由名切换。
 - `AppLayout` 用 `<keep-alive>` 包裹 `<router-view>`，切 Tab 保留各页状态。
-
-`RotationPage` 解析 `/api/rotation/analyze` 的 SSE：行情采集的
-`[PROGRESS]collect|done|total|pct` 标记只覆盖更新进度条，不写入结果卡片；
-分批分析结果逐批形成卡片，阶段分隔符必须是独立一行的 `---`。
 
 ---
 
@@ -193,7 +187,7 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 const http = axios.create({ timeout: 60000 })
 // 响应拦截器：成功直接返回 resp.data（脱壳），失败抛 Error(detail)
 ```
-普通 JSON 接口统一经 `http` 实例，享受统一超时与错误处理。SSE/流式接口（当前为 Rotation）例外，使用原生 `fetch` + `ReadableStream`。成功返回的是业务数据（已被拦截器脱壳），失败抛 `Error(message)`。
+普通 JSON 接口统一经 `http` 实例，享受统一超时与错误处理。成功返回的是业务数据（已被拦截器脱壳），失败抛 `Error(message)`。（曾有 SSE 流式接口走原生 `fetch` + `ReadableStream`，随板块轮动分析下线移除。）
 
 ### 按域分文件
 | 文件 | 后端路由前缀 | 用途 |

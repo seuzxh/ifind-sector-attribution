@@ -8,6 +8,18 @@ nav_order: 1
 
 本文件记录 ifind-sector-attribution 项目的版本改动，与 git commit 历史对应。
 
+## [Unreleased] - 2026-09-27
+
+### 移除：板块轮动分析
+- 删除前端「板块轮动分析」Tab（RotationPage + 路由 + AppLayout 引用，8 Tab → 7 Tab）与后端 `GET /api/rotation/analyze` SSE 路由。
+- 删除 `rotation_agent.py`、`llm_agent.py`（后者唯一使用方为前者），以及 `config.py` / `config_local.py` 中的 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_MODEL_BATCH` 配置。接口层自此为纯 REST。
+
+### 重构：api / database 拆包分层
+- `database.py`（887 行）拆为 `database/` 包：`core.py`（连接/建表/Mixin 组装）+ `schema.py`（DDL）+ 7 个领域模块（kline / kg / results / sector_tables / watched / custom_group / maintenance）。对外 `from database import Database` 不变，58 个公开方法与拆包前逐一致。
+- `api_server.py`（1072 行）拆为 `api/` 包：`app.py` 组装 + `deps`/`schemas` + `routers/` 按域 5 文件（overview / realtime / history / sector_manage / kg）；history 220 行编排下沉 `history_service.py`，KG cytoscape 组装下沉 `kg_views.py`。`api_server.py` 保留为兼容入口（uvicorn `api_server:app` 不变），36 条路由等价。
+- 新增分层约束 `tests/test_layering.py`：import-linter 契约（`.importlinter.ini`，管 api/database 包边界）+ AST 检查（管平铺模块：引擎不碰接口层 / config 叶子 / 计算层纯净 / api_server 只组装），注入违规已反向验证可捕获。
+- 适配组件分层重组：`config.py` 的 A 股过滤 re-export 改从 `ifind_sector_hub` 包顶层导入（`codes` 已移至 `core/codes.py`，顶层仍 re-export）；组件 editable 已重装。
+
 ## [Unreleased] - 2026-07-24
 
 ### 修复：实时看板刷新可见性与缓存新鲜度

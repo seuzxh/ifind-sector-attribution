@@ -19,20 +19,6 @@ REFRESH_TOKEN = os.environ.get("IFIND_REFRESH_TOKEN", "")
 # 默认从环境变量读，config_local.py（已 gitignore）的 * 导入会覆盖此默认值。
 KLINE_API_BASE_URL = os.environ.get("KLINE_API_BASE_URL", "")
 
-# ========== LLM 配置（板块轮动分析智能体的"大脑"）==========
-# 火山方舟 Coding Plan（OpenAI 兼容，走 Plan 额度），供 rotation_agent 调用：
-#   - base_url 必须用 /api/coding/v3（切勿用 /api/v3，后者不消耗 Plan 额度会产生额外费用）
-#   - 文档：https://www.volcengine.com/docs/82379/1928261
-# 可用模型（改 LLM_MODEL 即可切换，全小写亦可）：
-#   doubao-seed-2.0-pro / doubao-seed-2.0-code / doubao-seed-2.0-lite / doubao-seed-code
-#   minimax-latest / glm-latest / deepseek-v4-flash / deepseek-v4-pro
-#   kimi-k2.6 / kimi-k2.7-code
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3")
-LLM_MODEL = os.environ.get("LLM_MODEL", "doubao-seed-2.0-pro")
-# 批量分析用的轻量模型（轮动分析批次分析用，留空则同 LLM_MODEL）
-LLM_MODEL_BATCH = os.environ.get("LLM_MODEL_BATCH", "")
-
 # ========== 股池归因定时推送（飞书 webhook）==========
 # scan_push 模块在交易日 9:33/9:45/10:00/14:30 推送归类结果到这里。
 # 敏感（webhook 地址可被他人用于推送），默认从环境变量读，config_local.py 覆盖。
@@ -63,7 +49,8 @@ DB_BUSY_TIMEOUT_MS = 5000
 # ========== A股市场过滤（实现迁至 ifind-sector-hub 组件，此处 re-export 保持调用方不变） ==========
 # 同花顺概念体系同时覆盖 A股 / 美股 / 港股 / 欧股等行业指数。
 # 本系统只处理 A股（沪深北），以下工具用于在 init/daily 各环节过滤。
-from ifind_sector_hub.codes import (  # noqa: F401
+# 2026-09-27：组件分层重组后 codes 移至 core/codes.py，包顶层仍 re-export，从顶层导入最稳。
+from ifind_sector_hub import (  # noqa: F401
     A_SHARE_CONCEPT_PREFIXES,
     A_SHARE_SUFFIXES,
     is_a_share_code,

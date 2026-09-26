@@ -13,7 +13,6 @@
   - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
   - **自选强势归类**：iFinD REST 智能选股（smart_stock_picking）后取自选股交集，再按自选分组统计命中
   - **全市场强势归类**：自然语言选股（iFinD REST `smart_stock_picking`，4 组预置 + 自定义条件可存/重命名）→ 知识图谱富集归类（全量板块按富集倍数/命中数排序，详见 docs/architecture/DESIGN-strong-stock-scan.md）
-  - **板块轮动分析**：并发行情采集 → 分批 LLM 流式分析 → 对抗审查 → 综合结论；采集进度覆盖更新
   - 顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
 
 ## 5 个 iFinD 接口
@@ -32,23 +31,26 @@
 ifind_sector_attribution/
 ├── config.py              # 配置（token、概念代码、计算权重、A股过滤规则、分时数据源）
 ├── config_local.py        # 本地 token + KLINE_API_BASE_URL（已 gitignore，不提交）
-├── ifind_client.py        # iFinD API 客户端封装（含指数退避重试、批量分片）
+├── ifind_hub.py           # ifind-sector-hub 组件接入点（进程级单例 + token 落盘）
 ├── intraday_fetcher.py    # 分时数据批量并发封装（kline-fetcher TrendFetcher，32线程）
-├── database.py            # SQLite 数据库封装
+├── database/              # SQLite 数据库封装（按领域拆分：core 连接/DDL + kline/kg/results/
+│                          #   sector_tables/watched/custom_group/maintenance Mixin；schema.py 建表 DDL）
 ├── sync_pipeline.py       # 数据同步与计算管线
-├── core_calculator.py     # 核心计算引擎（板块强度、多周期融合、L1归因）
+├── core_calculator.py     # 核心计算引擎（板块强度、多周期融合、L1归因；纯计算无 I/O）
 ├── stock_scorer.py        # 成分股四维综合评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速
 ├── realtime_engine.py     # 盘中实时引擎（分时序列缓存 + 时刻切片 + 板块强度）
-├── api_server.py          # FastAPI 服务层（API + 静态前端托管）
+├── api/                   # FastAPI 接口层（app 组装 / deps 单例 / schemas 模型 /
+│                          #   routers 按域路由 + history_service/kg_views 编排下沉）
+├── api_server.py          # 兼容入口（from api import app；uvicorn "api_server:app" 不变）
 ├── main.py                # 入口脚本
 ├── requirements.txt       # 依赖
+├── .importlinter.ini      # 分层依赖约束（import-linter；配合 tests/test_layering.py）
 ├── frontend/              # Vue 3 + Vite + TypeScript 前端源码（构建产物输出到 static/）
 ├── static/                # 前端构建产物（FastAPI 托管；已 gitignore）
 ├── ifind-monitor.service  # systemd 服务配置（开机自启+自动重启）
 ├── install_service.sh     # 一键安装 systemd 服务脚本
 ├── data/                  # 数据库文件（已 gitignore）
-└── tests/
-    └── test_api.py        # 接口测试脚本
+└── tests/                 # unittest 套件（接口冒烟/性能架构/推送/分层约束）
 ```
 
 ## 快速开始
@@ -77,16 +79,9 @@ REFRESH_TOKEN = "你的 refresh token"
 # 中焯行情 API 地址（盘中实时监控用，敏感不入库）
 KLINE_API_BASE_URL = "http://your-kline-api-host:port"
 
-# 板块轮动分析智能体 LLM（火山方舟 Coding Plan，敏感不入库）
-# 注意：base_url 必须用 /api/coding/v3（走 Plan 额度），
-#       切勿用 /api/v3（不消耗 Plan 额度会产生额外费用）。
-# 文档：https://www.volcengine.com/docs/82379/1928261
-LLM_API_KEY = "你的 ark api key"
-LLM_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
-LLM_MODEL = "doubao-seed-2.0-pro"   # 可选 10 个模型
+# 股池归因定时推送飞书 webhook（scan_push 用，敏感不入库）
+PUSH_WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 ```
-
-轮动分析可用模型（`doubao-seed-2.0-pro`/`code`/`lite`、`doubao-seed-code`、`minimax-latest`、`glm-latest`、`deepseek-v4-flash`/`pro`、`kimi-k2.6`、`kimi-k2.7-code`）。`LLM_API_KEY` 未配置时轮动分析智能体无法运行。
 
 ### 3. 运行接口测试
 
@@ -153,7 +148,7 @@ python main.py server --host 0.0.0.0 --port 8000
 
 #### 可视化看板（Vue SPA，盘中实时监控）
 
-访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部 7 个 Tab 切换（板块强度/自选分组/集合竞价/强势归类×2/板块轮动/监控板块管理），各页状态由 `<keep-alive>` 保留：
+访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部 8 个 Tab 切换（板块强度/自选分组/集合竞价/强势归类×2/监控板块管理/知识图谱），各页状态由 `<keep-alive>` 保留：
 
 **📊 Tab 1：板块强度监控**（默认）
 - 每个分组 = “监控板块管理”中勾选且成分股数为 **10~500（含边界）** 的同花顺概念板块。两种模式可切：
@@ -218,6 +213,7 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回持仓标注字段） |
 | `GET /api/dashboard/members` | — | 单板块/分组全部有效成员按字段排序，仅返回前 10（实时看板点击成分股表头时按需调用） |
 | `GET /api/custom/scan` | — | **自选强势归类**（REST 智能选股 → 取自选交集 → 按自选分组归类） |
+| `GET /api/theme/attribution` | — | **题材催化反向归因**（`date`/`pool` 入参；八因子评分+重叠压缩+主线提取，v1 无资讯维度） |
 | `GET /api/market/scan` | — | **全市场强势归类**（REST 智能选股 → 知识图谱富集归类：全量板块按富集倍数/命中数排序，每股带 ρ；入参 `query/order/min_hits/top_n`） |
 | `POST /api/realtime/clear_cache` | — | 清空分时序列缓存（切日/调试用） |
 | `GET /api/history/dashboard` | — | **历史看板**（`scope=sector` 按当前勾选板块；`scope=custom` 按自选分组） |
@@ -246,8 +242,6 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 | `INTRADAY_CACHE_TTL` | 15 | 分时序列缓存 TTL（秒）；过期时先返回旧序列并后台刷新 |
 | `SECTOR_POOL_ENABLED` / `SECTOR_POOL_CODES` | True / 884(259个) | `watched_concepts` 为空时的归因种子与兜底 |
 | `HOLDING_GROUP_NAME` | "CC" | 持仓分组名（自选看板金色标注用，按 block_name 精确匹配） |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | （空）/ `.../api/coding/v3` / `doubao-seed-2.0-pro` | 轮动分析主模型（火山方舟 Coding Plan），用 `config_local.py` 覆盖 |
-| `LLM_MODEL_BATCH` | （空，跟随主模型） | 轮动分析分批阶段的轻量模型 |
 
 ## 数据模型
 

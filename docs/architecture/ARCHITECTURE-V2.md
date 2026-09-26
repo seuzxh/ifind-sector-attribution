@@ -18,24 +18,27 @@ nav_order: 1
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  systemd ifind-monitor  (单进程, 0.0.0.0:8000)                 │
-│  main.py server → uvicorn → FastAPI app (api_server.py)       │
+│  main.py server → uvicorn → FastAPI app                       │
 │                                                               │
 │  前端：Vue3 SPA (static/index.html, Hash 路由)                │
-│  后端：api_server.py (24 个 API/SSE 接口)                     │
-│         │                                                      │
+│  后端：api_server.py(兼容入口) → api/ 包 (36 个 REST 接口)     │
+│         │  app 组装 / deps(db单例) / schemas / routers×5     │
+│         │  编排下沉：history_service / kg_views               │
 │    ┌────┴──────────────────────────────────────────────┐      │
 │    │  业务引擎层（各自带缓存/锁）                         │      │
-│    │  realtime_engine / auction_engine / rotation_agent │      │
+│    │  realtime_engine / auction_engine / theme_catalyst │      │
 │    ├─────────────────────────────────────────────────────┤      │
 │    │  计算层（纯函数）  core_calculator / stock_scorer   │      │
 │    ├─────────────────────────────────────────────────────┤      │
-│    │  数据层  database(SQLite,9表) / intraday_fetcher    │      │
-│    │           ifind_client (REST)                        │      │
-│    ├─────────────────────────────────────────────────────┤      │
-│    │  AI 层  llm_agent                                    │      │
+│    │  数据层  database/ 包(SQLite,按领域 Mixin 拆分)      │      │
+│    │           ifind-sector-hub 组件 / intraday_fetcher  │      │
 │    ├─────────────────────────────────────────────────────┤      │
 │    │  基础  config(leaf) / trade_calendar(三级缓存)       │      │
 │    └─────────────────────────────────────────────────────┘      │
+│                                                               │
+│  分层约束（机器可查）：tests/test_layering.py                  │
+│    = import-linter 契约(.importlinter.ini, 管 api/database)    │
+│    + AST 检查(管平铺模块：引擎不碰接口层/config叶子/计算纯净)  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -51,32 +54,32 @@ nav_order: 1
 ### 模块依赖图（clean DAG，无循环导入）
 ```
 config (leaf)
-├─ database ← config
+├─ database/ ← config, ifind_sector_hub(外部)   (core 组装 + schema DDL + 领域 Mixin：
+│      kline / kg / results / sector_tables / watched / custom_group / maintenance)
 ├─ core_calculator ← config              (纯计算，无 I/O)
 ├─ stock_scorer ← (stdlib)               (纯计算，最干净的叶子)
-├─ ifind_client ← config
+├─ ifind_hub ← config                    (组件接入点，进程级单例)
 ├─ intraday_fetcher ← config, kline_fetcher(外部)
-├─ llm_agent ← config
 ├─ trade_calendar ← config (+ lazy database/kline_fetcher)
-├─ sync_pipeline ← ifind_client, database, core_calculator
+├─ sync_pipeline ← ifind_hub, database, core_calculator
 ├─ realtime_engine ← database, intraday_fetcher, core_calculator, stock_scorer
 ├─ auction_engine ← database, intraday_fetcher, stock_scorer
-├─ rotation_agent ← llm_agent (+ lazy database/kline_fetcher)
-└─ api_server ← database, core_calculator (+ 函数级 lazy import 其余全部)
+├─ theme_catalyst ← intraday_fetcher, open_scan_engine, stock_scorer
+└─ api_server(兼容入口) → api/ ← database, core_calculator (+ 函数级 lazy import 其余全部)
 ```
 
-**关键设计**：`api_server` 用**函数级 lazy import**（每个 handler 内 `from X import Y`），避免启动时加载重模块，也规避潜在循环。这是正确的模式，**不要改成顶层导入**。
+**关键设计**：`api/routers/` 用**函数级 lazy import**（每个 handler 内 `from X import Y`），避免启动时加载重模块，也规避潜在循环（含 `api/routers/realtime.py` 懒加载 `main` 的 import_groups）。这是正确的模式，**不要改成顶层导入**。
 
 ### 分层职责（严格边界）
 | 层 | 模块 | 职责 | 禁止 |
 |----|------|------|------|
-| **服务层** | api_server.py | HTTP 路由、参数校验、响应组装 | ❌ 不内联业务计算（见审查项3） |
-| **引擎层** | realtime/auction/rotation_engine | 编排数据获取+计算+缓存 | ❌ 不直接碰 HTTP |
+| **服务层** | api/ 包（routers×5 + history_service/kg_views） | HTTP 路由、参数校验、响应组装；重编排下沉 service | ❌ 不内联业务计算（见审查项3） |
+| **引擎层** | realtime/auction/theme 等 | 编排数据获取+计算+缓存 | ❌ 不直接碰 HTTP |
 | **计算层** | core_calculator, stock_scorer | 纯函数，无副作用 | ❌ 不做 I/O（config 只读） |
 | **数据层** | database, ifind_client, intraday_fetcher | 读写外部存储/API | — |
 | **基础** | config(只读常量), trade_calendar | 全局配置、日历 | config 不导入业务模块 |
 
-### 后端接口清单（24 个）
+### 后端接口清单（36 个 REST，2026-09-27 拆包后口径）
 | 类别 | 方法 | 路径 | 用途 |
 |------|------|------|------|
 | 页面 | GET | `/` | SPA 入口；入口 no-cache，hash assets 可长缓存 |
@@ -84,9 +87,8 @@ config (leaf)
 | 看板 | GET | `/api/custom/dashboard` | 自选分组实时 |
 | 看板 | GET | `/api/auction/dashboard` | 集合竞价 |
 | 看板 | GET | `/api/history/dashboard` | 历史收盘 |
-| 看板 | GET | `/api/custom/scan` | 自选强势归类(MCP选股) |
+| 看板 | GET | `/api/custom/scan` | 自选强势归类(REST选股) |
 | 看板 | GET | `/api/market/scan` | 全市场强势归类 |
-| 看板 | GET | `/api/rotation/analyze` | 板块轮动分析(SSE) |
 | 数据 | GET | `/api/sector/rankings` | 板块排名 |
 | 数据 | GET | `/api/concept/list` / `/members` | 概念板块 |
 | 数据 | POST | `/api/attribution/stock` / `/portfolio` | 归因 |
@@ -96,6 +98,8 @@ config (leaf)
 | 操作 | POST | `/api/auction/clear_cache` | 清竞价缓存 |
 | 操作 | POST | `/api/custom/check_reload` | 自选分组重导 |
 | 管理 | GET/POST | `/api/sector_manage/*` | 监控范围、后台刷新及状态；保存后清看板缓存 |
+| 图谱 | GET | `/api/kg/*`（5 查询+3 图+locate） | 知识图谱查询与 cytoscape 供数 |
+| 题材 | GET | `/api/theme/attribution` | 题材催化反向归因 |
 | 日历 | GET | `/api/trade_calendar` | 交易日(+today) |
 | 日历 | GET | `/api/session_status` | 交易时段 |
 
@@ -122,10 +126,10 @@ frontend/src/
 ├── composables/    # DashboardPage 的轮询、会话和时间轴逻辑
 │   ├── usePolling.ts / useSession.ts / usePlayTimeline.ts
 ├── layouts/AppLayout.vue  # 顶部 tab + router-view + keep-alive
-├── views/          # 7 个页面
+├── views/          # 6 个页面
 │   ├── DashboardPage.vue  # sector+custom 共用（⚠ 约400行，仍偏大）
-│   ├── AuctionPage.vue / ScanPage.vue / RotationPage.vue / SectorManagePage.vue
-├── utils/          # format.ts / markdown.ts（轮动输出）
+│   ├── AuctionPage.vue / ScanPage.vue / SectorManagePage.vue / KgGraphPage.vue
+├── utils/          # format.ts / markdown.ts
 ├── router/index.ts # Hash 路由，7 个路由
 ├── main.ts         # ElementPlus + Router + Pinia 注册
 └── styles/global.css
@@ -139,8 +143,8 @@ frontend/src/
 | `/auction` | auction | AuctionPage | 集合竞价 |
 | `/scan` | scan | ScanPage | 自选强势归类 |
 | `/market_scan` | market_scan | ScanPage | 全市场（同组件，按 route.name 区分） |
-| `/rotation` | rotation | RotationPage | 板块轮动 |
 | `/sector_manage` | sector_manage | SectorManagePage | 监控板块管理 |
+| `/kg` | kg | KgGraphPage | 知识图谱（cytoscape 四视图） |
 
 ### 关键交互模式
 - **3s 轮询 + 竞态守卫**：`usePolling` 统一序号，仅最新响应允许渲染
@@ -148,7 +152,6 @@ frontend/src/
 - **刷新可观察**：状态栏同时展示行情分钟与最近响应秒数；分钟不变不等于 3s 轮询停止
 - **全量成员按需排序**：主看板只返 `members_top10`，点击字段后由 `/api/dashboard/members` 对全部有效成员排序再返前 10
 - **红涨绿跌**：A 股惯例，全局 `.up{#ef4444}/.down{#10b981}`
-- **SSE 流式**：rotation 用 fetch ReadableStream 解析
 - **keep-alive**：tab 切换保留状态；DashboardPage 和 ScanPage 监听共享组件的路由切换并按新范围重拉
 
 ---
@@ -186,9 +189,9 @@ frontend/src/
 
 ### 🟢 P2（优化项）
 
-**8. api_server.py 746 行偏大**
-- 24 个接口全在一个文件
-- **修复**：按领域拆 router（dashboard/auction/rotation/sector-manage）
+**8. api_server.py 1072 行偏大**（✅ 2026-09-27 已修复）
+- 曾：全部接口+编排在一个文件
+- **已修复**：拆为 `api/` 包——`app.py` 组装、`deps/schemas`、`routers/` 按域 5 文件（overview/realtime/history/sector_manage/kg），history 220 行与 KG 图组装逻辑分别下沉 `history_service.py`/`kg_views.py`；`api_server.py` 保留为兼容入口。`database.py` 同期拆为 `database/` 包（schema + 7 个领域 Mixin，方法集与拆包前逐一致）
 
 **9. config.ACCESS_TOKEN 运行时被 ifind_client 改写**
 - 全局可变 config，虽有 _refresh_lock 保护，但是隐式耦合

@@ -18,7 +18,6 @@ description: 7 个看板页面各自的数据来源、推导口径与计算公�
 | ⚡ 集合竞价 | `GET /api/auction/dashboard` | 分时 pre_market 竞价序列 | 竞价四因子 + 分组聚合 |
 | 🎯 自选强势归类 | `GET /api/custom/scan` | iFinD REST `smart_stock_picking` | 选股 ∩ 自选 → 分组统计 |
 | 🌐 全市场强势归类 | `GET /api/market/scan` | 同上 + 知识图谱（kg_node/kg_edge） | 选股 → 图谱富集归类（lift） |
-| 🔮 板块轮动分析 | `GET /api/rotation/analyze`（SSE） | kline-fetcher + DB + LLM | 四阶段智能体分析 |
 | 🛠️ 监控板块管理 | `GET /api/sector_manage/list` | iFinD 实时行情 + 接口3 日K | 指数级指标直读 + 多日涨幅 |
 
 ## 📊 板块强度监控
@@ -98,18 +97,6 @@ description: 7 个看板页面各自的数据来源、推导口径与计算公�
 - 展示阈值：板块命中 ≥2（`min_hits`）、最多 30 个板块（`top_n`）。
 
 历史版本（按勾选板块逐板块数命中）已下线，演进细节见[设计：强势归类扫描](../architecture/DESIGN-strong-stock-scan.md)。
-
-## 🔮 板块轮动分析
-
-**数据来源**：智能体自选工具，不走 MCP——
-
-| 工具 | 来源 |
-|---|---|
-| `kline__day_kline` | kline-fetcher 个股日K |
-| `kline__history_trend` | kline-fetcher 历史分时 |
-| `custom__list_groups` / `custom__group_members` | 数据库自选分组（剔除 ZT / CC） |
-
-**四阶段流程**：① 后端批量采集行情 → ② 分批 LLM 情绪周期分析（批次用轻量模型 `LLM_MODEL_BATCH`，流式输出）→ ③ 对抗审查（质疑阶段2 结论漏洞）→ ④ 综合结论（最终排名）。
 
 ## 🛠️ 监控板块管理
 

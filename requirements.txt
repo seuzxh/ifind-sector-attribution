@@ -17,3 +17,6 @@ ifind-sector-hub @ file:///root/Projects/ifind-sector-hub
 
 # 知识图谱（族群初探/图算法，kg_builder 用）
 networkx>=3.0
+
+# 分层依赖约束（开发/测试用；约束规则见 .importlinter.ini 与 tests/test_layering.py）
+import-linter>=2.0
