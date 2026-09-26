@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# commit-msg：本地拦截不合规提交（可被 --no-verify 绕过，CI 是终局）
+msg_file="$1"
+subject=$(head -n1 "$msg_file")
+type_list="feat|fix|perf|refactor|docs|test|build|ci|chore|revert|style|wip"
+
+fail() { echo "❌ $1"; echo "   规范见 .gitmessage / AGENTS.md「commit 规范」"; exit 1; }
+
+# 1. 首行格式：type(scope)?: 描述（10字以上）
+echo "$subject" | grep -qE "^($type_list)(\([a-z0-9_-]+\))?!?: .{6,}" \
+  || fail "首行必须形如 type(scope): 中文描述（type ∈ $type_list）"
+
+# 2. 首行长度
+[ "${#subject}" -le 72 ] || fail "首行 ${#subject} 字符，超过 72"
+
+# 3. 禁止 AI 署名
+grep -qiE "co-authored-by.*claude|generated with|🤖" "$msg_file" \
+  && fail "禁止 AI 署名（Co-Authored-By/Generated with）"
+
+# 4. feat/fix/refactor 必须有 body（解释 why）
+if echo "$subject" | grep -qE "^(feat|fix|refactor)"; then
+  body_lines=$(tail -n +3 "$msg_file" | grep -cv '^[[:space:]]*$')
+  [ "$body_lines" -ge 1 ] || fail "feat/fix/refactor 必须写 body 解释原因（why）"
+fi
+
+exit 0

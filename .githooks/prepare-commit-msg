@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# prepare-commit-msg：从分支名自动注入 scope（feat/xxx 分支 → scope 预填）
+COMMIT_MSG_FILE="$1"; SOURCE="$2"
+[ "$SOURCE" = "message" ] && exit 0   # -m 传入不处理
+BRANCH=$(git branch --show-current)
+SCOPE=$(echo "$BRANCH" | grep -oE '(feat|fix|refactor)/[a-z0-9_-]+' | cut -d/ -f2)
+[ -n "$SCOPE" ] && sed -i.bak "1s/^\([a-z]*\)(/\1($SCOPE,/" "$COMMIT_MSG_FILE" 2>/dev/null
+exit 0
