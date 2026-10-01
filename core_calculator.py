@@ -118,6 +118,13 @@ def calc_all_sectors_strength(
     weights = weights or config.SCORE_WEIGHTS
     if min_member_count is None:
         min_member_count = getattr(config, "MIN_MEMBER_COUNT", 0)
+    # 盘后 DB 行的停牌股 change_ratio 为 NULL（object 列），realtime 的 body 也可能带 None：
+    # 统一转数值并剔除无行情行（不算命中成分），否则下游 round/聚合对 None 直接抛 TypeError。
+    daily_df = daily_df.copy()
+    daily_df["change_ratio"] = pd.to_numeric(daily_df["change_ratio"], errors="coerce")
+    if "body" in daily_df.columns:
+        daily_df["body"] = pd.to_numeric(daily_df["body"], errors="coerce")
+    daily_df = daily_df[daily_df["change_ratio"].notna()]
     market_return = daily_df["change_ratio"].mean()
 
     # 把成员关系一次性转成长表并与行情做一次 join，再由 groupby 聚合全部板块。
@@ -151,7 +158,8 @@ def calc_all_sectors_strength(
         body_mean = grouped["body"].mean()
         df["s_body"] = df["concept_code"].map(body_mean)
     else:
-        df["s_body"] = None
+        # 无 body 列（盘后 DB 链路）：给 NaN 而非 None——None 会让下游 .round(4) 抛 TypeError
+        df["s_body"] = float("nan")
 
     skipped = len(members_map) - int((df["member_count"] >= min_member_count).sum())
     df = df[df["member_count"] >= min_member_count].copy()

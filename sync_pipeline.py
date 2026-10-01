@@ -202,6 +202,8 @@ class SyncPipeline:
         if stock_codes is None:
             stock_codes = (self.db.get_all_member_stock_codes() if pool_enabled
                            else self.db.get_all_mapped_stock_codes())
+        # 逐股反查改为一次批量预取（成员表无 stock_code 索引，逐股 5500+ 次查询 ≈ 6 分钟/天）
+        reverse_map = self.db.get_stock_concepts_reverse_map() if pool_enabled else None
 
         records = []
         for stock_code in stock_codes:
@@ -209,8 +211,9 @@ class SyncPipeline:
             # 跳过当日停牌等导致涨幅为 nan 的股票
             if pd.isna(stock_return):
                 continue
-            # 板块池启用时从 concept_members 反推归属（884 无 stock_concept_map 标签）
-            concepts = (self.db.get_stock_concepts_from_members(stock_code) if pool_enabled
+            # 板块池启用时用预取的成分股反推映射（884 无 stock_concept_map 标签）
+            concepts = ([{"concept_code": cc, "weight": 1.0}
+                         for cc in reverse_map.get(stock_code, [])] if pool_enabled
                         else self.db.get_stock_concepts(stock_code))
 
             if not concepts:

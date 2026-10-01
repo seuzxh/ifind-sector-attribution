@@ -142,6 +142,29 @@ class SectorTablesMixin:
                 if config.is_in_sector_pool(row["concept_code"])
             ]
 
+    def get_stock_concepts_reverse_map(self) -> Dict[str, List[str]]:
+        """
+        全市场「个股 → 板块代码列表」反查映射（get_stock_concepts_from_members 的批量版）。
+
+        语义与单股版一致：每股取其自身最新 member_date 快照，结果应用板块池过滤。
+        背景：concept_members 无 stock_code 索引，逐股查询全市场 5500+ 次 ≈ 6 分钟/天；
+        本方法用单 SQL（一次全表扫描 + 分组）把归因预处理降到秒级。
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("""
+                SELECT cm.stock_code, cm.concept_code
+                FROM concept_members cm
+                JOIN (
+                    SELECT stock_code, MAX(member_date) AS md
+                    FROM concept_members GROUP BY stock_code
+                ) latest ON cm.stock_code = latest.stock_code AND cm.member_date = latest.md
+            """)
+            reverse: Dict[str, List[str]] = {}
+            for row in cursor:
+                if config.is_in_sector_pool(row["concept_code"]):
+                    reverse.setdefault(row["stock_code"], []).append(row["concept_code"])
+            return reverse
+
     # ========== 概念成分股操作 ==========
     def save_concept_members(self, concept_code: str, members: List[Dict], member_date: str):
         """保存概念板块成分股（委托组件）"""

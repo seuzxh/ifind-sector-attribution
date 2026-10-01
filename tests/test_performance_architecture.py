@@ -41,6 +41,24 @@ class PerformanceArchitectureTests(unittest.TestCase):
         self.assertEqual(rows.loc["sector-b", "s1_return"], -0.5)
         self.assertEqual(rows.loc["sector-b", "s2_breadth"], 0.0)
 
+    def test_strength_calc_survives_db_rows_without_body_and_null_change(self):
+        # 复刻盘后 daily 链路输入：DB 行无 body 列，停牌股 change_ratio=None（object 列）。
+        # 回归背景：s_body 缺失时曾被赋 None，.round(4) 对 None 抛 TypeError（06-26 后 daily 未跑过而未暴露）。
+        df = pd.DataFrame([
+            {"code": "000001.SZ", "change_ratio": 1.0},
+            {"code": "000002.SZ", "change_ratio": None},
+            {"code": "600001.SH", "change_ratio": -1.0},
+        ])
+        members = {"sector-a": ["000001.SZ", "000002.SZ"], "sector-b": ["600001.SH"]}
+        result = calc_all_sectors_strength(df, members, min_member_count=1)
+        rows = result.set_index("concept_code")
+
+        # None 行被剔除：不算命中、不进均值
+        self.assertEqual(rows.loc["sector-a", "member_count"], 1)
+        self.assertEqual(rows.loc["sector-a", "s1_return"], 1.0)
+        self.assertIn("s_body", rows.columns)
+        self.assertTrue(pd.isna(rows.loc["sector-a", "s_body"]))
+
     def test_indicator_snapshot_uses_only_data_up_to_requested_time(self):
         engine = object.__new__(RealtimeEngine)
         series = {
