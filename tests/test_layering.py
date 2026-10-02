@@ -79,6 +79,21 @@ def _module_level_project_imports(path):
     return mods & PROJECT_MODULES
 
 
+def _realtime_forbidden_imports(source):
+    """Guard pure realtime files, including relative and function-local imports."""
+    forbidden = {"features", "attribution", "database", "fastapi", "vue",
+                 "realtime_engine", "theme_catalyst", "api", "api_server"}
+    imported = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported.update(alias.name.split("."))
+        elif isinstance(node, ast.ImportFrom):
+            imported.update((node.module or "").split("."))
+            imported.update(alias.name for alias in node.names)
+    return imported & forbidden
+
+
 class LayeringAstTests(unittest.TestCase):
     """平铺模块 + 包的分层规则（AST，仅模块级 import）。"""
 
@@ -117,6 +132,32 @@ class LayeringAstTests(unittest.TestCase):
                         f"{os.path.relpath(path, PROJECT_ROOT)}:{node.lineno} "
                         f"-> {sorted(imported & forbidden)}")
         self.assertEqual(violations, [], "盘前领域不得依赖实时或接口层：\n" + "\n".join(violations))
+
+    def test_realtime_import_guard_detects_relative_absolute_and_lazy_imports(self):
+        for source, forbidden in (
+                ("import opening_strength.features", "features"),
+                ("from opening_strength import attribution", "attribution"),
+                ("from .features import build_features", "features"),
+                ("from . import attribution", "attribution"),
+                ("def lazy():\n    from . import features", "features"),
+                ("def lazy():\n    import database", "database"),
+                ("from fastapi import FastAPI", "fastapi"),
+                ("import realtime_engine", "realtime_engine"),
+                ("import theme_catalyst", "theme_catalyst")):
+            with self.subTest(source=source):
+                self.assertIn(forbidden, _realtime_forbidden_imports(source))
+        self.assertEqual(_realtime_forbidden_imports(
+            "from .realtime_models import StockQuote\nfrom math import isfinite"), set())
+
+    def test_realtime_models_and_aggregation_are_pure(self):
+        violations = []
+        for filename in ("realtime_models.py", "realtime_aggregation.py"):
+            path = os.path.join(PROJECT_ROOT, "opening_strength", filename)
+            with open(path, encoding="utf-8") as source:
+                forbidden = _realtime_forbidden_imports(source.read())
+            if forbidden:
+                violations.append(f"{filename} -> {sorted(forbidden)}")
+        self.assertEqual(violations, [], "实时计算层必须保持纯净：\n" + "\n".join(violations))
 
 
 try:
