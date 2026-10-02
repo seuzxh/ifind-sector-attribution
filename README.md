@@ -13,6 +13,7 @@
   - **自选分组看板**：导入同花顺自选股分组 JSON，监控自定义分组的强弱，含持仓分组（CC）金色醒目标注
   - **自选强势归类**：iFinD REST 智能选股（smart_stock_picking）后取自选股交集，再按自选分组统计命中
   - **全市场强势归类**：自然语言选股（iFinD REST `smart_stock_picking`，4 组预置 + 自定义条件可存/重命名）→ 知识图谱富集归类（全量板块按富集倍数/命中数排序，详见 docs/architecture/DESIGN-strong-stock-scan.md）
+  - **开盘题材看板**：消费盘前冻结归因，自 09:30 起展示题材强弱、加速、扩散和贡献个股，支持历史日期与时点回放
   - 顶部 Tab 切换，状态完全隔离；时间条可拖动/播放回看任意时刻
 
 ## 5 个 iFinD 接口
@@ -36,7 +37,7 @@ ifind_sector_attribution/
 ├── database/              # SQLite 数据库封装（按领域拆分：core 连接/DDL + kline/kg/results/
 │                          #   sector_tables/watched/custom_group/maintenance Mixin；schema.py 建表 DDL）
 ├── sync_pipeline.py       # 数据同步与计算管线
-├── opening_strength/      # 盘前候选池、权威 Membership、历史特征、归因与冻结编排
+├── opening_strength/      # 盘前归因冻结 + 独立开盘行情缓存、纯聚合与只读看板服务
 ├── core_calculator.py     # 核心计算引擎（板块强度、多周期融合、L1归因；纯计算无 I/O）
 ├── stock_scorer.py        # 成分股四维综合评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速
 ├── realtime_engine.py     # 盘中实时引擎（分时序列缓存 + 时刻切片 + 板块强度）
@@ -149,14 +150,14 @@ python main.py server --host 0.0.0.0 --port 8000
 
 #### 可视化看板（Vue SPA，盘中实时监控）
 
-访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部 7 个 Tab 切换（板块强度/自选分组/集合竞价/强势归类×2/监控板块管理/知识图谱），各页状态由 `<keep-alive>` 保留：
+访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部共 8 个 Tab（板块强度/开盘题材/自选分组/集合竞价/强势归类×2/监控板块管理/知识图谱），各页状态由 `<keep-alive>` 保留：
 
 **📊 Tab 1：板块强度监控**（默认）
 - 每个分组 = “监控板块管理”中勾选且成分股数为 **10~500（含边界）** 的同花顺概念板块。两种模式可切：
   - **实时模式**（默认）：基于 **kline-fetcher 分时数据**，拉取有效板块（已勾选且成员数 10~500）的去重成分股完整分时序列。前端每 **3s** 自动轮询，状态栏用“刷新 HH:MM:SS”显示最近一次响应；后端结果缓存（TTL 10s）和分时序列缓存（TTL 15s）挡住重复计算与网络。新分时序列写入后会立即淘汰对应旧结果，下一轮轮询即可消费新行情。Top10 板块成分股按**四维加权评分**排名（涨幅 0.4 / 涨速 0.2 / 开盘至今涨幅 0.2 / 涨停 0.2），另有**涨速加速**指标（▲加速 / ▼减缓）。
   - **历史模式**：选日期读已入库的收盘数据，秒级响应，成分股按当日涨幅排序。
 
-**⭐ Tab 2：自选分组监控**
+**⭐ 自选分组监控**
 - 每个分组 = 你导入的**自选股分组**（同花顺 custom_block 导出）。复用板块看板的全部功能（实时分时 / 时间条 / 播放 / 历史回看 / 四维评分），仅分组来源不同。
 - **持仓金色标注**：持仓分组（默认 "CC"）的成分股作为持仓股，凡含持仓股的分组在排行表/卡片/成分股行**金色高亮**（持仓徽章 + 持仓标签），一眼看出哪些主题涉及持仓。持仓分组名可配置（`config.HOLDING_GROUP_NAME`）。
 - 导入分组：`python main.py import-groups`（读 `ths-custom-block-data/同花顺自选分组导出.json`，幂等覆盖，自动过滤指数/ETF/可转债等非 A 股）
@@ -170,6 +171,15 @@ python main.py server --host 0.0.0.0 --port 8000
 页面布局：顶部统计栏（股票数/涨跌/涨停）+ 时间条（播放控件）+ Top10 强势板块 + Bottom10 弱势板块 + 下方各板块成分股卡片。点击板块行可高亮对应成分股卡片。
 
 > 实时模式在交易时段拉当日数据；非交易时段/盘前会显示最近交易日的全天数据（可拖时间条体验回看）。
+
+**🌅 开盘题材**（新增第八个 Tab，导航位于板块强度之后，`#/opening-themes`）：
+
+- 左侧题材强弱榜、右侧加速/扩散榜、下方贡献个股联动；风险标签、冻结版本和数据健康度帮助判断覆盖与可信度。
+- 实时模式固定中国标准日期，自动跟随每 3 秒请求；历史模式使用所选日的冻结归因与分时。拖动/播放停止自动跟随，切出 Tab 停止轮询和播放，重新激活后刷新。
+- 只覆盖三个源股池候选及其冻结的 `884/885/886` 归因；起点为 09:30，不展示集合竞价。行情序列缓存当天 15 秒、历史日期在进程内稳定；聚合结果缓存 3 秒，按冻结 `run_id` 区分版本。
+- 对应日期必须已有 `FROZEN` 快照；无快照返回 `404 SNAPSHOT_NOT_FOUND`，页面显示维护人员可复制的 `python main.py opening-premarket --date YYYYMMDD`。页面请求只读，不会自动冻结或重跑归因。
+
+截至 2026-10-03，已记录的生产开盘四表为空，尚未执行首个真实冻结；新看板发布后预期显示无快照提示，真实排名仍需人工冻结与可用分时。本功能当前等待整分支审查、集成和发布。自动盘前调度、自定义静态题材、集合竞价排名、WebSocket 和排名持久化均不在本阶段范围。指标公式与 API 错误契约见 [API 参考](docs/guides/api.md#开盘题材)。
 
 ### 7. 清理海外数据（维护命令）
 
@@ -213,15 +223,19 @@ PYTHONPATH=. python main.py opening-premarket --date 20261008 --force-replace
 | `opening_membership_snapshot` | 本次实际使用的股票—Theme 权威关系副本 |
 | `opening_attribution_snapshot` | 归因排名、分数、权重、置信度、原因码和特征证据 |
 
-第一阶段交付 CLI 和后端冻结链路；实时聚合、REST/WebSocket 和前端页面属于后续阶段。详细契约见[盘前归因快照设计](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)。截至 2026-10-03，本机运行库已迁移四张表但尚无真实冻结记录；`data/DATABASE_MANIFEST.json` 仍是旧数据快照，应在首次真实冻结并现场复核后完整刷新。
+第一阶段交付 CLI 和后端冻结链路；开盘题材看板现已实现独立实时聚合、只读 REST 和 Vue 页面，等待审查与发布。详细契约见[盘前归因快照设计](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)和[开盘题材看板设计](docs/superpowers/specs/2026-10-03-opening-theme-dashboard-design.md)。截至 2026-10-03，已记录的本机运行库四表仍无真实冻结记录；`data/DATABASE_MANIFEST.json` 仍是旧数据快照，应在首次真实冻结并现场复核后完整刷新。
 
 ### 10. 离线测试
 
 完整后端测试使用确定性 fixture 与临时 SQLite 数据库，默认不访问实时 iFinD；只有显式启用 `IFIND_SMOKE=1` 的连通性冒烟测试需要真实 token/网络。`main.py test` 会启用该冒烟开关。
 
 ```bash
+PYTHONPATH=. python -m unittest tests.opening_strength.test_realtime_aggregation tests.opening_strength.test_quote_provider tests.opening_strength.test_dashboard_service tests.test_opening_strength_api tests.test_layering -v
 PYTHONPATH=. python -m unittest discover -s tests -t . -p 'test_*.py' -v
 python scripts/lint_docs.py
+git diff --check
+cd frontend
+npm ci && npm test -- --run && npm run type-check && npm run build
 ```
 
 完整发现必须保留 `-t .`，避免 `tests/database` 和 `tests/opening_strength` 的镜像包遮蔽生产包。本机解释器见 `AGENTS.md` 的运行环境表。
@@ -249,6 +263,7 @@ python scripts/lint_docs.py
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
 | `GET /api/realtime/sector` | — | 最新板块强度排名 |
 | `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页有效板块，分时切片） |
+| `GET /api/opening-strength/dashboard` | — | **开盘题材**（必填 `trade_date`、可选 `snapshot_time`；只读冻结快照 + 分时聚合） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回持仓标注字段） |
 | `GET /api/dashboard/members` | — | 单板块/分组全部有效成员按字段排序，仅返回前 10（实时看板点击成分股表头时按需调用） |
 | `GET /api/custom/scan` | — | **自选强势归类**（REST 智能选股 → 取自选交集 → 按自选分组归类） |
@@ -284,7 +299,7 @@ python scripts/lint_docs.py
 
 ## 数据模型
 
-SQLite 新建数据库包含 9 张现役表；本机运行库已于 2026-07-24 删除退役 `watchlist`，其他未清理的旧数据库仍可能残留该历史表：
+SQLite 包含以下 9 张既有业务表，另有 hub 的 `relation_snapshots`、知识图谱 5 表和上文盘前快照 4 表，共 19 张现役表；本机运行库已于 2026-07-24 删除退役 `watchlist`，其他旧数据库仍可能残留该历史表：
 
 | 表 | 说明 | A 股过滤 |
 |---|---|---|
@@ -305,7 +320,7 @@ SQLite 新建数据库包含 9 张现役表；本机运行库已于 2026-07-24 �
 **在线文档站（GitHub Pages）**：<https://seuzxh.github.io/ifind-sector-attribution/>
 
 - [快速开始](docs/getting-started.md) — 从零部署：依赖、token、初始化、启动、定时任务
-- [交互指南](docs/guides/interaction.md) — 7 个看板 Tab 的使用方式
+- [交互指南](docs/guides/interaction.md) — 既有看板交互；新增开盘题材见上文与前端架构
 - [API 参考](docs/guides/api.md) — 全部 REST 端点
 - [架构设计](docs/architecture/ARCHITECTURE.md) — 双概念编码体系、永久缓存语义、多周期融合算法、A股过滤策略、实时监控
 - [部署手册](docs/ops/DEPLOYMENT.md) — systemd 服务、外网访问、运维命令、故障排查

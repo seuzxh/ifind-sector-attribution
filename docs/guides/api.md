@@ -17,6 +17,7 @@ description: 全部 REST 端点的入参、返回结构与调用示例
 |---|---|---|
 | 盘后数据 | 4 | 板块强度排名、个股/组合归因、概念字典 |
 | 实时看板 | 6 | 板块/自选看板切片、成员排序、缓存管理 |
+| 开盘题材 | 1 | 冻结归因与盘中分时的只读聚合 |
 | 历史与竞价 | 2 | 历史收盘看板、集合竞价看板 |
 | 强势归类 | 2 | REST 智能选股 + 归类 |
 | 板块管理 | 5 | 勾选保存、后台刷新 |
@@ -116,6 +117,77 @@ curl "http://localhost:8000/api/sector/rankings?date=20260817&top_n=10"
 ### POST /api/auction/clear_cache
 
 清空集合竞价缓存。
+
+## 开盘题材
+
+### GET /api/opening-strength/dashboard
+
+供第八个 Tab `#/opening-themes` 使用；只读所选日期的 `FROZEN` 归因快照和三个源股池候选分时。Theme 限 `884` 行业和 `885/886` 概念，不读取实时 Membership 或盘中重跑归因，不写排名。自动盘前调度、集合竞价、自定义静态题材、WebSocket 和排名持久化均排除。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `trade_date` | str | 必填 | 八位 `YYYYMMDD`，必须为有效日历日期 |
+| `snapshot_time` | str | 最新有效分钟 | `HH:MM`，不早于 09:30；不接受 `latest` 字符串 |
+
+```bash
+curl "http://localhost:8000/api/opening-strength/dashboard?trade_date=20261008&snapshot_time=09:45"
+```
+
+省略时点取最新有效分钟；位于分钟间或晚于末点时，向下取不晚于请求的最近有效分钟。每股各自取不晚于该分钟的末点；仅 `trading` 的 09:30 起数据有效。09:30 使用自身作为变化基线；其后基线为时间轴上一有效分钟，缺失基线不虚构数值。历史与实时使用同一聚合函数；`mode` 由所选日期是否为中国标准当日决定。
+
+成功响应（200）字段：
+
+| 字段 | 内容 |
+|---|---|
+| `trade_date`, `run_id`, `mode` | 日期、当前冻结版本、`realtime` / `historical` |
+| `snapshot_time`, `latest_time`, `available_times` | 实际切片分钟、末分钟、全部可用分钟轴 |
+| `candidate_count`, `theme_count`, `data_health` | 去重冻结候选数、题材数、有效行情候选占比（0～1） |
+| `themes` | 完整题材列表，含下列指标、风险标签及 `contributors` |
+| `acceleration_theme_codes`, `breadth_theme_codes` | 按对应变化榜排序的题材代码，引用 `themes` |
+| `generated_at`, `cache_status` | 中国标准时间生成戳、`fresh` / `hit` / `stale` |
+
+设 `r_s=(last_price_s/pre_close_s-1)*100`、`w_sg` 为冻结归因权重，`V_g` 为有有效行情的归因股（昨收正数、价格有限且不晚于请求分钟），`P_g` 为其中上涨股。公式均在有效集上计算：
+
+```text
+contribution_sg = w_sg * r_s
+level_g = Σ(V_g, w_sg * r_s) / Σ(V_g, w_sg)
+momentum_1m_g = level_g(t) - level_g(previous_minute)
+up_ratio_g = |P_g| / |V_g|
+breadth_delta_1m_g = up_ratio_g(t) - up_ratio_g(previous_minute)
+support_weight_g = Σ(P_g, w_sg) / Σ(V_g, w_sg)
+positive_contribution_sg = max(contribution_sg, 0)
+top1/top3_concentration_g = 最大前1/3个正贡献之和 / 全部正贡献之和
+data_health_g = valid_quote_count / attributed_stock_count
+```
+
+`level`、涨幅、贡献和加速以百分比数值/百分点表示（`2.35` 即 2.35%）；上涨占比、支撑权重、集中度和健康度为 0～1 比例。扩散变化为占比差（−1～1），UI 中乘 100 显示百分点。API 四位小数，计算保留全精度。无有效权重时强度为 `null`；无正贡献时集中度为 `null`。`source_pool_diversity` 为上涨股覆盖的源池种类数（0～3）。
+
+主榜按有指标优先、`level` 降序、`momentum_1m` 降序、题材代码升序；加速/扩散榜分别按各自变化值降序、代码升序，仅纳入有效行情股数 ≥2、健康度 ≥0.60 且变化值非空的题材。无行情题材仍保留在末尾。风险标签为单股驱动、低支撑（多股题材但上涨股不足2）、高度集中（首股≥0.70）、数据不足（健康度<0.60）、行情滞后（当天末分钟落后超过2个已开市分钟，休市不累计）。
+
+`contributors` 按贡献降序、股票代码升序；负贡献保留，缺行情在末尾。字段包含代码/名称、冻结 `attribution_weight/confidence/reason_codes/source_pool_ids`、`quote_time/pre_close/last_price/avg_price/turnover`、`return_pct/contribution/positive_contribution/has_quote`；缺行情的行情与贡献数值为 `null`。成交额等原始字段不参与排序。
+
+行情缓存以日期和去重候选集合为键：当天 15 秒过期，历史日期进程内稳定；同键并发只抓一次，其余请求读取旧成功结果或等待。刷新失败有旧缓存时返回 `cache_status=stale`，无缓存返回 503。聚合结果缓存 3 秒，以 `run_id` 与实际时点为键；行情身份/滞后状态变化会立即重算。
+
+本接口错误结构独立于既有 HTTP 200 业务错误约定：
+
+```json
+{
+  "error": {
+    "code": "SNAPSHOT_NOT_FOUND",
+    "message": "该日期尚未生成盘前冻结快照",
+    "retryable": false
+  }
+}
+```
+
+| HTTP | 错误码 | 可重试 | 场景 |
+|---|---|---|---|
+| 422 | `INVALID_REQUEST` | false | 日期缺失/无效、时点格式无效或早于09:30 |
+| 404 | `SNAPSHOT_NOT_FOUND` | false | 日期无冻结快照，不触发行情或归因 |
+| 503 | `QUOTE_DATA_UNAVAILABLE` | true | 快照存在但无可用盘中点/所选时点无数据 |
+| 503 | `QUOTE_PROVIDER_FAILED` | true | 行情获取失败且无可用旧缓存 |
+
+无快照须维护人员在项目根目录人工运行 `PYTHONPATH=. python main.py opening-premarket --date YYYYMMDD`；替换已有冻结版本遵守 09:30 后 `--force-replace` 保护。已记录的生产四表截至 2026-10-03 为空，发布时可用预期 404/页面提示验收，不能据此声称真实排名可见；本阶段本地实现等待审查与发布。
 
 ## 历史与竞价
 
@@ -226,6 +298,6 @@ curl "http://localhost:8000/api/sector/rankings?date=20260817&top_n=10"
 
 ## 错误约定
 
-- 业务错误统一返回 `{"error": "中文原因"}`（HTTP 200），如选股接口失败、未配置监控板块。
+- 既有接口业务错误返回 `{"error": "中文原因"}`（HTTP 200），如选股接口失败、未配置监控板块。开盘题材使用上文结构化错误及 404/422/503。
 - 参数错误由 FastAPI 校验返回 422。
 - iFinD 侧 401 由客户端自动刷新 token 重试，调用方无需处理。

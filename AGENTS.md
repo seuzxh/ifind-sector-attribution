@@ -15,7 +15,7 @@
 - 本机没有为本项目安装 daily crontab，`daily_kline` 最新日期为 20260930（2026-10-03 实测）；盘后数据是否补齐需显式运行 `main.py daily` 并复核，README/DEPLOYMENT 中的 crontab 只是建议配置。
 - 板块字典（ths_concept_dict 710 个=881×90+884×230+885×293+886×97）由 `refresh-boards` 命令用 smart_stock_picking 动态枚举维护；881 二级行业仅入字典**不进观察池**（OBSERVE_CONCEPT_PREFIXES=884/885/886）。
 - 强势归类选股走 REST `smart_stock_picking`（`ACCESS_TOKEN`，`ifind_client.smart_pick_stocks`），**不走 MCP**（MCP search_stocks 有每日配额且曾反复打满，已于 2026-09-07 彻底移除 MCP 链路：mcp_proxy.py 已删、IFIND_MCP_TOKEN 已清）。
-- 盘前归因第一阶段已合入并推送 `main`：三源股池 → 权威 Membership → Top1~3 归因 → 冻结快照 → CLI 回放。第一阶段没有 REST/WebSocket 或新前端页面；下一阶段只能消费冻结快照，不能在盘中重跑历史特征或归因。
+- 盘前归因第一阶段已合入 `main`；本分支新增开盘题材只读 REST、独立实时聚合与第八个 Vue Tab，等待整分支审查、集成和发布。盘中只读冻结归因，不重跑历史特征或归因。
 - 本机运行库已完成四张 `opening_*` 表的 schema 迁移，但截至 2026-10-03 四表均为 0 行，尚未执行首个真实盘前冻结。`data/DATABASE_MANIFEST.json` 仍是 2026-07-24 旧数据快照，首次真实冻结并复核后再完整刷新，当前查询必须以 SQLite 现场结果为准。
 
 ## 🔑 运维知识：access_token 过期自动刷新（重要，别再踩）
@@ -75,19 +75,19 @@
 | `intraday_fetcher.py` | 分时数据批量并发封装（kline-fetcher TrendFetcher，32线程），盘中实时用 | 低 |
 | `database/` | **SQLite 封装（包）**：`core.py` 连接/DDL/Mixin 组装、`schema.py` 建表 DDL、领域模块 `kline/kg/results/sector_tables/watched/custom_group/maintenance`（方法与拆包前逐一致）。板块三表（字典/成分股/映射）委托 `ifind-sector-hub` 组件 SectorStore（同库文件，watched 勾选留 monitor） | 中（按领域改对应模块） |
 | `sync_pipeline.py` | 数据同步与计算管线（init/daily 编排）。板块同步半边委托组件 hub.sync；行情/计算半边不变 | 中 |
-| `opening_strength/` | 盘前领域：源池、Membership、历史特征、纯函数归因、快照冻结；SQL 在 `database/opening_strength.py`，CLI 在 `main.py` 懒装配 | 中 |
+| `opening_strength/` | 盘前归因冻结 + `quote_provider` 独立分时缓存 + `realtime_aggregation` 纯聚合 + `dashboard_service` 只读服务；SQL 在 `database/opening_strength.py`，CLI 在 `main.py` 懒装配 | 中 |
 | `core_calculator.py` | 板块强度 + 多周期融合 + L1 归因算法 | 中（改算法看这） |
 | `stock_scorer.py` | 盘中成分股四维评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速 | 低 |
 | `realtime_engine.py` | 盘中实时引擎（分时序列缓存 + 时刻切片 + 内存计算，**不入库**） | 低 |
 | `trade_calendar.py` | 交易日历模块（`TradeCalendar` 单例，三级缓存：内存→`data/trade_calendar.txt`→网络→DB 兜底；复用 `kline_fetcher.fetch_trade_calendar`） | 低 |
 | `probe_auction.py` | 集合竞价数据探针脚本（生产环境验证 `pre_market` 形态用，非业务链路） | 低 |
-| `api/` | **FastAPI 接口层（包）**：`app.py` 组装+SPA 入口、`deps.py` db 单例、`schemas.py` 请求模型、`routers/` 按域路由（overview/realtime/history/sector_manage/kg）、`history_service.py`+`kg_views.py` 编排下沉 | 中（加接口看 routers/） |
+| `api/` | **FastAPI 接口层（包）**：`app.py` 组装+SPA 入口、`deps.py` db 单例、`schemas.py` 请求模型、`routers/` 按域路由（含 opening_strength）、`history_service.py`+`kg_views.py` 编排下沉 | 中（加接口看 routers/） |
 | `api_server.py` | 兼容入口（`from api import app`；uvicorn `"api_server:app"` 不变） | 低 |
 | `sector_manage.py` | 监控板块管理：多周期涨幅计算（1d/3d/5d）+ 候选板块列表组装 | 中（改管理页看这） |
 | `kg_sources.py` | 知识图谱数据源适配层（SourceAdapter 协议 + iFinD 接口2主源/接口1验证源两个 Adapter，未来加申万/问财只写新 Adapter） | 低 |
 | `kg_builder.py` | 知识图谱构建：`kg_bootstrap`（幂等）+ 统计报告 + 周维护 `kg_update`（diff 状态机，旧态从边 confidence 恢复） | 中（改图谱构建/周维护看这） |
 | `kg_analysis.py` | 知识图谱分析（P3）：`compute_corr_20d`（ρ 边权，先 join 后 tail 对齐）+ `detect_communities`（Louvain）+ `hub_sectors`/`linked_stocks`/`locate_sectors`（组合定位：一批股→板块富集/命中双指标）/`dedup_dashboard_sectors`（看板三层去重，分类快照有缓存） | 中（改图谱分析看这） |
-| `frontend/` | **Vue 3 + Vite + TypeScript SPA**（源码）。`npm run build` → `static/`，FastAPI 托管。7 个 Tab（Hash 路由）：板块强度/自选分组/集合竞价/强势归类×2/监控板块管理/知识图谱（cytoscape 四视图：族群投影/个股星型/板块成分/组合定位）。结构详见 `docs/architecture/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
+| `frontend/` | **Vue 3 + Vite + TypeScript SPA**。构建 → `static/`，FastAPI 托管。8 个 Hash Tab：板块强度/开盘题材/自选分组/竞价/强势归类×2/管理/知识图谱。结构详见 `docs/architecture/FRONTEND.md` | 中（改前端看这 + FRONTEND.md） |
 | `static/` | 前端构建产物（FastAPI `mount('/static')` 托管；已 gitignore，勿手改） | — |
 | `install_service.sh` / `ifind-monitor.service` | systemd 一键安装脚本 + 服务配置（绑 0.0.0.0:8000，Restart=always） | 低 |
 | `main.py` | 命令入口（argparse 子命令） | 低 |
@@ -109,19 +109,20 @@ schema 权威来源：monitor 私有表看 `database/schema.py`（建表 DDL）�
 
 **分层约束（机器可查）**：`tests/test_layering.py` = import-linter 契约（`.importlinter.ini`，管 api/database 包边界）+ AST 检查（管平铺模块和 `opening_strength` 包：引擎不碰接口层 / config 叶子 / 计算层纯净 / api_server 只组装）。盘前包的任何导入（含函数内懒导入）均禁止依赖 `realtime_engine`、`theme_catalyst`、`api` 或 `api_server`。改完分层相关代码跑 `python -m unittest tests.test_layering`。
 
-## 盘前归因快照（第一阶段）
+## 盘前冻结与开盘题材
 
 - 命令：`PYTHONPATH=. python main.py opening-premarket --date YYYYMMDD [--force-replace]`。`main.py` 只解析、装配和输出；业务规则由 `OpeningPremarketService.run_and_freeze()` 执行。
-- 三个固定源池：高贝塔值 `883926.TI`、近期强势 `883409.TI`、同花顺热股 `883910.TI`；均用 hub 的 `get_concept_members()`（`data_pool p03473`，股票代码 `f002`、名称 `f003`）。合并保留所有来源和池内顺序，股票仍复用 A 股校验。
+- 固定源池：高贝塔值 `883926.TI`、近期强势 `883409.TI`、同花顺热股 `883910.TI`；hub `get_concept_members()`，保留来源和池内顺序，复用 A 股校验。
 - Theme 只认行业 `884xxx` 和概念 `885xxx/886xxx`，排除 `700xxx/881xxx`、自定义静态板块及其他体系。读取 `get_hub().store` 最新权威成员并批量反转，不读取 `stock_concept_map`，运行副本不写回 hub。
-- 四张新增私有表：`opening_premarket_run`（版本/状态/覆盖率/失败/覆盖原因）、`opening_candidate_snapshot`（候选来源）、`opening_membership_snapshot`（权威关系副本）、`opening_attribution_snapshot`（评分/权重/置信度/原因/证据）。Schema 与迁移由 `database/schema.py` / `database/core.py` 管理，查询走 `Database`。
+- 四张私有表：`opening_premarket_run`、`opening_candidate_snapshot`、`opening_membership_snapshot`、`opening_attribution_snapshot`；schema/迁移在 `database/schema.py` / `database/core.py`，查询走 `Database`。表契约和证据字段见 README §9。
 - 覆盖率门槛 `0.90`，每股最多一个行业和两个概念、权重和为 1；历史仅用目标日前完成日线，缺失允许降级并记录 `history_coverage_ratio`。成功输出运行标识、状态及覆盖指标；领域错误退出 1，不输出上游响应或敏感详情。
 - 新运行通过校验后原子冻结，同日旧版本成为 `SUPERSEDED`，失败不破坏旧冻结版本。当日 09:30（Asia/Shanghai）后替换已有冻结版本须 `--force-replace`；历史回放不受此限制。
-- 第一阶段仅后端与 CLI，不接实时聚合、REST/WebSocket 或前端；后续实时只能读冻结结果，不得调用历史特征或归因评分代码。
-- 离线测试使用确定性 fixture 与临时 SQLite；真实 iFinD smoke 默认跳过，显式 `IFIND_SMOKE=1` 或 `main.py test` 才启用。完整命令：`PYTHONPATH=. python -m unittest discover -s tests -t . -p 'test_*.py' -v`。必须保留 `-t .` 防止测试镜像包遮蔽生产包，解释器使用上方 `vibe-trading` 路径。
-- 本机真实运行库已迁移四张表并现场确认均为 0 行；首次真实冻结尚未执行。`data/DATABASE_MANIFEST.json` 仍是旧数据快照，不能用其中的表计数判断当前 schema；应在首次真实冻结并复核后完整刷新。
+- 开盘题材：`#/opening-themes` → `GET /api/opening-strength/dashboard?trade_date=YYYYMMDD[&snapshot_time=HH:MM]`，只读该日 `FROZEN` 快照，不自动归因或写排名。无快照为结构化 `404 SNAPSHOT_NOT_FOUND`；页面给人工命令。
+- 独立行情提供器只用 09:30 起 `trading`，当天序列缓存 15 秒、历史序列进程内稳定；结果缓存 3 秒且包含 `run_id`。不耦合旧实时引擎；指标/错误合同见 `docs/guides/api.md`。
+- 自动盘前调度、集合竞价、自定义静态题材、WebSocket、排名持久化均排除。已记录的生产四表截至 2026-10-03 为空，真实排名需人工冻结与可用分时；本次仅本地验证，发布待审查。
+- 离线测试使用 fixture/临时 SQLite，真实 iFinD smoke 默认跳过。完整命令和开盘专项命令见 README §10，必须保留发现参数 `-t .`，使用上方 `vibe-trading` 解释器。`DATABASE_MANIFEST.json` 为旧快照，首次真实冻结后再刷新。
 
-绑定设计：[开盘板块强弱盘前归因快照](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)。
+绑定设计：[盘前快照](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)、[开盘题材看板](docs/superpowers/specs/2026-10-03-opening-theme-dashboard-design.md)。
 
 ## 不可违反的约束
 
@@ -150,7 +151,7 @@ schema 权威来源：monitor 私有表看 `database/schema.py`（建表 DDL）�
 - **成分股列排序必须覆盖全部有效成员**：看板主响应只保留 `members_top10`；实时页面点击涨幅/涨速/加速/body/综合分时调用 `GET /api/dashboard/members`，后端在全体有效成员上排序后仅返回前 10。不要退回浏览器只重排原 10 支，也不要把所有成员塞进 3s 主响应。
 - **历史日期回看 ≠ 历史看板**：实时接口传 `trade_date=YYYYMMDD` 走分时链路（拉该日全天分时 + 内存切片）；`/api/history/dashboard` 的 `scope=sector` 读取并按当前勾选集过滤 `concept_strength`，`scope=custom` 用 `daily_kline` 按自选分组现场聚合。两条路径别混。
 - **自选股分组看板**：`GET /api/custom/dashboard` 用 `custom_group` 表替代概念板块算分组强弱，复用 realtime_engine 的缓存/切片（仅 `members_map` 来源不同）。需先用 `import-groups` 导入分组。
-- **Vue SPA 多 Tab**：根路由 `/` 返回 Vue SPA（`static/index.html`，Hash 路由），7 个 Tab（板块强度/自选分组/集合竞价/强势归类×2/监控板块管理/知识图谱）在前端切换，`<keep-alive>` 保留各页状态。`DashboardPage` 按 `route.name` 复用（sector/custom）；`ScanPage` 同理（scan/market_scan）。
+- **Vue SPA 多 Tab**：根路由 `/` 返回 `static/index.html`，8 个 Hash Tab、`<keep-alive>` 保留状态。`DashboardPage` 复用 sector/custom；`ScanPage` 复用 scan/market_scan。`OpeningThemesPage` 停用时停止轮询/播放并失效在途响应，激活时刷新。
 - **时间条播放**：`DashboardPage` 已接入 `usePlayTimeline`，按速度 1.5x/2x/4x/8x 逐分钟推进。切模式/切日期/拖滑块/点"回到最新"自动停止；播放时 `autoFollow=false`。`usePolling` 的共享序号守卫防异步乱序覆盖。
 
 ## 三套数据源（重要）
@@ -186,6 +187,7 @@ schema 权威来源：monitor 私有表看 `database/schema.py`（建表 DDL）�
 | `POST /api/attribution/stock` | — | 个股多概念归因 |
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
 | `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页有效板块，分时切片；强弱榜带 KG 三层去重：枢纽过滤+马甲折叠+族群限额2席，板块项含 similar/community_id，响应含 kg_dedup） |
+| `GET /api/opening-strength/dashboard` | — | **开盘题材**：只读冻结归因 + 分时切片，结构化 404/422/503 错误 |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回 `holding_stocks`/`holding_in_group`） |
 | `GET /api/custom/scan` | — | **自选强势归类**（REST `smart_stock_picking` 自然语言选股 → 取自选交集 → 按自选分组归类） |
 | `GET /api/market/scan` | — | **全市场强势归类**（REST `smart_stock_picking` 选股 → **知识图谱富集归类**：全量 650 板块按 lift/命中数排序，每股带 ρ，勾选板块带 is_watched；入参 `query/order/min_hits/top_n`，不碰分时） |
@@ -245,7 +247,7 @@ schema 权威来源：monitor 私有表看 `database/schema.py`（建表 DDL）�
 
 - 以当前模块化单体为准：`main.py` 只装配；接口在 `api/routers/`；领域业务留在对应模块或包；SQL 只进 `database/`；前端是 `frontend/src/` 下的 Vue 3，不使用通用 `src/services` 或 React 骨架套改本项目。
 - 依赖方向保持表现层 → 领域/业务层 → 数据与外部适配层；领域层不得反向导入 `api`。`opening_strength` 的额外边界由 `tests/test_layering.py` 机械检查。
-- 新行为必须有测试，修 bug 必须先有能复现问题的回归测试。全量发现使用 `PYTHONPATH=. python -m unittest discover -s tests -t . -p 'test_*.py' -v`；前端改动还要运行 `cd frontend && npm run build`。
+- 新行为必须有测试，修 bug 必须先有回归测试。全量发现：`PYTHONPATH=. python -m unittest discover -s tests -t . -p 'test_*.py' -v`；文档：`python scripts/lint_docs.py` 和 `git diff --check`；前端：`cd frontend && npm ci && npm test -- --run && npm run type-check && npm run build`。
 - 数据、token、日志、`static/` 构建产物和 `config_local.py` 不入 git；不要在输出、测试或提交中暴露密钥和原始上游响应。
 - 提交使用 Conventional Commits：英文小写 type、可选英文 scope、中文具体描述；单次任务不超过 4 个逻辑提交，不添加 AI 署名。提交前核对暂存差异和测试证据。
 - 不保留 `*_v2.py`、`*_new.py`、调试脚本或注释掉的旧实现。一次性验证放 gitignore 的临时目录，任务结束前清理；破坏性数据操作、停服、推送或发布按用户授权执行。

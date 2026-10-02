@@ -62,6 +62,7 @@ nav_order: 3
 | HTTP | Axios | ^1.7.9 | 统一实例 + 拦截器 |
 | 图谱 | cytoscape | ^3.34.1 | 仅知识图谱页（`/kg`）的图渲染 |
 | 类型检查 | vue-tsc | ^2.1.10 | `npm run build` 前置 |
+| 测试 | Vitest / Vue Test Utils / jsdom | 3.2.4 / 2.4.6 / 26.1.0 | 仅开发依赖，API mock 与 Vue 组件/页面测试 |
 
 **注意**：不使用 Vuex；不使用图表库（K 线/排名均用原生 HTML table + CSS，无 ECharts/Plotly 依赖——这与旧版不同；唯一例外是知识图谱页引入 cytoscape 做网络图渲染）。
 
@@ -69,6 +70,7 @@ nav_order: 3
 - `npm run dev` — 开发服务器（5173）
 - `npm run build` — `vue-tsc --noEmit && vite build`，产物输出到 `../static/`
 - `npm run type-check` — 仅类型检查
+- `npm test -- --run` — 单次运行 Vitest（`vitest.config.ts`、`src/test/setup.ts`）
 
 ---
 
@@ -78,6 +80,7 @@ nav_order: 3
 frontend/
 ├── package.json
 ├── vite.config.ts          # 构建/代理/base 路径配置
+├── vitest.config.ts        # jsdom 测试、@ 别名与公共 setup
 ├── tsconfig.json           # strict TS 配置，@/* → ./src/*
 ├── env.d.ts                # Vue SFC 类型声明
 ├── index.html              # Vite 入口 HTML
@@ -85,16 +88,18 @@ frontend/
     ├── main.ts             # 应用入口：挂载 Pinia/Router/ElementPlus
     ├── App.vue             # 根组件（仅 <router-view />）
     ├── router/
-    │   └── index.ts        # 路由表（7 个 Tab）
+    │   └── index.ts        # 路由表（8 个 Tab）
     ├── layouts/
     │   └── AppLayout.vue   # 顶部 Tab 导航 + <router-view>（keep-alive）
     ├── views/              # 页面级组件（每个 Tab 一个）
     │   ├── DashboardPage.vue   # 板块强度 / 自选分组（同组件复用）
+    │   ├── OpeningThemesPage.vue # 开盘题材（独立只读看板）
     │   ├── AuctionPage.vue     # 集合竞价
     │   ├── ScanPage.vue        # 强势归类（自选/全市场同组件复用）
     │   ├── SectorManagePage.vue # 监控板块管理（勾选+多周期涨幅）
     │   └── KgGraphPage.vue     # 知识图谱（cytoscape 四视图：族群投影/个股星型/板块成分/组合定位）
     ├── components/
+    │   ├── opening-themes/ # 题材主榜、加速/扩散榜、贡献明细（含组件测试）
     │   └── dashboard/      # 看板子组件
     │       ├── TimeBar.vue         # 时间轴播放控件
     │       ├── RankTable.vue       # 板块排行表
@@ -107,6 +112,7 @@ frontend/
     │   ├── client.ts       # axios 实例 + 拦截器（★所有请求出口）
     │   ├── types.ts        # 公共类型（DashboardPayload 等）
     │   ├── dashboard.ts    # 看板数据接口
+    │   ├── openingThemes.ts # 开盘题材独立类型与接口封装
     │   ├── auction.ts      # 集合竞价接口
     │   ├── scan.ts         # 强势归类接口
     │   ├── custom.ts       # 自选分组 reload
@@ -115,6 +121,7 @@ frontend/
     ├── utils/
     │   ├── format.ts       # fmt/fmtPct/changeCls 等格式化
     │   └── markdown.ts     # Markdown 渲染
+    ├── test/               # setup.ts + openingThemesFixtures.ts（仅测试数据）
     └── styles/
         └── global.css      # 全局样式 + CSS 变量
 ```
@@ -142,7 +149,7 @@ frontend/src  ──(vite build)──►  static/   ←─ FastAPI mount("/stat
 ### 开发流程
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev        # 前端 5173，/api 代理到后端 8000
 # 另一个终端：
 python main.py server --port 8000
@@ -156,6 +163,8 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 
 > `static/` 是构建产物，**不应手改**，也无需纳入版本控制的核心内容（重新 build 即可重生）。
 
+完整本地验证从锁文件安装，执行 `npm ci && npm test -- --run && npm run type-check && npm run build`。开盘题材测试位于 API、组件和页面的 `__tests__/`；覆盖正常/缺数/错误、模式切换、竞态、时间轴与 keep-alive 生命周期。生产发布仍按部署手册执行，需在整分支审查和集成后进行。
+
 ---
 
 ## 5. 路由与页面
@@ -166,6 +175,7 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 |---|---|---|---|
 | `/` | — | redirect → `/sector` | — |
 | `/sector` | sector | DashboardPage | 📊 板块强度监控 |
+| `/opening-themes` | opening-themes | OpeningThemesPage | 🌅 开盘题材 |
 | `/custom` | custom | DashboardPage | ⭐ 自选分组监控 |
 | `/auction` | auction | AuctionPage | ⚡ 集合竞价 |
 | `/scan` | scan | ScanPage | 🎯 自选强势归类 |
@@ -193,6 +203,7 @@ const http = axios.create({ timeout: 60000 })
 | 文件 | 后端路由前缀 | 用途 |
 |---|---|---|
 | `dashboard.ts` | `/api/realtime`, `/api/custom`, `/api/auction`, `/api/history` | 看板数据 |
+| `openingThemes.ts` | `/api/opening-strength/dashboard` | 冻结归因 + 分时的只读开盘题材看板 |
 | `auction.ts` | `/api/auction/*` | 集合竞价 |
 | `scan.ts` | `/api/custom/scan`, `/api/market/scan` | 强势归类 |
 | `custom.ts` | `/api/custom/check_reload` | 自选分组热更新 |
@@ -201,9 +212,10 @@ const http = axios.create({ timeout: 60000 })
 | `session.ts` | `/api/session_status` | 交易时段 |
 
 ### 类型契约 `src/api/types.ts`
-- 后端返回 JSON 统一为 `{ ...data }`（成功）或 `{ "error": "..." }` / `{ "detail": "..." }`（失败）。
+- 后端成功返回业务 JSON；既有接口失败常用 `{ "error": "..." }` / `{ "detail": "..." }`，开盘题材错误契约如下。
 - `DashboardPayload` 是看板返回的通用骨架，`SectorEntry` / `MemberStock` / `MarketStats` 为其子结构。
 - **新增接口时**：先在 `types.ts` 定义返回类型，再在对应域文件写封装函数，标注返回类型。
+- 开盘题材的独立类型在 `openingThemes.ts`：`OpeningDashboardPayload` / `OpeningTheme` / `OpeningContribution`，可空指标显式标 `number | null`。其 404/422/503 返回 `{error: {code, message, retryable}}`；共享客户端保留异常 `response.data`，页面按错误码展示状态。
 
 ### 接口封装范式（必须遵守）
 ```ts
@@ -257,6 +269,16 @@ async function loadDashboard(mySeq: number) {
 ### 状态管理
 - Pinia 已安装并注册，但当前没有 `defineStore`；页面状态均为局部状态。
 - 但目前多数状态是**页面级局部状态**（`ref` / `reactive` 在 `<script setup>` 内），不强行提升到 store。仅在确有跨页共享需求时才建 store。
+
+### 开盘题材独立页面
+
+`OpeningThemesPage` 使用局部状态，布局为左侧题材强弱榜、右侧加速/扩散榜、下方贡献个股。点击任一榜单联动明细，刷新保留仍存在的选中题材，否则选择主榜第一项；列头可按强度、加速、支撑数、扩散或集中度排序。
+
+实时日期固定为 `Asia/Shanghai` 当日，自动跟随用 `usePolling(..., 3000)`。历史日期、手动时点与播放均按需请求；拖动暂停跟随，`usePlayTimeline` 复用时间轴控件。日期/模式切换及页面停用使旧请求序号失效；`onDeactivated` 停止轮询和播放，重新激活刷新。跨日恢复实时模式会更新中国标准日期。
+
+页面区分加载、无快照、行情暂不可用、部分降级、请求失败和正常状态。`SNAPSHOT_NOT_FOUND` 显示可复制的人工 `opening-premarket --date YYYYMMDD` 命令；部分缺行情或 `cache_status=stale` 会提示降级，缺失指标显示空值。此页不会自动执行冻结，且不会自动退回其他交易日。
+
+后端独立缓存与旧看板分离：当天完整分时 15 秒 TTL、历史分时进程内稳定，按日期和候选集合区分；聚合结果 3 秒 TTL，按冻结 `run_id` 和实际分钟区分，行情刷新或版本替换不沿用旧结果。只使用 09:30 起盘中点。指标口径见 [API 参考](../guides/api.md#开盘题材)；自动盘前调度、集合竞价、自定义静态题材、WebSocket 和排名持久化均排除。
 
 ---
 
@@ -352,9 +374,9 @@ async function loadDashboard(mySeq: number) {
 ---
 
 ## 附：上手清单
-1. `cd frontend && npm install`
+1. `cd frontend && npm ci`
 2. 后端起 `python main.py server`（8000）
 3. 前端 `npm run dev`（5173），浏览器开 `http://localhost:5173`
-4. 改代码热更新；改完 `npm run build` 让产物进 `static/` 供生产用
+4. 改代码热更新；改完运行测试、类型检查和 `npm run build`，让产物进 `static/`
 5. 加接口：后端 `api_server.py` 加路由 → 前端 `api/types.ts` 加类型 → `api/<域>.ts` 加封装 → view 里调用
 6. 加页面：`views/XxxPage.vue` + `router/index.ts` 加路由 + `AppLayout.vue` 加 Tab
