@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
 
@@ -9,6 +9,10 @@ export default defineConfig(({ mode }) => ({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+  },
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
   },
   // base：开发用 '/'（vite dev server 根），构建用 '/static/'（FastAPI 把 Vue 挂在 /static 下）
   // 这样 build 后 index.html 里的 asset 引用是 /static/assets/...，能被 FastAPI 正确 serve

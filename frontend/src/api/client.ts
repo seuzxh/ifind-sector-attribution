@@ -11,7 +11,8 @@ http.interceptors.response.use(
   (resp) => resp.data,
   (error) => {
     const msg = error?.response?.data?.detail || error?.message || '请求失败'
-    return Promise.reject(new Error(msg))
+    // 保留结构化接口错误供页面读取，既有页面仍使用原来的 Error.message。
+    return Promise.reject(Object.assign(new Error(msg), { response: error?.response }))
   },
 )
 
