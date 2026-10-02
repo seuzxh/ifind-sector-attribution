@@ -34,6 +34,7 @@ const router = useRouter()
 // Tab 列表（与路由 name 一一对应）
 const tabs = [
   { name: 'sector', title: '板块强度监控', icon: '📊' },
+  { name: 'opening-themes', title: '开盘题材', icon: '🌅' },
   { name: 'custom', title: '自选分组监控', icon: '⭐' },
   { name: 'auction', title: '集合竞价', icon: '⚡' },
   { name: 'scan', title: '自选强势归类', icon: '🎯' },

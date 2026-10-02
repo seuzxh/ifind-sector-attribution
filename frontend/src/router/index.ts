@@ -8,6 +8,7 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', redirect: '/sector' },
       { path: 'sector', name: 'sector', component: () => import('@/views/DashboardPage.vue'), meta: { title: '板块强度监控', icon: '📊' } },
+      { path: 'opening-themes', name: 'opening-themes', component: () => import('@/views/OpeningThemesPage.vue'), meta: { title: '开盘题材', icon: '🌅' } },
       { path: 'custom', name: 'custom', component: () => import('@/views/DashboardPage.vue'), meta: { title: '自选分组监控', icon: '⭐' } },
       { path: 'auction', name: 'auction', component: () => import('@/views/AuctionPage.vue'), meta: { title: '集合竞价', icon: '⚡' } },
       { path: 'scan', name: 'scan', component: () => import('@/views/ScanPage.vue'), meta: { title: '自选强势归类', icon: '🎯' } },
