@@ -13,6 +13,7 @@ from .custom_group import CustomGroupMixin
 from .kg import KgraphMixin
 from .kline import KlineMixin
 from .maintenance import MaintenanceMixin
+from .opening_strength import OpeningStrengthMixin
 from .results import ResultsMixin
 from .schema import DDL
 from .sector_tables import SectorTablesMixin
@@ -27,6 +28,7 @@ class Database(
     ResultsMixin,
     CustomGroupMixin,
     MaintenanceMixin,
+    OpeningStrengthMixin,
 ):
     """SQLite 数据库操作类（领域读写方法在各 Mixin 中，按表归属分模块）"""
 

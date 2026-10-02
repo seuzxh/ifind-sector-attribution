@@ -141,4 +141,58 @@ CREATE TABLE IF NOT EXISTS kg_community (
     PRIMARY KEY (calc_date, node_id)
 );
 CREATE INDEX IF NOT EXISTS idx_kg_comm_date ON kg_community(calc_date, community_id);
+
+-- 盘前开盘强度：每次运行的不可变输入与归因快照
+CREATE TABLE IF NOT EXISTS opening_premarket_run (
+    run_id TEXT PRIMARY KEY NOT NULL,
+    trade_date TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('RUNNING','VALIDATED','FROZEN','SUPERSEDED','FAILED')),
+    model_version TEXT NOT NULL,
+    config_version TEXT NOT NULL,
+    hub_member_date TEXT,
+    candidate_count INTEGER,
+    mapped_count INTEGER,
+    coverage_ratio REAL,
+    history_coverage_ratio REAL,
+    started_at TEXT NOT NULL,
+    validated_at TEXT,
+    frozen_at TEXT,
+    override_reason TEXT,
+    failure_code TEXT,
+    failure_detail TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_opening_frozen_date
+    ON opening_premarket_run(trade_date) WHERE status='FROZEN';
+CREATE TABLE IF NOT EXISTS opening_candidate_snapshot (
+    run_id TEXT NOT NULL,
+    stock_code TEXT NOT NULL,
+    stock_name TEXT NOT NULL,
+    source_pool_id TEXT NOT NULL,
+    source_rank INTEGER NOT NULL,
+    source_score REAL,
+    PRIMARY KEY (run_id, stock_code, source_pool_id)
+);
+CREATE TABLE IF NOT EXISTS opening_membership_snapshot (
+    run_id TEXT NOT NULL,
+    stock_code TEXT NOT NULL,
+    theme_code TEXT NOT NULL,
+    theme_name TEXT NOT NULL,
+    theme_type TEXT NOT NULL CHECK(theme_type IN ('INDUSTRY','CONCEPT')),
+    source TEXT NOT NULL,
+    PRIMARY KEY (run_id, stock_code, theme_code)
+);
+CREATE TABLE IF NOT EXISTS opening_attribution_snapshot (
+    run_id TEXT NOT NULL,
+    stock_code TEXT NOT NULL,
+    theme_code TEXT NOT NULL,
+    theme_name TEXT NOT NULL,
+    theme_type TEXT NOT NULL CHECK(theme_type IN ('INDUSTRY','CONCEPT')),
+    rank INTEGER NOT NULL,
+    raw_score REAL NOT NULL,
+    weight REAL NOT NULL,
+    confidence REAL NOT NULL,
+    reason_codes_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, stock_code, theme_code)
+);
 """
