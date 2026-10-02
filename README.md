@@ -149,7 +149,7 @@ python main.py server --host 0.0.0.0 --port 8000
 
 #### 可视化看板（Vue SPA，盘中实时监控）
 
-访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部 8 个 Tab 切换（板块强度/自选分组/集合竞价/强势归类×2/监控板块管理/知识图谱），各页状态由 `<keep-alive>` 保留：
+访问 `http://localhost:8000` 进入 **Vue 3 SPA**，顶部 7 个 Tab 切换（板块强度/自选分组/集合竞价/强势归类×2/监控板块管理/知识图谱），各页状态由 `<keep-alive>` 保留：
 
 **📊 Tab 1：板块强度监控**（默认）
 - 每个分组 = “监控板块管理”中勾选且成分股数为 **10~500（含边界）** 的同花顺概念板块。两种模式可切：
@@ -213,7 +213,7 @@ PYTHONPATH=. python main.py opening-premarket --date 20261008 --force-replace
 | `opening_membership_snapshot` | 本次实际使用的股票—Theme 权威关系副本 |
 | `opening_attribution_snapshot` | 归因排名、分数、权重、置信度、原因码和特征证据 |
 
-第一阶段交付 CLI 和后端冻结链路；实时聚合、REST/WebSocket 和前端页面属于后续阶段。详细契约见[盘前归因快照设计](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)。本次离线验收使用临时数据库；`data/DATABASE_MANIFEST.json` 只有在真实运行库迁移并现场检查后才更新。
+第一阶段交付 CLI 和后端冻结链路；实时聚合、REST/WebSocket 和前端页面属于后续阶段。详细契约见[盘前归因快照设计](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)。截至 2026-10-03，本机运行库已迁移四张表但尚无真实冻结记录；`data/DATABASE_MANIFEST.json` 仍是旧数据快照，应在首次真实冻结并现场复核后完整刷新。
 
 ### 10. 离线测试
 

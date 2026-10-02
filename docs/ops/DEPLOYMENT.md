@@ -336,7 +336,13 @@ sudo systemctl restart ifind-monitor
 
 ```bash
 cd /root/projects/2.monitor_940/ifind-sector-attribution
-git pull
+git pull --ff-only
+
+# frontend/ 有改动时必须重建；仅 git pull 不会更新 static/ 线上产物
+cd frontend
+npm ci
+npm run build
+cd ..
 
 # 若改了 service 文件
 sudo cp ifind-monitor.service /etc/systemd/system/
@@ -344,7 +350,14 @@ sudo systemctl daemon-reload
 
 # 重启生效
 sudo systemctl restart ifind-monitor
+
+# 线上验收：确认服务、SPA 入口和关键接口均来自本次发布
+systemctl status ifind-monitor --no-pager
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/
+curl -fsS http://127.0.0.1:8000/api/session_status
 ```
+
+若本次只有 CLI 或文档改动、没有常驻服务会加载的新 Python 代码，可以不重启；但必须在发布记录中明确写成“代码已同步，服务未重启”，不能把 `git push`、`git pull`、前端构建和线上生效混为同一步。
 
 ### 回滚
 
