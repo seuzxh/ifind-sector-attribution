@@ -7,7 +7,7 @@ nav_order: 22
 # 开盘题材动态强弱看板设计
 
 - 日期：2026-10-03
-- 状态：待书面规格确认
+- 状态：书面规格已确认
 - 上游阶段：`2026-10-02-opening-strength-premarket-design.md`
 - 部署目标：`http://115.191.14.82:8000/#/opening-themes`
 
