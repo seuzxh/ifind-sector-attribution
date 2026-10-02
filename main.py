@@ -4,6 +4,7 @@
 用法:
   python main.py init --stocks stocks.txt    # 首次部署初始化
   python main.py daily --date 20260613       # 每日同步
+  python main.py opening-premarket --date 20261002  # 盘前归因快照
   python main.py server                      # 启动 API 服务
   python main.py test                        # 运行接口测试
   python main.py purge --vacuum              # 删除海外数据，仅保留 A股
@@ -52,6 +53,47 @@ def cmd_daily(args):
             all_codes = [line.strip() for line in f if line.strip()]
 
     pipeline.run_daily(date, all_codes)
+
+
+def _opening_trade_date(value):
+    """Validate the CLI date shape; calendar validity belongs to the service."""
+    if len(value) != 8 or not value.isascii() or not value.isdigit():
+        raise argparse.ArgumentTypeError("日期须为八位数字 YYYYMMDD")
+    return value
+
+
+def _build_opening_premarket_service():
+    """Assemble the premarket domain only when its command is invoked."""
+    from ifind_hub import get_hub
+    from opening_strength.features import DailyHistoryFeatureProvider
+    from opening_strength.models import DEFAULT_ATTRIBUTION_CONFIG
+    from opening_strength.snapshot_service import OpeningPremarketService, SHANGHAI
+    from opening_strength.source_pools import IFindSourcePoolProvider
+
+    db = Database()
+    hub = get_hub()
+    return OpeningPremarketService(
+        db, IFindSourcePoolProvider(hub.client), hub.store,
+        DailyHistoryFeatureProvider(db, hub.client), DEFAULT_ATTRIBUTION_CONFIG,
+        lambda: datetime.now(SHANGHAI),
+    )
+
+
+def cmd_opening_premarket(args):
+    """Run, validate and freeze a premarket snapshot through the domain service."""
+    from opening_strength.snapshot_service import PremarketRunError
+
+    try:
+        result = _build_opening_premarket_service().run_and_freeze(
+            args.date, force_replace=args.force_replace)
+    except PremarketRunError as error:
+        print(f"[OPENING-PREMARKET] run_id={error.run_id} "
+              f"failure_code={error.failure_code}", file=sys.stderr)
+        sys.exit(1)
+    print(f"[OPENING-PREMARKET] run_id={result.run_id} status={result.status} "
+          f"candidate_count={result.candidate_count} mapped_count={result.mapped_count} "
+          f"coverage_ratio={result.coverage_ratio} "
+          f"history_coverage_ratio={result.history_coverage_ratio}")
 
 
 def cmd_server(args):
@@ -365,6 +407,14 @@ def main():
     daily_parser.add_argument("--date", type=str, help="同步日期，如 20260613")
     daily_parser.add_argument("--codes", type=str, help="全部代码列表文件路径")
     daily_parser.set_defaults(func=cmd_daily)
+
+    # opening-premarket
+    opening_parser = subparsers.add_parser("opening-premarket", help="执行并冻结盘前归因快照")
+    opening_parser.add_argument("--date", type=_opening_trade_date, required=True,
+                                help="交易日，八位数字 YYYYMMDD")
+    opening_parser.add_argument("--force-replace", action="store_true",
+                                help="显式允许连续竞价后替换当日冻结版本")
+    opening_parser.set_defaults(func=cmd_opening_premarket)
 
     # server
     server_parser = subparsers.add_parser("server", help="启动 API 服务")

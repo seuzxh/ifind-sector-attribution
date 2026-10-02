@@ -51,6 +51,7 @@
 |---|---|---|
 | `init` | 首次部署：拉字典+成分股+映射，补全概念板块全集 | 耗时较长（并发拉取全市场） |
 | `daily --date YYYYMMDD` | 每日盘后：同步日K → 板块强度 → 个股归因 | 日期须为交易日；不传 `--codes` 自动反查全市场 |
+| `opening-premarket --date YYYYMMDD [--force-replace]` | 执行、校验并冻结盘前归因快照 | 日期必填八位数字；当日 09:30 后替换已有冻结版本须显式覆盖 |
 | `server [--host H] [--port P] [--reload]` | 启动 FastAPI（API + 可视化看板），默认 `0.0.0.0:8000` | 生产用 systemd，调试加 `--reload` |
 | `import-groups [--json FILE]` | 导入同花顺自选股分组 JSON → `custom_group` 表（幂等覆盖） | 默认读 `ths-custom-block-data/同花顺自选分组导出.json`；自动过滤指数/ETF/可转债等非 A 股标的 |
 | `push --slot {933,945,1000,1430} [--dry-run]` | 股池归因定时推送：按时间槽选股归类并推飞书（crontab 交易日 4 时段，见 `scan_push.py`）；自选侧=分组归类，全市场侧=**KG 富集归类**（同全市场强势归类页，卡片带富集倍数/已监控标记） | `--dry-run` 只归类打印不推送 |
@@ -72,6 +73,7 @@
 | `intraday_fetcher.py` | 分时数据批量并发封装（kline-fetcher TrendFetcher，32线程），盘中实时用 | 低 |
 | `database/` | **SQLite 封装（包）**：`core.py` 连接/DDL/Mixin 组装、`schema.py` 建表 DDL、领域模块 `kline/kg/results/sector_tables/watched/custom_group/maintenance`（方法与拆包前逐一致）。板块三表（字典/成分股/映射）委托 `ifind-sector-hub` 组件 SectorStore（同库文件，watched 勾选留 monitor） | 中（按领域改对应模块） |
 | `sync_pipeline.py` | 数据同步与计算管线（init/daily 编排）。板块同步半边委托组件 hub.sync；行情/计算半边不变 | 中 |
+| `opening_strength/` | 盘前领域：源池、Membership、历史特征、纯函数归因、快照冻结；SQL 在 `database/opening_strength.py`，CLI 在 `main.py` 懒装配 | 中 |
 | `core_calculator.py` | 板块强度 + 多周期融合 + L1 归因算法 | 中（改算法看这） |
 | `stock_scorer.py` | 盘中成分股四维评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速 | 低 |
 | `realtime_engine.py` | 盘中实时引擎（分时序列缓存 + 时刻切片 + 内存计算，**不入库**） | 低 |
@@ -103,7 +105,21 @@ schema 权威来源：monitor 私有表看 `database/schema.py`（建表 DDL）�
 
 代码访问数据库统一走 `database` 包的 `class Database`（`from database import Database` 不变），`with self._connect() as conn` 上下文管理（自动 commit/rollback）。
 
-**分层约束（机器可查）**：`tests/test_layering.py` = import-linter 契约（`.importlinter.ini`，管 api/database 包边界）+ AST 检查（管平铺模块：引擎不碰接口层 / config 叶子 / 计算层纯净 / api_server 只组装）。改完分层相关代码跑 `python -m unittest tests.test_layering`。
+**分层约束（机器可查）**：`tests/test_layering.py` = import-linter 契约（`.importlinter.ini`，管 api/database 包边界）+ AST 检查（管平铺模块和 `opening_strength` 包：引擎不碰接口层 / config 叶子 / 计算层纯净 / api_server 只组装）。盘前包的任何导入（含函数内懒导入）均禁止依赖 `realtime_engine`、`theme_catalyst`、`api` 或 `api_server`。改完分层相关代码跑 `python -m unittest tests.test_layering`。
+
+## 盘前归因快照（第一阶段）
+
+- 命令：`PYTHONPATH=. python main.py opening-premarket --date YYYYMMDD [--force-replace]`。`main.py` 只解析、装配和输出；业务规则由 `OpeningPremarketService.run_and_freeze()` 执行。
+- 三个固定源池：高贝塔值 `883926.TI`、近期强势 `883409.TI`、同花顺热股 `883910.TI`；均用 hub 的 `get_concept_members()`（`data_pool p03473`，股票代码 `f002`、名称 `f003`）。合并保留所有来源和池内顺序，股票仍复用 A 股校验。
+- Theme 只认行业 `884xxx` 和概念 `885xxx/886xxx`，排除 `700xxx/881xxx`、自定义静态板块及其他体系。读取 `get_hub().store` 最新权威成员并批量反转，不读取 `stock_concept_map`，运行副本不写回 hub。
+- 四张新增私有表：`opening_premarket_run`（版本/状态/覆盖率/失败/覆盖原因）、`opening_candidate_snapshot`（候选来源）、`opening_membership_snapshot`（权威关系副本）、`opening_attribution_snapshot`（评分/权重/置信度/原因/证据）。Schema 与迁移由 `database/schema.py` / `database/core.py` 管理，查询走 `Database`。
+- 覆盖率门槛 `0.90`，每股最多一个行业和两个概念、权重和为 1；历史仅用目标日前完成日线，缺失允许降级并记录 `history_coverage_ratio`。成功输出运行标识、状态及覆盖指标；领域错误退出 1，不输出上游响应或敏感详情。
+- 新运行通过校验后原子冻结，同日旧版本成为 `SUPERSEDED`，失败不破坏旧冻结版本。当日 09:30（Asia/Shanghai）后替换已有冻结版本须 `--force-replace`；历史回放不受此限制。
+- 第一阶段仅后端与 CLI，不接实时聚合、REST/WebSocket 或前端；后续实时只能读冻结结果，不得调用历史特征或归因评分代码。
+- 离线测试使用确定性 fixture 与临时 SQLite；真实 iFinD smoke 默认跳过，显式 `IFIND_SMOKE=1` 或 `main.py test` 才启用。完整命令：`PYTHONPATH=. python -m unittest discover -s tests -t . -p 'test_*.py' -v`。必须保留 `-t .` 防止测试镜像包遮蔽生产包，解释器使用上方 `vibe-trading` 路径。
+- 本次仅迁移临时测试数据库；在真实运行库迁移并现场检查前，不更新 `data/DATABASE_MANIFEST.json`，上方历史运行库的 14 表计数不代表新 schema。
+
+绑定设计：[开盘板块强弱盘前归因快照](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)。
 
 ## 不可违反的约束
 

@@ -33,7 +33,7 @@ ENGINES = {
     "ifind_hub", "intraday_fetcher", "trade_calendar", "sync_pipeline",
     "realtime_engine", "auction_engine", "sector_manage", "kg_sources",
     "kg_builder", "kg_analysis", "theme_catalyst", "scan_push",
-    "open_scan_engine", "probe_auction",
+    "open_scan_engine", "probe_auction", "opening_strength",
 }
 PROJECT_MODULES = (
     {"config", "database", "api", "api_server", "main"} | CALC | ENGINES
@@ -53,11 +53,11 @@ FORBIDDEN = {
 
 
 def _iter_source_files():
-    """项目自身源码：根目录 *.py + api/ 与 database/ 包（排除 tests/scripts 等）。"""
+    """项目自身源码：根目录 *.py 与领域包（排除 tests/scripts 等）。"""
     for f in os.listdir(PROJECT_ROOT):
         if f.endswith(".py"):
             yield os.path.join(PROJECT_ROOT, f), f[:-3]
-    for pkg in ("api", "database"):
+    for pkg in ("api", "database", "opening_strength"):
         base = os.path.join(PROJECT_ROOT, pkg)
         for dirpath, _dirnames, filenames in os.walk(base):
             for fn in filenames:
@@ -96,6 +96,27 @@ class LayeringAstTests(unittest.TestCase):
             violations, [],
             "分层约束被违反（上层不得依赖更上层）：\n" + "\n".join(violations),
         )
+
+    def test_opening_strength_never_imports_realtime_catalyst_or_api(self):
+        """Premarket isolation also covers lazy imports inside functions."""
+        forbidden = {"realtime_engine", "theme_catalyst", "api", "api_server"}
+        violations = []
+        for path, layer in _iter_source_files():
+            if layer != "opening_strength":
+                continue
+            with open(path, encoding="utf-8") as source:
+                tree = ast.parse(source.read())
+            for node in ast.walk(tree):
+                imported = set()
+                if isinstance(node, ast.Import):
+                    imported = {alias.name.split(".")[0] for alias in node.names}
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    imported = {node.module.split(".")[0]}
+                if imported & forbidden:
+                    violations.append(
+                        f"{os.path.relpath(path, PROJECT_ROOT)}:{node.lineno} "
+                        f"-> {sorted(imported & forbidden)}")
+        self.assertEqual(violations, [], "盘前领域不得依赖实时或接口层：\n" + "\n".join(violations))
 
 
 try:

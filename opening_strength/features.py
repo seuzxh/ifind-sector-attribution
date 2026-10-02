@@ -50,6 +50,14 @@ def _date(value):
     return datetime.strptime(value.replace("-", ""), "%Y%m%d").strftime("%Y%m%d")
 
 
+def _preceding_weekday(trade_date):
+    """Conservative default; inject an exchange calendar for holiday gaps."""
+    completed = datetime.strptime(trade_date, "%Y%m%d") - timedelta(days=1)
+    while completed.weekday() >= 5:
+        completed -= timedelta(days=1)
+    return completed.strftime("%Y%m%d")
+
+
 def _parse_table(entry, start, end):
     """Parse the hub's thscode/time/table arrays; first duplicate date wins."""
     times, table = entry.get("time"), entry.get("table")
@@ -73,15 +81,23 @@ def _parse_table(entry, start, end):
 
 
 class DailyHistoryFeatureProvider:
-    """Fetch via an injected hub client and reuse the Database daily cache."""
+    """Fetch daily cache data anchored to one completed session.
 
-    def __init__(self, db, client, config=DEFAULT_ATTRIBUTION_CONFIG):
+    completed_session_resolver receives YYYYMMDD and returns YYYYMMDD or
+    YYYY-MM-DD. The default preceding weekday is deliberately conservative
+    on exchange holidays; a calendar adapter can resolve the exact session.
+    """
+
+    def __init__(self, db, client, config=DEFAULT_ATTRIBUTION_CONFIG,
+                 completed_session_resolver=None):
         self.db = db
         self.client = client
         self.config = config
+        self.completed_session_resolver = completed_session_resolver or _preceding_weekday
 
     def build(self, trade_date, candidates, memberships):
         trade_day = datetime.strptime(_date(trade_date), "%Y%m%d")
+        completed_session = _date(self.completed_session_resolver(trade_day.strftime("%Y%m%d")))
         start = (trade_day - timedelta(days=60)).strftime("%Y%m%d")
         end = (trade_day - timedelta(days=1)).strftime("%Y%m%d")
         candidate_codes = {candidate.stock_code for candidate in candidates}
@@ -128,8 +144,13 @@ class DailyHistoryFeatureProvider:
                     cached[day] = merged
                     saved.append(merged)
                 self.db.save_daily_kline(saved)
+                # This response must establish freshness; cache cannot fill its endpoint.
+                endpoint = records.get(completed_session)
+                if endpoint is None or _number(endpoint.get("change_ratio")) is None:
+                    continue
                 series[code] = {day: number for day, record in sorted(cached.items())
-                                if (number := _number(record.get("change_ratio"))) is not None}
+                                if day <= completed_session
+                                and (number := _number(record.get("change_ratio"))) is not None}
 
         window_ranks = []
         for window in RETURN_WINDOWS:
@@ -146,7 +167,8 @@ class DailyHistoryFeatureProvider:
             stock_series, theme_series = series.get(stock, {}), series.get(theme, {})
             common = sorted(stock_series.keys() & theme_series.keys())[-self.config.sync_window:]
             value = None
-            if len(common) >= self.config.sync_min_observations:
+            if (completed_session in stock_series and completed_session in theme_series
+                    and len(common) >= self.config.sync_min_observations):
                 try:
                     corr = correlation([stock_series[day] for day in common],
                                        [theme_series[day] for day in common])

@@ -36,6 +36,7 @@ ifind_sector_attribution/
 ├── database/              # SQLite 数据库封装（按领域拆分：core 连接/DDL + kline/kg/results/
 │                          #   sector_tables/watched/custom_group/maintenance Mixin；schema.py 建表 DDL）
 ├── sync_pipeline.py       # 数据同步与计算管线
+├── opening_strength/      # 盘前候选池、权威 Membership、历史特征、归因与冻结编排
 ├── core_calculator.py     # 核心计算引擎（板块强度、多周期融合、L1归因；纯计算无 I/O）
 ├── stock_scorer.py        # 成分股四维综合评分（涨幅/涨速/开盘至今涨幅/涨停）+ 涨速加速
 ├── realtime_engine.py     # 盘中实时引擎（分时序列缓存 + 时刻切片 + 板块强度）
@@ -188,12 +189,50 @@ python main.py import-groups --json /path/to.json # 指定其他 JSON
 
 从同花顺 custom_block 导出的自选分组 JSON 导入到 `custom_group` 表，供"自选分组看板"使用。**幂等**（清表重导，分组更新后重跑即可），自动按 `market_code` 过滤指数/ETF/可转债等非 A 股标的（只保留 17 沪/33 深/151 北交）。
 
+### 9. 盘前归因冻结快照
+
+在项目根目录执行，`--date` 必填且格式为八位数字 `YYYYMMDD`，应使用目标交易日：
+
+```bash
+PYTHONPATH=. python main.py opening-premarket --date 20261008
+PYTHONPATH=. python main.py opening-premarket --date 20261008 --force-replace
+```
+
+命令合并三个 `data_pool p03473` 源股池：高贝塔值 `883926.TI`、近期强势 `883409.TI`、同花顺热股 `883910.TI`，保留全部来源及池内顺序。候选股票仅限沪深北 A 股；Theme 仅接受行业 `884xxx` 和概念 `885xxx/886xxx`，排除 `700xxx/881xxx`、自定义静态板块和其他代码体系。Membership 来自 sector-hub 已发布的权威成分快照，经批量反转后复制到本次运行，不依赖 `stock_concept_map`。
+
+归因仅使用目标日前已完成日线，每股最多一个行业和两个概念，权重和为 1。Membership 覆盖率至少为 `0.90` 才能冻结；历史缺失允许降级并记录证据与历史覆盖率。成功输出 `run_id/status/candidate_count/mapped_count/coverage_ratio/history_coverage_ratio`；领域错误退出码为 1，仅输出运行标识和失败码。
+
+每次运行创建新版本，正常盘前重跑成功后原子替换同日冻结版本；失败保留旧版本。当日 09:30（Asia/Shanghai）以后替换已有冻结版本须显式传 `--force-replace`，覆盖原因会留存。历史日期回放不受该时间限制。
+
+`Database` 初始化时迁移以下四张 monitor 私有表，运行查询也通过 `Database` 仓储方法完成：
+
+| 表 | 内容 |
+|---|---|
+| `opening_premarket_run` | 运行状态、版本、覆盖率、时间、失败码和覆盖原因 |
+| `opening_candidate_snapshot` | 候选股票及各源池来源、池内顺序 |
+| `opening_membership_snapshot` | 本次实际使用的股票—Theme 权威关系副本 |
+| `opening_attribution_snapshot` | 归因排名、分数、权重、置信度、原因码和特征证据 |
+
+第一阶段交付 CLI 和后端冻结链路；实时聚合、REST/WebSocket 和前端页面属于后续阶段。详细契约见[盘前归因快照设计](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)。本次离线验收使用临时数据库；`data/DATABASE_MANIFEST.json` 只有在真实运行库迁移并现场检查后才更新。
+
+### 10. 离线测试
+
+完整后端测试使用确定性 fixture 与临时 SQLite 数据库，默认不访问实时 iFinD；只有显式启用 `IFIND_SMOKE=1` 的连通性冒烟测试需要真实 token/网络。`main.py test` 会启用该冒烟开关。
+
+```bash
+PYTHONPATH=. python -m unittest discover -s tests -t . -p 'test_*.py' -v
+python scripts/lint_docs.py
+```
+
+完整发现必须保留 `-t .`，避免 `tests/database` 和 `tests/opening_strength` 的镜像包遮蔽生产包。本机解释器见 `AGENTS.md` 的运行环境表。
+
 ## 命令一览
 
 | 命令 | 说明 |
 |---|---|
 | `init [--stocks FILE]` | 首次部署：拉取字典+成分股+映射，补全概念板块全集 |
 | `daily --date DATE [--codes FILE]` | 每日：同步 K 线 + 板块强度 + 个股归因 |
+| `opening-premarket --date YYYYMMDD [--force-replace]` | 盘前归因：执行、校验并冻结快照；开盘后当日替换须显式授权 |
 | `import-groups [--json FILE]` | **导入自选股分组 JSON**（幂等覆盖），自选看板用 |
 | `refresh-boards [--skip-members]` | **smart_stock_picking 刷新板块字典**（710 全集+清理遗留+勾选迁移+新板块成分股） |
 | `server [--host H] [--port P]` | 启动 FastAPI 服务（API + 可视化页面） |
