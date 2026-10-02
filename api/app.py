@@ -3,17 +3,27 @@
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from .routers import history, kg, overview, realtime, sector_manage
+from .routers import history, kg, opening_strength, overview, realtime, sector_manage
 
 app = FastAPI(
     title="行业归因与板块强度检测系统",
     description="基于 iFinD API 的量化行业归因与板块强度检测",
     version="1.0.0"
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_error(request: Request, error: RequestValidationError):
+    if request.url.path == "/api/opening-strength/dashboard":
+        return opening_strength.invalid_request_response()
+    return await request_validation_exception_handler(request, error)
+
 
 # 挂载静态文件目录（前端页面资源）
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
@@ -54,3 +64,4 @@ app.include_router(realtime.router)
 app.include_router(history.router)
 app.include_router(sector_manage.router)
 app.include_router(kg.router)
+app.include_router(opening_strength.router)
