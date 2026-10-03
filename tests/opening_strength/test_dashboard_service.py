@@ -109,6 +109,15 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertFalse(raised.exception.retryable)
         self.assertEqual(self.provider.calls, [])
 
+    def test_fallback_loads_latest_frozen_run_on_or_before_requested_date(self):
+        self.create_run(run_id="sep-30", trade_date="20260930")
+
+        result = self.service.build("20261003", fallback_to_previous=True)
+
+        self.assertEqual((result.trade_date, result.run_id, result.mode),
+                         ("20260930", "sep-30", "historical"))
+        self.assertEqual(self.provider.calls, [((B, A), "20260930", None)])
+
     def test_frozen_run_ignores_newer_running_and_validated_rows(self):
         self.create_run()
         self.create_run("new-running", status="RUNNING", theme="885002.TI")

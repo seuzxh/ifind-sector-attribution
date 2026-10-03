@@ -59,11 +59,15 @@ class OpeningDashboardService:
         now = self._clock()
         return now.replace(tzinfo=SHANGHAI) if now.tzinfo is None else now.astimezone(SHANGHAI)
 
-    def build(self, trade_date: str, snapshot_time: str | None = None) -> OpeningDashboard:
+    def build(self, trade_date: str, snapshot_time: str | None = None,
+              fallback_to_previous: bool = False) -> OpeningDashboard:
         # Always resolve the current frozen version before consulting a result cache.
         run = self._db.get_frozen_opening_run(trade_date)
+        if run is None and fallback_to_previous:
+            run = self._db.get_latest_frozen_opening_run(trade_date)
         if run is None or run["status"] != "FROZEN":
             raise OpeningDashboardError("SNAPSHOT_NOT_FOUND", "该日期尚未生成盘前冻结快照", False)
+        trade_date = run["trade_date"]
         run_id = run["run_id"]
         names, pools = {}, {}
         for row in self._db.get_opening_candidates(run_id):

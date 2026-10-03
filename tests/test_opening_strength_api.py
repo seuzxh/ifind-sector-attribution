@@ -61,26 +61,26 @@ class OpeningStrengthApiTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return replacement
 
-    def freeze(self):
+    def freeze(self, trade_date=TRADE_DATE, run_id="frozen-api"):
         self.db.create_opening_run({
-            "run_id": "frozen-api", "trade_date": TRADE_DATE,
+            "run_id": run_id, "trade_date": trade_date,
             "model_version": "model-1", "config_version": "config-1",
             "started_at": "2026-10-02T09:00:00+08:00",
         })
-        self.db.save_opening_candidates("frozen-api", [{
+        self.db.save_opening_candidates(run_id, [{
             "stock_code": "600001.SH", "stock_name": "甲",
             "source_pool_id": "883910.TI", "source_rank": 1,
         }])
-        self.db.save_opening_attributions("frozen-api", [{
+        self.db.save_opening_attributions(run_id, [{
             "stock_code": "600001.SH", "theme_code": "885001.TI", "theme_name": "冻结题材",
             "theme_type": "CONCEPT", "rank": 1, "raw_score": .8, "weight": 1,
             "confidence": .9, "reason_codes": ["MULTI_POOL_SUPPORT"], "evidence": {},
         }])
-        self.db.mark_opening_run_validated("frozen-api", {
+        self.db.mark_opening_run_validated(run_id, {
             "candidate_count": 1, "mapped_count": 1, "coverage_ratio": 1,
             "history_coverage_ratio": 1, "hub_member_date": "2026-10-01",
         })
-        self.db.freeze_opening_run("frozen-api", replace_existing=False)
+        self.db.freeze_opening_run(run_id, replace_existing=False)
 
     def assert_error(self, response, status, code, retryable, message=None):
         self.assertEqual(response.status_code, status, response.text)
@@ -174,6 +174,19 @@ class OpeningStrengthApiTests(unittest.TestCase):
             response = self.client.get(ENDPOINT, params={"trade_date": TRADE_DATE})
         self.assert_error(response, 404, "SNAPSHOT_NOT_FOUND", False, "该日期尚未生成盘前冻结快照")
 
+    def test_explicit_fallback_uses_latest_snapshot_on_or_before_requested_date(self):
+        self.freeze(trade_date="20260930", run_id="sep-30")
+
+        response = self.client.get(ENDPOINT, params={
+            "trade_date": "20261003", "fallback_to_previous": "true",
+        })
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual((payload["trade_date"], payload["run_id"], payload["mode"]),
+                         ("20260930", "sep-30", "historical"))
+        self.assertEqual(self.fetcher.requests, [(["600001.SH"], "20260930")])
+
     def test_empty_quote_series_returns_exact_503_domain_error(self):
         self.freeze()
         self.fetcher.raw = {}
@@ -236,7 +249,7 @@ config.KLINE_API_BASE_URL = ''
 with patch('database.Database'), patch('intraday_fetcher.IntradayFetcher',
         side_effect=AssertionError('fetcher constructed during import')):
     from api.app import app
-    assert any(route.path == '/api/opening-strength/dashboard' for route in app.routes)
+    assert '/api/opening-strength/dashboard' in app.openapi()['paths']
 """
         result = subprocess.run([sys.executable, "-c", source], capture_output=True, text=True,
                                 cwd=Path(__file__).resolve().parents[1])

@@ -99,6 +99,18 @@ class OpeningRepositoryTests(unittest.TestCase):
         self.assertEqual(self.status("old"), "SUPERSEDED")
         self.assertEqual(self.db.get_frozen_opening_run("20261002")["run_id"], "new")
 
+    def test_latest_frozen_run_on_or_before_ignores_future_and_non_frozen_rows(self):
+        for run_id, trade_date in (("sep-29", "20260929"), ("sep-30", "20260930")):
+            self.create(run_id, trade_date)
+            self.validate(run_id)
+            self.db.freeze_opening_run(run_id, False)
+        self.create("oct-running", "20261001")
+
+        run = self.db.get_latest_frozen_opening_run("20261003")
+
+        self.assertEqual((run["run_id"], run["trade_date"]), ("sep-30", "20260930"))
+        self.assertIsNone(self.db.get_latest_frozen_opening_run("20260928"))
+
     def test_replacement_disabled_preserves_old(self):
         from database.opening_strength import FrozenRunExistsError
         self.freeze_old()

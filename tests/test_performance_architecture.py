@@ -145,7 +145,7 @@ class PerformanceArchitectureTests(unittest.TestCase):
     def test_prescreen_routes_are_removed(self):
         from api_server import app
 
-        paths = {route.path for route in app.routes}
+        paths = set(app.openapi()["paths"])
         self.assertIn("/api/realtime/dashboard", paths)
         self.assertNotIn("/api/prescreen", paths)
         self.assertNotIn("/api/watchlist", paths)

@@ -46,7 +46,8 @@ def invalid_request_response() -> JSONResponse:
 
 
 @router.get("/api/opening-strength/dashboard")
-def get_opening_dashboard(trade_date: str = Query(...), snapshot_time: str | None = None):
+def get_opening_dashboard(trade_date: str = Query(...), snapshot_time: str | None = None,
+                          fallback_to_previous: bool = False):
     """Validate the requested date/minute and serialize the domain dashboard."""
     try:
         if _DATE.fullmatch(trade_date) is None:
@@ -62,7 +63,8 @@ def get_opening_dashboard(trade_date: str = Query(...), snapshot_time: str | Non
         return invalid_request_response()
 
     try:
-        dashboard = get_dashboard_service().build(trade_date, snapshot_time)
+        dashboard = get_dashboard_service().build(
+            trade_date, snapshot_time, fallback_to_previous=fallback_to_previous)
         return JSONResponse(content=dashboard.to_dict())
     except OpeningDashboardError as error:
         status = _ERROR_STATUS.get(error.code)

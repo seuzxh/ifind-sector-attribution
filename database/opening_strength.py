@@ -107,6 +107,16 @@ class OpeningStrengthMixin:
                                (trade_date,)).fetchone()
             return dict(row) if row else None
 
+    def get_latest_frozen_opening_run(self, on_or_before: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM opening_premarket_run "
+                "WHERE trade_date<=? AND status='FROZEN' "
+                "ORDER BY trade_date DESC LIMIT 1",
+                (on_or_before,),
+            ).fetchone()
+            return dict(row) if row else None
+
     def get_opening_candidates(self, run_id: str) -> list[dict]:
         with self._connect() as conn:
             return [dict(row) for row in conn.execute("SELECT * FROM opening_candidate_snapshot "

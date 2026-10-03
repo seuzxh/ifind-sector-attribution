@@ -67,6 +67,7 @@ export interface OpeningDashboardErrorPayload {
 export function getOpeningThemesDashboard(params: {
   trade_date: string
   snapshot_time?: string
+  fallback_to_previous?: boolean
 }): Promise<OpeningDashboardPayload> {
   return http.get<OpeningDashboardPayload, OpeningDashboardPayload>('/api/opening-strength/dashboard', { params })
 }

@@ -23,6 +23,7 @@
       <template v-else-if="errorCode === 'QUOTE_DATA_UNAVAILABLE' || errorCode === 'QUOTE_PROVIDER_FAILED'">行情暂不可用，请稍后刷新或选择其他日期、时点。</template>
       <template v-else-if="errorCode">请求失败，请稍后刷新。</template>
       <template v-else-if="payload">
+        <span v-if="fallbackSnapshot">休市或当日无快照 · 回放最近交易日 {{ displayDate(payload.trade_date) }} · </span>
         {{ degraded ? '部分数据降级' : '数据正常' }} · 行情 {{ payload.snapshot_time }}
         <span v-if="payload.cache_status === 'stale'"> · 正在使用最近一次可用行情</span>
         <span v-else-if="payload.data_health < 1"> · 部分个股暂无行情</span>
@@ -70,8 +71,11 @@ const errorCode = ref('')
 let active = false
 const selectedTheme = computed(() => payload.value?.themes.find(theme => theme.theme_code === selectedCode.value))
 const degraded = computed(() => !!payload.value && (payload.value.data_health < 1 || payload.value.cache_status === 'stale'))
+const fallbackSnapshot = computed(() => mode.value === 'realtime' && !!payload.value
+  && payload.value.trade_date !== date.value.replace(/-/g, ''))
 const healthText = computed(() => `${((payload.value?.data_health || 0) * 100).toFixed(2)}%`)
 const currentTimeText = computed(() => availableTimes.value[sliderIndex.value] || payload.value?.snapshot_time || '--:--')
+function displayDate(value: string) { return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}` }
 
 async function loadDashboard(seq: number) {
   if (!active) return
@@ -87,13 +91,20 @@ async function loadDashboard(seq: number) {
     return
   }
   loading.value = true
-  const params: { trade_date: string; snapshot_time?: string } = { trade_date: date.value.replace(/-/g, '') }
+  const params: { trade_date: string; snapshot_time?: string; fallback_to_previous?: boolean } = {
+    trade_date: date.value.replace(/-/g, ''),
+  }
+  if (mode.value === 'realtime') params.fallback_to_previous = true
   if (selectedMinute.value) params.snapshot_time = selectedMinute.value
   try {
     const data = await getOpeningThemesDashboard(params)
     if (!active || seq !== currentSeq()) return
     payload.value = data
     errorCode.value = ''
+    if (mode.value === 'realtime' && data.trade_date !== params.trade_date) {
+      autoFollow.value = false
+      stopPolling()
+    }
     availableTimes.value = data.available_times
     if (!playing.value) jumpTo(Math.max(0, data.available_times.indexOf(data.snapshot_time)))
     if (!data.themes.some(theme => theme.theme_code === selectedCode.value)) selectedCode.value = data.themes[0]?.theme_code || ''
