@@ -15,7 +15,7 @@
 - 本机没有为本项目安装 daily crontab，`daily_kline` 最新日期为 20260930（2026-10-03 实测）；盘后数据是否补齐需显式运行 `main.py daily` 并复核，README/DEPLOYMENT 中的 crontab 只是建议配置。
 - 板块字典（ths_concept_dict 710 个=881×90+884×230+885×293+886×97）由 `refresh-boards` 命令用 smart_stock_picking 动态枚举维护；881 二级行业仅入字典**不进观察池**（OBSERVE_CONCEPT_PREFIXES=884/885/886）。
 - 强势归类选股走 REST `smart_stock_picking`（`ACCESS_TOKEN`，`ifind_client.smart_pick_stocks`），**不走 MCP**（MCP search_stocks 有每日配额且曾反复打满，已于 2026-09-07 彻底移除 MCP 链路：mcp_proxy.py 已删、IFIND_MCP_TOKEN 已清）。
-- 开盘题材只读 REST、独立实时聚合与第八个 Vue Tab 已于 2026-10-03 合入并部署到 `115.191.14.82:8000`（`main` 提交 `c410471`）。盘中只读冻结归因，不重跑历史特征或归因。
+- 开盘题材只读 REST、独立实时聚合与第八个 Vue Tab 已于 2026-10-03 合入并部署到 `115.191.14.82:8000`（当前发布提交 `1d1ddaa`）；休市/当日无快照时实时页回退最近冻结版本。盘中只读冻结归因，不重跑历史特征或归因。
 - 本机运行库已完成四张 `opening_*` 表的 schema 迁移；2026-10-03 已为交易日 20260930 生成首个真实 `FROZEN` 快照（158 只候选全部映射、143 个题材、历史特征覆盖率 0.9942），并验证历史分时健康度 1.0。`data/DATABASE_MANIFEST.json` 已同步刷新；运行判断仍以 SQLite 现场结果为准。
 
 ## 🔑 运维知识：access_token 过期自动刷新（重要，别再踩）
