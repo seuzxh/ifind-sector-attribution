@@ -162,7 +162,7 @@ python main.py server          # FastAPI 同时 serve static/ 和 /api
 
 > `static/` 是构建产物，**不应手改**，也无需纳入版本控制的核心内容（重新 build 即可重生）。
 
-完整本地验证从锁文件安装，执行 `npm ci && npm test -- --run && npm run type-check && npm run build`。开盘题材测试位于 API、组件和页面的 `__tests__/`；覆盖正常/缺数/错误、模式切换、竞态、时间轴与 keep-alive 生命周期。生产发布仍按部署手册执行，需在整分支审查和集成后进行。
+完整本地验证从锁文件安装，执行 `npm ci && npm test -- --run && npm run type-check && npm run build`。开盘题材测试位于 API、组件和页面的 `__tests__/`；覆盖正常/缺数/错误、模式切换、竞态、时间轴与 keep-alive 生命周期。该页面已于 2026-10-03 按部署手册构建并发布；后续升级仍须重复上述门禁后再重启服务。
 
 ---
 

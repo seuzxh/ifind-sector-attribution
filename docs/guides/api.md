@@ -187,7 +187,7 @@ data_health_g = valid_quote_count / attributed_stock_count
 | 503 | `QUOTE_DATA_UNAVAILABLE` | true | 快照存在但无可用盘中点/所选时点无数据 |
 | 503 | `QUOTE_PROVIDER_FAILED` | true | 行情获取失败且无可用旧缓存 |
 
-无快照须维护人员在项目根目录人工运行 `PYTHONPATH=. python main.py opening-premarket --date YYYYMMDD`；替换已有冻结版本遵守 09:30 后 `--force-replace` 保护。已记录的生产四表截至 2026-10-03 为空，发布时可用预期 404/页面提示验收，不能据此声称真实排名可见；本阶段本地实现等待审查与发布。
+无快照须维护人员在项目根目录人工运行 `PYTHONPATH=. python main.py opening-premarket --date YYYYMMDD`；替换已有冻结版本遵守 09:30 后 `--force-replace` 保护。生产四表截至 2026-10-03 仍为空，线上接口和页面已用预期 404/无快照提示完成验收；这不能据此声称真实排名可见。
 
 ## 历史与竞价
 

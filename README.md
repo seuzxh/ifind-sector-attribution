@@ -179,7 +179,7 @@ python main.py server --host 0.0.0.0 --port 8000
 - 只覆盖三个源股池候选及其冻结的 `884/885/886` 归因；起点为 09:30，不展示集合竞价。行情序列缓存当天 15 秒、历史日期在进程内稳定；聚合结果缓存 3 秒，按冻结 `run_id` 区分版本。
 - 对应日期必须已有 `FROZEN` 快照；无快照返回 `404 SNAPSHOT_NOT_FOUND`，页面显示维护人员可复制的 `python main.py opening-premarket --date YYYYMMDD`。页面请求只读，不会自动冻结或重跑归因。
 
-截至 2026-10-03，已记录的生产开盘四表为空，尚未执行首个真实冻结；新看板发布后预期显示无快照提示，真实排名仍需人工冻结与可用分时。本功能当前等待整分支审查、集成和发布。自动盘前调度、自定义静态题材、集合竞价排名、WebSocket 和排名持久化均不在本阶段范围。指标公式与 API 错误契约见 [API 参考](docs/guides/api.md#开盘题材)。
+截至 2026-10-03，生产开盘四表为空，尚未执行首个真实冻结；新看板已部署并按设计显示无快照提示，真实排名仍需人工冻结与可用分时。自动盘前调度、自定义静态题材、集合竞价排名、WebSocket 和排名持久化均不在本阶段范围。指标公式与 API 错误契约见 [API 参考](docs/guides/api.md#开盘题材)。
 
 ### 7. 清理海外数据（维护命令）
 
@@ -223,7 +223,7 @@ PYTHONPATH=. python main.py opening-premarket --date 20261008 --force-replace
 | `opening_membership_snapshot` | 本次实际使用的股票—Theme 权威关系副本 |
 | `opening_attribution_snapshot` | 归因排名、分数、权重、置信度、原因码和特征证据 |
 
-第一阶段交付 CLI 和后端冻结链路；开盘题材看板现已实现独立实时聚合、只读 REST 和 Vue 页面，等待审查与发布。详细契约见[盘前归因快照设计](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)和[开盘题材看板设计](docs/superpowers/specs/2026-10-03-opening-theme-dashboard-design.md)。截至 2026-10-03，已记录的本机运行库四表仍无真实冻结记录；`data/DATABASE_MANIFEST.json` 仍是旧数据快照，应在首次真实冻结并现场复核后完整刷新。
+第一阶段交付 CLI 和后端冻结链路；开盘题材看板的独立实时聚合、只读 REST 和 Vue 页面已于 2026-10-03 部署。详细契约见[盘前归因快照设计](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)和[开盘题材看板设计](docs/superpowers/specs/2026-10-03-opening-theme-dashboard-design.md)。截至 2026-10-03，生产运行库四表仍无真实冻结记录；`data/DATABASE_MANIFEST.json` 仍是旧数据快照，应在首次真实冻结并现场复核后完整刷新。
 
 ### 10. 离线测试
 

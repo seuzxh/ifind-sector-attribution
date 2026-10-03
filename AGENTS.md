@@ -15,7 +15,7 @@
 - 本机没有为本项目安装 daily crontab，`daily_kline` 最新日期为 20260930（2026-10-03 实测）；盘后数据是否补齐需显式运行 `main.py daily` 并复核，README/DEPLOYMENT 中的 crontab 只是建议配置。
 - 板块字典（ths_concept_dict 710 个=881×90+884×230+885×293+886×97）由 `refresh-boards` 命令用 smart_stock_picking 动态枚举维护；881 二级行业仅入字典**不进观察池**（OBSERVE_CONCEPT_PREFIXES=884/885/886）。
 - 强势归类选股走 REST `smart_stock_picking`（`ACCESS_TOKEN`，`ifind_client.smart_pick_stocks`），**不走 MCP**（MCP search_stocks 有每日配额且曾反复打满，已于 2026-09-07 彻底移除 MCP 链路：mcp_proxy.py 已删、IFIND_MCP_TOKEN 已清）。
-- 盘前归因第一阶段已合入 `main`；本分支新增开盘题材只读 REST、独立实时聚合与第八个 Vue Tab，等待整分支审查、集成和发布。盘中只读冻结归因，不重跑历史特征或归因。
+- 开盘题材只读 REST、独立实时聚合与第八个 Vue Tab 已于 2026-10-03 合入并部署到 `115.191.14.82:8000`（`main` 提交 `c410471`）。盘中只读冻结归因，不重跑历史特征或归因。
 - 本机运行库已完成四张 `opening_*` 表的 schema 迁移，但截至 2026-10-03 四表均为 0 行，尚未执行首个真实盘前冻结。`data/DATABASE_MANIFEST.json` 仍是 2026-07-24 旧数据快照，首次真实冻结并复核后再完整刷新，当前查询必须以 SQLite 现场结果为准。
 
 ## 🔑 运维知识：access_token 过期自动刷新（重要，别再踩）
@@ -119,7 +119,7 @@ schema 权威来源：monitor 私有表看 `database/schema.py`（建表 DDL）�
 - 新运行通过校验后原子冻结，同日旧版本成为 `SUPERSEDED`，失败不破坏旧冻结版本。当日 09:30（Asia/Shanghai）后替换已有冻结版本须 `--force-replace`；历史回放不受此限制。
 - 开盘题材：`#/opening-themes` → `GET /api/opening-strength/dashboard?trade_date=YYYYMMDD[&snapshot_time=HH:MM]`，只读该日 `FROZEN` 快照，不自动归因或写排名。无快照为结构化 `404 SNAPSHOT_NOT_FOUND`；页面给人工命令。
 - 独立行情提供器只用 09:30 起 `trading`，当天序列缓存 15 秒、历史序列进程内稳定；结果缓存 3 秒且包含 `run_id`。不耦合旧实时引擎；指标/错误合同见 `docs/guides/api.md`。
-- 自动盘前调度、集合竞价、自定义静态题材、WebSocket、排名持久化均排除。已记录的生产四表截至 2026-10-03 为空，真实排名需人工冻结与可用分时；本次仅本地验证，发布待审查。
+- 自动盘前调度、集合竞价、自定义静态题材、WebSocket、排名持久化均排除。生产四表截至 2026-10-03 仍为空，线上页面按设计显示无快照状态；真实排名需人工冻结与可用分时。
 - 离线测试使用 fixture/临时 SQLite，真实 iFinD smoke 默认跳过。完整命令和开盘专项命令见 README §10，必须保留发现参数 `-t .`，使用上方 `vibe-trading` 解释器。`DATABASE_MANIFEST.json` 为旧快照，首次真实冻结后再刷新。
 
 绑定设计：[盘前快照](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)、[开盘题材看板](docs/superpowers/specs/2026-10-03-opening-theme-dashboard-design.md)。
