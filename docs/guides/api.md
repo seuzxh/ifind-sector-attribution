@@ -128,12 +128,13 @@ curl "http://localhost:8000/api/sector/rankings?date=20260817&top_n=10"
 |---|---|---|---|
 | `trade_date` | str | 必填 | 八位 `YYYYMMDD`，必须为有效日历日期 |
 | `snapshot_time` | str | 最新有效分钟 | `HH:MM`，不早于 09:30；不接受 `latest` 字符串 |
+| `fallback_to_previous` | bool | `false` | 精确日期无快照时，读取不晚于该日的最近 `FROZEN` 版本；实时页面传 `true`，手选历史不传 |
 
 ```bash
 curl "http://localhost:8000/api/opening-strength/dashboard?trade_date=20261008&snapshot_time=09:45"
 ```
 
-省略时点取最新有效分钟；位于分钟间或晚于末点时，向下取不晚于请求的最近有效分钟。每股各自取不晚于该分钟的末点；仅 `trading` 的 09:30 起数据有效。09:30 使用自身作为变化基线；其后基线为时间轴上一有效分钟，缺失基线不虚构数值。历史与实时使用同一聚合函数；`mode` 由所选日期是否为中国标准当日决定。
+省略时点取最新有效分钟；位于分钟间或晚于末点时，向下取不晚于请求的最近有效分钟。启用日期回退后，响应 `trade_date` 是实际命中的冻结日期，行情也严格读取该日。每股各自取不晚于该分钟的末点；仅 `trading` 的 09:30 起数据有效。09:30 使用自身作为变化基线；其后基线为时间轴上一有效分钟，缺失基线不虚构数值。历史与实时使用同一聚合函数；`mode` 由实际命中日期是否为中国标准当日决定。
 
 成功响应（200）字段：
 
@@ -187,7 +188,7 @@ data_health_g = valid_quote_count / attributed_stock_count
 | 503 | `QUOTE_DATA_UNAVAILABLE` | true | 快照存在但无可用盘中点/所选时点无数据 |
 | 503 | `QUOTE_PROVIDER_FAILED` | true | 行情获取失败且无可用旧缓存 |
 
-无快照须维护人员在项目根目录人工运行 `PYTHONPATH=. python main.py opening-premarket --date YYYYMMDD`；替换已有冻结版本遵守 09:30 后 `--force-replace` 保护。生产四表截至 2026-10-03 仍为空，线上接口和页面已用预期 404/无快照提示完成验收；这不能据此声称真实排名可见。
+无任何可回退快照时，维护人员须在项目根目录人工运行 `PYTHONPATH=. python main.py opening-premarket --date YYYYMMDD`；替换已有冻结版本遵守 09:30 后 `--force-replace` 保护。生产库已于 2026-10-03 冻结并验证 `20260930`：158 只候选、143 个题材、分时健康度 1.0，可用于默认休市回退和历史回放。
 
 ## 历史与竞价
 

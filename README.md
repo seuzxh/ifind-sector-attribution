@@ -177,9 +177,9 @@ python main.py server --host 0.0.0.0 --port 8000
 - 左侧题材强弱榜、右侧加速/扩散榜、下方贡献个股联动；风险标签、冻结版本和数据健康度帮助判断覆盖与可信度。
 - 实时模式固定中国标准日期，自动跟随每 3 秒请求；历史模式使用所选日的冻结归因与分时。拖动/播放停止自动跟随，切出 Tab 停止轮询和播放，重新激活后刷新。
 - 只覆盖三个源股池候选及其冻结的 `884/885/886` 归因；起点为 09:30，不展示集合竞价。行情序列缓存当天 15 秒、历史日期在进程内稳定；聚合结果缓存 3 秒，按冻结 `run_id` 区分版本。
-- 对应日期必须已有 `FROZEN` 快照；无快照返回 `404 SNAPSHOT_NOT_FOUND`，页面显示维护人员可复制的 `python main.py opening-premarket --date YYYYMMDD`。页面请求只读，不会自动冻结或重跑归因。
+- 页面只读取已有 `FROZEN` 快照；实时模式在当日缺快照时回退到不晚于当日的最近冻结版本，并明确显示实际日期、停止轮询。手选历史日期仍严格查询所选日；不存在时返回 `404 SNAPSHOT_NOT_FOUND`。页面不会自动冻结或重跑归因。
 
-截至 2026-10-03，生产开盘四表为空，尚未执行首个真实冻结；新看板已部署并按设计显示无快照提示，真实排名仍需人工冻结与可用分时。自动盘前调度、自定义静态题材、集合竞价排名、WebSocket 和排名持久化均不在本阶段范围。指标公式与 API 错误契约见 [API 参考](docs/guides/api.md#开盘题材)。
+截至 2026-10-03，生产库已为 `20260930` 冻结首个真实快照：158 只候选全部映射，历史特征覆盖率 99.42%；历史分时返回 143 个题材且数据健康度 100%。自动盘前调度、自定义静态题材、集合竞价排名、WebSocket 和排名持久化均不在本阶段范围。指标公式与 API 错误契约见 [API 参考](docs/guides/api.md#开盘题材)。
 
 ### 7. 清理海外数据（维护命令）
 
@@ -223,7 +223,7 @@ PYTHONPATH=. python main.py opening-premarket --date 20261008 --force-replace
 | `opening_membership_snapshot` | 本次实际使用的股票—Theme 权威关系副本 |
 | `opening_attribution_snapshot` | 归因排名、分数、权重、置信度、原因码和特征证据 |
 
-第一阶段交付 CLI 和后端冻结链路；开盘题材看板的独立实时聚合、只读 REST 和 Vue 页面已于 2026-10-03 部署。详细契约见[盘前归因快照设计](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)和[开盘题材看板设计](docs/superpowers/specs/2026-10-03-opening-theme-dashboard-design.md)。截至 2026-10-03，生产运行库四表仍无真实冻结记录；`data/DATABASE_MANIFEST.json` 仍是旧数据快照，应在首次真实冻结并现场复核后完整刷新。
+第一阶段交付 CLI 和后端冻结链路；开盘题材看板的独立实时聚合、只读 REST 和 Vue 页面已于 2026-10-03 部署。详细契约见[盘前归因快照设计](docs/superpowers/specs/2026-10-02-opening-strength-premarket-design.md)和[开盘题材看板设计](docs/superpowers/specs/2026-10-03-opening-theme-dashboard-design.md)。同日已生成并现场复核 `20260930` 首个真实冻结版本，`data/DATABASE_MANIFEST.json` 已同步运行库现状。
 
 ### 10. 离线测试
 
@@ -263,7 +263,7 @@ npm ci && npm test -- --run && npm run type-check && npm run build
 | `POST /api/attribution/portfolio` | — | 组合归因 + 强势板块定位 |
 | `GET /api/realtime/sector` | — | 最新板块强度排名 |
 | `GET /api/realtime/dashboard` | — | **板块实时看板**（管理页有效板块，分时切片） |
-| `GET /api/opening-strength/dashboard` | — | **开盘题材**（必填 `trade_date`、可选 `snapshot_time`；只读冻结快照 + 分时聚合） |
+| `GET /api/opening-strength/dashboard` | — | **开盘题材**（必填 `trade_date`；可选 `snapshot_time`、`fallback_to_previous`；只读冻结快照 + 分时聚合） |
 | `GET /api/custom/dashboard` | — | **自选分组看板**（`custom_group` 替代概念板块，复用实时切片，返回持仓标注字段） |
 | `GET /api/dashboard/members` | — | 单板块/分组全部有效成员按字段排序，仅返回前 10（实时看板点击成分股表头时按需调用） |
 | `GET /api/custom/scan` | — | **自选强势归类**（REST 智能选股 → 取自选交集 → 按自选分组归类） |

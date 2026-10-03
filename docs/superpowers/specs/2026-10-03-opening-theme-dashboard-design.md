@@ -74,7 +74,7 @@ nav_order: 22
 一次看板请求按以下流程执行：
 
 1. 校验 `trade_date` 为 `YYYYMMDD`，并将可选 `snapshot_time` 规范化为 `HH:MM`。
-2. 读取该日期唯一的 `FROZEN` 运行；不存在时返回结构化的 `SNAPSHOT_NOT_FOUND`，不触发归因。
+2. 默认读取该日期唯一的 `FROZEN` 运行；仅显式启用 `fallback_to_previous` 时，精确日期不存在可读取不晚于请求日的最近冻结版本。仍不存在则返回结构化的 `SNAPSHOT_NOT_FOUND`，全程不触发归因。
 3. 读取候选、Membership 和 Attribution，按股票去重后构建 `stock→attributions` 与 `theme→stocks` 索引。
 4. 行情提供器以交易日和排序后的候选代码摘要作为缓存键，通过 `IntradayFetcher` 批量获取完整日内分时。
 5. 删除 09:30 之前的数据，生成当天已有的分钟时间轴；没有传 `snapshot_time` 时选择最新有效分钟。
@@ -169,6 +169,7 @@ GET /api/opening-strength/dashboard
 |---|---|---|
 | `trade_date` | 是 | `YYYYMMDD` |
 | `snapshot_time` | 否 | `HH:MM`；省略时取最新有效分钟 |
+| `fallback_to_previous` | 否 | 默认 `false`；精确日期无快照时读取不晚于请求日的最近冻结版本 |
 
 成功响应至少包含：
 
@@ -197,7 +198,7 @@ GET /api/opening-strength/dashboard
 | 快照存在但没有可用时间点 | 503 | `QUOTE_DATA_UNAVAILABLE` |
 | 上游行情失败且没有可用旧缓存 | 503 | `QUOTE_PROVIDER_FAILED` |
 
-历史日期请求同一接口，不另建历史计算接口。请求晚于最后有效分钟的时点时选择最后有效分钟，并在响应中返回实际 `snapshot_time`；请求落在已有分钟之间时选择不晚于请求值的最近一分钟。
+历史日期请求同一接口，不另建历史计算接口。实时页面传 `fallback_to_previous=true`，休市或当日未冻结时展示实际命中的最近交易日并停止轮询；手选历史日期保持精确查询。请求晚于最后有效分钟的时点时选择最后有效分钟，并在响应中返回实际 `snapshot_time`；请求落在已有分钟之间时选择不晚于请求值的最近一分钟。
 
 ## 7. 页面设计与交互
 

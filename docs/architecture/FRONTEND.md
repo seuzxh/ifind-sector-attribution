@@ -275,7 +275,7 @@ async function loadDashboard(mySeq: number) {
 
 实时日期固定为 `Asia/Shanghai` 当日，自动跟随用 `usePolling(..., 3000)`。历史日期、手动时点与播放均按需请求；拖动暂停跟随，`usePlayTimeline` 复用时间轴控件。日期/模式切换及页面停用使旧请求序号失效；`onDeactivated` 停止轮询和播放，重新激活刷新。跨日恢复实时模式会更新中国标准日期。
 
-页面区分加载、无快照、行情暂不可用、部分降级、请求失败和正常状态。`SNAPSHOT_NOT_FOUND` 显示可复制的人工 `opening-premarket --date YYYYMMDD` 命令；部分缺行情或 `cache_status=stale` 会提示降级，缺失指标显示空值。此页不会自动执行冻结，且不会自动退回其他交易日。
+页面区分加载、无快照、行情暂不可用、部分降级、请求失败和正常状态。实时模式显式请求最近冻结版本回退；实际日期早于当天时显示“回放最近交易日”并停止 3 秒轮询。手选历史日期不启用回退，`SNAPSHOT_NOT_FOUND` 显示可复制的人工 `opening-premarket --date YYYYMMDD` 命令；部分缺行情或 `cache_status=stale` 会提示降级，缺失指标显示空值。此页不会自动执行冻结。
 
 后端独立缓存与旧看板分离：当天完整分时 15 秒 TTL、历史分时进程内稳定，按日期和候选集合区分；聚合结果 3 秒 TTL，按冻结 `run_id` 和实际分钟区分，行情刷新或版本替换不沿用旧结果。只使用 09:30 起盘中点。指标口径见 [API 参考](../guides/api.md#开盘题材)；自动盘前调度、集合竞价、自定义静态题材、WebSocket 和排名持久化均排除。
 
