@@ -52,6 +52,9 @@ describe('opening dashboard page', () => {
     await flushPromises()
 
     expect(wrapper.get('[role=status]').text()).toContain('最近交易日 2026-09-30')
+    expect(wrapper.get('[role=status]').classes()).toContain('warning')
+    expect(wrapper.get('.date-hint').text()).toContain('自动刷新已停止')
+    expect(wrapper.get('.date-hint').text()).not.toContain('每3秒自动跟随')
     expect(vi.getTimerCount()).toBe(0)
   })
   it('polls every three seconds and dragging stops follow before releasing the slider', async () => {

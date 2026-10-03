@@ -7,14 +7,16 @@
       </select>
       <label for="opening-date">日期</label>
       <input id="opening-date" v-model="date" type="date" :disabled="mode === 'realtime'" @change="changeContext" />
-      <span class="date-hint">{{ mode === 'realtime' ? '中国标准时间 · 每3秒自动跟随' : '使用当日盘前冻结归因' }}</span>
+      <span class="date-hint">{{ mode === 'realtime'
+        ? (fallbackSnapshot ? '已回放最近交易日 · 自动刷新已停止' : '中国标准时间 · 每3秒自动跟随')
+        : '使用当日盘前冻结归因' }}</span>
       <button class="refresh-btn" @click="refresh">刷新</button>
     </div>
     <TimeBar :available-times="availableTimes" :current-index="sliderIndex" :current-time-text="currentTimeText"
       :auto-follow="autoFollow" :playing="playing" :speed-ms="speedMs"
       @update:current-index="dragTo" @slider-change="seekTo" @toggle-play="togglePlay"
       @speed-change="setSpeed" @jump-to-latest="jumpToLatest" />
-    <div role="status" aria-live="polite" class="status-bar" :class="{ warning: errorCode || degraded }">
+    <div role="status" aria-live="polite" class="status-bar" :class="{ warning: errorCode || degraded || fallbackSnapshot }">
       <span v-if="loading">加载中… </span>
       <template v-if="errorCode === 'SNAPSHOT_NOT_FOUND'">
         该日期尚未生成盘前冻结快照。请由维护人员运行：
