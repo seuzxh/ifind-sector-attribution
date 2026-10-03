@@ -1,6 +1,6 @@
 <template>
   <section class="theme-panel">
-    <h2>题材强弱榜 <span>选择题材查看贡献个股</span></h2>
+    <h2>题材强弱 Top10 <span>相关个股池直接展示在下方</span></h2>
     <div class="table-scroll">
       <table aria-label="题材强弱榜">
         <thead><tr><th>题材</th>

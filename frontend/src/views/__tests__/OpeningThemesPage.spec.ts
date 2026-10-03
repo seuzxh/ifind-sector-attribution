@@ -27,6 +27,17 @@ describe('opening dashboard page', () => {
   })
   afterEach(() => { vi.useRealTimers() })
 
+  it('shows a stock pool for every returned top theme immediately', async () => {
+    const wrapper = mount(OpeningThemesPage)
+    await flushPromises()
+    const pools = wrapper.findAll('[aria-label="贡献个股"]')
+    expect(pools).toHaveLength(2)
+    expect(pools[0]!.text()).toContain('半导体')
+    expect(pools[1]!.text()).toContain('机器人')
+    for (const pool of pools) expect(pool.text()).toContain('甲股份')
+    wrapper.unmount()
+  })
+
   it('fixes realtime date to Shanghai today; enables history and requests the selected date', async () => {
     const wrapper = mount(OpeningThemesPage)
     await flushPromises()
@@ -137,13 +148,13 @@ describe('opening dashboard page', () => {
     const wrapper = mount(OpeningThemesPage)
     await flushPromises()
     await wrapper.get('[aria-label="加速榜"] button').trigger('click')
-    expect(wrapper.get('[aria-label="贡献个股"] h2').text()).toContain('机器人')
+    expect(wrapper.get('.selected-pool h2').text()).toContain('机器人')
     expect(wrapper.findAll('[aria-label="题材强弱榜"] tbody tr')[1]!.attributes('aria-selected')).toBe('true')
     await vi.advanceTimersByTimeAsync(3000)
-    expect(wrapper.get('[aria-label="贡献个股"] h2').text()).toContain('机器人')
+    expect(wrapper.get('.selected-pool h2').text()).toContain('机器人')
     getDashboard.mockResolvedValue(dashboard({ themes: [theme] }))
     await vi.advanceTimersByTimeAsync(3000)
-    expect(wrapper.get('[aria-label="贡献个股"] h2').text()).toContain('半导体')
+    expect(wrapper.get('.selected-pool h2').text()).toContain('半导体')
   })
   it.each([
     ['SNAPSHOT_NOT_FOUND', '盘前冻结快照'], ['QUOTE_DATA_UNAVAILABLE', '行情暂不可用'],

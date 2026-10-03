@@ -113,7 +113,7 @@ class OpeningStrengthApiTests(unittest.TestCase):
                 "level": 3, "momentum_1m": 2, "up_ratio": 1, "breadth_delta_1m": 0,
                 "attributed_stock_count": 1, "valid_quote_count": 1, "supporting_count": 1,
                 "support_weight": 1, "source_pool_diversity": 1, "top1_concentration": 1,
-                "top3_concentration": 1, "data_health": 1,
+                "top3_concentration": 1, "data_health": 1, "total_member_count": None,
                 "risk_tags": ["单股驱动", "高度集中"],
                 "contributors": [{
                     "stock_code": "600001.SH", "stock_name": "甲", "attribution_weight": 1,

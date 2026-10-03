@@ -6,6 +6,22 @@ import OpeningContributors from '../OpeningContributors.vue'
 import { dashboard, theme } from '@/test/openingThemesFixtures'
 
 describe('opening theme panels', () => {
+  it('directly previews five pool stocks and expands all without losing missing quotes', async () => {
+    const stocks = Array.from({ length: 7 }, (_, index) => ({
+      ...theme.contributors[index % 3]!, stock_code: `60000${index}.SH`, stock_name: `个股${index}`,
+    }))
+    const wrapper = mount(OpeningContributors, { props: {
+      theme: { ...theme, total_member_count: 300, contributors: stocks }, compact: true, rank: 1,
+    } })
+    expect(wrapper.text()).toContain('全量成分 300 只')
+    expect(wrapper.text()).toContain('候选个股池 7 只')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(5)
+    await wrapper.get('button.expand-pool').trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(7)
+    expect(wrapper.text()).toContain('暂无行情')
+    await wrapper.get('button.expand-pool').trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(5)
+  })
   it('renders metrics, missing values and all risks; selects by click and keyboard', async () => {
     const wrapper = mount(OpeningThemeTable, { props: {
       themes: [{ ...theme, risk_tags: ['单股驱动', '低支撑', '高度集中', '数据不足', '行情滞后'] },

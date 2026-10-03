@@ -26,6 +26,28 @@ def _require_status(conn, run_id, status):
 
 
 class OpeningStrengthMixin:
+    def get_opening_theme_member_counts(self, theme_codes: Sequence[str], as_of: str) -> dict[str, int]:
+        """Count full constituents in each theme's last snapshot on/before the frozen date."""
+        codes = sorted(set(theme_codes))
+        if not codes:
+            return {}
+        placeholders = ",".join("?" for _ in codes)
+        with self._connect() as conn:
+            rows = conn.execute(f"""
+                WITH latest AS (
+                    SELECT concept_code, MAX(member_date) AS member_date
+                    FROM concept_members
+                    WHERE concept_code IN ({placeholders})
+                      AND REPLACE(member_date, '-', '') <= ?
+                    GROUP BY concept_code
+                )
+                SELECT cm.concept_code, COUNT(DISTINCT cm.stock_code) AS member_count
+                FROM concept_members cm JOIN latest l
+                  ON cm.concept_code = l.concept_code AND cm.member_date = l.member_date
+                GROUP BY cm.concept_code
+            """, (*codes, as_of.replace("-", ""))).fetchall()
+        return {row["concept_code"]: row["member_count"] for row in rows}
+
     def create_opening_run(self, run: Mapping) -> None:
         if run.get("status", "RUNNING") != "RUNNING":
             raise ValueError("New opening run must be RUNNING")

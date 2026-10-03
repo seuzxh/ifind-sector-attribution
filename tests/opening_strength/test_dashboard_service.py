@@ -87,6 +87,32 @@ class DashboardServiceTests(unittest.TestCase):
                 "rank": rank, "raw_score": .8, "weight": .5, "confidence": .9,
                 "reason_codes": ["MULTI_POOL_SUPPORT", "STRONG_RECENT_THEME"], "evidence": {}}
 
+    def test_filters_full_membership_over_300_for_both_theme_types_before_top10(self):
+        themes = ["884001.TI", "885002.TI"] + [f"885{i:03d}.TI" for i in range(3, 16)]
+        extras = [self.attribution(A, code, rank=i + 2) for i, code in enumerate(themes[1:])]
+        self.create_run(theme=themes[0], extra_attributions=extras)
+        for code in themes:
+            size = 301 if code in themes[:2] else 300
+            self.db.save_concept_members(code, [
+                {"stock_code": f"{i:06d}.SZ", "stock_name": str(i)} for i in range(size)
+            ], "20261002")
+        # A newer membership snapshot must not change historical eligibility.
+        self.db.save_concept_members(themes[2], [
+            {"stock_code": f"{i:06d}.SZ", "stock_name": str(i)} for i in range(400)
+        ], "20261004")
+        result = self.service.build("20261003")
+        self.assertEqual(len(result.themes), 10)
+        self.assertEqual(result.theme_count, 13)
+        self.assertFalse(set(themes[:2]) & {row.theme_code for row in result.themes})
+        self.assertTrue(all(row.total_member_count == 300 for row in result.themes))
+        self.assertEqual(self.db.get_opening_theme_member_counts(themes, "2026-10-02")[themes[2]], 300)
+        self.assertEqual(len(self.db.get_opening_attributions("frozen")), 16)
+
+    def test_unknown_member_count_is_explicit_and_does_not_hide_theme(self):
+        self.create_run()
+        result = self.service.build("20261003")
+        self.assertIsNone(result.themes[0].total_member_count)
+
     def test_candidates_collapse_sources_and_only_attributions_form_relationships(self):
         self.create_run()
         result = self.service.build("20261003")

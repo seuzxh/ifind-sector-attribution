@@ -36,6 +36,7 @@ export interface OpeningTheme {
   data_health: number
   risk_tags: string[]
   contributors: OpeningContribution[]
+  total_member_count?: number | null
 }
 
 export interface OpeningDashboardPayload {

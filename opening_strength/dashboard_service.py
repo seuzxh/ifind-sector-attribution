@@ -87,6 +87,10 @@ class OpeningDashboardService:
                 code, names[code], theme, row["theme_name"], row["theme_type"],
                 row["weight"], row["confidence"], tuple(row["reason_codes"]), tuple(sorted(pools[code])),
             ))
+        member_counts = self._db.get_opening_theme_member_counts(
+            [row.theme_code for row in attributions], run["hub_member_date"] or trade_date)
+        attributions = [row for row in attributions
+                        if member_counts.get(row.theme_code, 0) <= 300]
         try:
             quotes = self._provider.load(codes, trade_date, snapshot_time)
         except OpeningDashboardError as error:
@@ -97,7 +101,8 @@ class OpeningDashboardService:
         timestamp = self._now()
         mode = "realtime" if trade_date == timestamp.strftime("%Y%m%d") else "historical"
         # Successful refreshes and lag changes must not hide behind a cached result.
-        quote_identity = (mode, quotes.available_times, quotes.latest_time, quotes.stale_quote,
+        quote_identity = (mode, tuple(sorted(member_counts.items())),
+                          quotes.available_times, quotes.latest_time, quotes.stale_quote,
                           tuple(sorted(quotes.quotes.items())), tuple(sorted(quotes.previous_quotes.items())))
         with self._lock:
             now = self._monotonic()
@@ -107,15 +112,18 @@ class OpeningDashboardService:
             if (cached is not None and now - cached.created_at < 3
                     and cached.quote_identity == quote_identity):
                 return replace(_deserialize(cached.payload), cache_status=quotes.cache_status)
-            themes, acceleration, breadth = build_rankings(aggregate_themes(
-                attributions, quotes.quotes, quotes.previous_quotes, stale_quote=quotes.stale_quote))
+            aggregated = aggregate_themes(
+                attributions, quotes.quotes, quotes.previous_quotes, stale_quote=quotes.stale_quote)
+            themes, acceleration, breadth = build_rankings(tuple(
+                replace(theme, total_member_count=member_counts.get(theme.theme_code))
+                for theme in aggregated))
             valid_codes = {code for code in codes if code in quotes.quotes
                            and isfinite(quotes.quotes[code].pre_close)
                            and quotes.quotes[code].pre_close > 0
                            and isfinite(quotes.quotes[code].last_price)}
             dashboard = OpeningDashboard(
                 trade_date, run_id, mode,
-                quotes.snapshot_time, quotes.latest_time, quotes.available_times, len(codes), len(themes),
+                quotes.snapshot_time, quotes.latest_time, quotes.available_times, len(codes), len(aggregated),
                 len(valid_codes) / len(codes) if codes else 0.0, themes, acceleration, breadth,
                 timestamp.isoformat(timespec="seconds"), quotes.cache_status,
             )

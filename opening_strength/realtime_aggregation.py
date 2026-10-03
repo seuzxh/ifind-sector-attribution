@@ -106,8 +106,8 @@ def build_rankings(
         not theme.rankable, -theme.level if theme.level is not None else 0,
         -theme.momentum_1m if theme.momentum_1m is not None else float("inf"),
         theme.theme_code,
-    )))
-    eligible = [theme for theme in themes
+    )))[:10]
+    eligible = [theme for theme in ordered
                 if theme.valid_quote_count >= 2 and theme.data_health >= .60]
     acceleration = tuple(theme.theme_code for theme in sorted(
         (theme for theme in eligible if theme.momentum_1m is not None),

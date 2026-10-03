@@ -33,7 +33,8 @@
     </div>
     <div v-if="payload" class="summary-bar">
       <span>候选股票 <strong>{{ payload.candidate_count }}</strong></span>
-      <span>题材 <strong>{{ payload.theme_count }}</strong></span>
+      <span>可展示题材 <strong>{{ payload.theme_count }}</strong> · 当前 Top {{ payload.themes.length }}</span>
+      <span>全量成分超过 300 只的概念、行业已排除</span>
       <span>数据健康 <strong>{{ healthText }}</strong></span>
       <span class="version">冻结版本 <strong>{{ payload.run_id }}</strong></span>
     </div>
@@ -41,7 +42,12 @@
       <OpeningThemeTable :themes="payload?.themes || []" :selected-code="selectedCode" @select="selectedCode = $event" />
       <OpeningChangeLists :themes="payload?.themes || []" :acceleration-codes="payload?.acceleration_theme_codes || []"
         :breadth-codes="payload?.breadth_theme_codes || []" :selected-code="selectedCode" @select="selectedCode = $event" />
-      <OpeningContributors class="full-width" :theme="selectedTheme" />
+      <div class="full-width stock-pools">
+        <h2>Top10 题材 · 相关个股池</h2>
+        <p class="pool-hint">个股来自高 Beta、近期强势、热门三个源股池，按题材贡献排序。</p>
+        <OpeningContributors v-for="(theme, index) in payload?.themes || []" :key="`${payload?.run_id}:${theme.theme_code}`"
+          :theme="theme" :rank="index + 1" compact :class="{ 'selected-pool': selectedCode === theme.theme_code }" />
+      </div>
     </div>
   </div>
 </template>
@@ -71,7 +77,6 @@ const autoFollow = ref(true)
 const loading = ref(true)
 const errorCode = ref('')
 let active = false
-const selectedTheme = computed(() => payload.value?.themes.find(theme => theme.theme_code === selectedCode.value))
 const degraded = computed(() => !!payload.value && (payload.value.data_health < 1 || payload.value.cache_status === 'stale'))
 const fallbackSnapshot = computed(() => mode.value === 'realtime' && !!payload.value
   && payload.value.trade_date !== date.value.replace(/-/g, ''))
@@ -206,5 +211,11 @@ input:disabled { color: #6b7280; background: #f9fafb; } .date-hint { font-size: 
 .summary-bar strong { margin-left: 6px; color: #1f2937; } .version { overflow-wrap: anywhere; }
 .opening-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; padding: 16px; align-items: start; }
 .full-width { grid-column: 1 / -1; }
+.stock-pools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.stock-pools > h2, .pool-hint { grid-column: 1 / -1; margin: 0; }
+.stock-pools > h2 { font-size: 16px; }
+.pool-hint { color: #6b7280; font-size: 12px; }
+.selected-pool { outline: 2px solid #bfdbfe; }
 @media (max-width: 1100px) { .opening-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) { .stock-pools { grid-template-columns: minmax(0, 1fr); } }
 </style>

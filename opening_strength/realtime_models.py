@@ -78,6 +78,7 @@ class ThemeSnapshot:
     data_health: float
     risk_tags: tuple[str, ...]
     contributors: tuple[StockContribution, ...]
+    total_member_count: int | None = None
 
     @property
     def rankable(self) -> bool:

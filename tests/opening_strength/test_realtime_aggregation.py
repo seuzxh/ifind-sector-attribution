@@ -216,6 +216,17 @@ class RealtimeAggregationTests(unittest.TestCase):
         self.assertEqual(aggregate_themes((), {}, {}), ())
         self.assertEqual(build_rankings(()), ((), (), ()))
 
+    def test_top10_is_selected_before_auxiliary_rankings(self):
+        base = aggregate_themes(*self.fixture())[0]
+        themes = tuple(replace(base, theme_code=f"885{i:03d}.TI", level=i,
+                               momentum_1m=-i, breadth_delta_1m=-i / 100)
+                       for i in range(15))
+        ordered, acceleration, breadth = build_rankings(themes)
+        self.assertEqual([row.level for row in ordered], list(range(14, 4, -1)))
+        self.assertEqual(acceleration, tuple(row.theme_code for row in reversed(ordered)))
+        self.assertEqual(breadth, acceleration)
+        self.assertEqual(build_rankings(themes[::-1]), (ordered, acceleration, breadth))
+
     def test_main_ranking_orders_rankable_level_momentum_then_code(self):
         base = aggregate_themes(*self.fixture())[0]
         themes = (
