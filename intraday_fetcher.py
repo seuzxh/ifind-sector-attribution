@@ -26,6 +26,7 @@
 """
 
 import os
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -49,6 +50,14 @@ def _norm_time(t: str) -> str:
     return t[:5] if t and len(t) >= 5 else t
 
 
+@dataclass(frozen=True)
+class IntradayBatchResult:
+    """批次记录与抛出异常的代码；正常空行情不计为失败，不保留原始异常。"""
+
+    records: Dict[str, dict]
+    failed_codes: frozenset[str]
+
+
 class IntradayFetcher:
     """
     分时数据批量获取器。
@@ -69,13 +78,15 @@ class IntradayFetcher:
                 "KLINE_API_BASE_URL 未配置。请在 config_local.py 设置或 export KLINE_API_BASE_URL。"
             )
 
-    def _fetch_one(self, code: str, date: Optional[str]) -> Optional[dict]:
+    def _fetch_one(self, code: str, date: Optional[str], *, raise_errors: bool = False) -> Optional[dict]:
         """拉单只股票分时，归一化为项目格式。每线程独立 TrendFetcher 实例（绕过共享 throttle）。"""
         try:
             fetcher = TrendFetcher()
             data = fetcher.fetch_trend(_to_kf_code(code), date=date)
         except Exception as e:
-            print(f"[INTRADAY] {code} 拉取失败: {e}")
+            if raise_errors:
+                raise
+            print(f"[INTRADAY] {code} 拉取失败: {type(e).__name__}")
             return None
 
         if not data:
@@ -151,12 +162,20 @@ class IntradayFetcher:
         :param date: None 或 "0" = 当日实时；"YYYYMMDD" = 历史某日全天
         :return: {code: {pre_close, open, trading:[...]}, ...}，失败的 code 不出现
         """
-        if not codes:
-            return {}
+        return self.fetch_batch_with_status(codes, date).records
 
-        result = {}
+    def fetch_batch_with_status(
+        self,
+        codes: List[str],
+        date: Optional[str] = None,
+    ) -> IntradayBatchResult:
+        """与 fetch_batch 相同的批次，额外区分异常失败与正常空行情。"""
+        if not codes:
+            return IntradayBatchResult({}, frozenset())
+
+        result, failed_codes = {}, set()
         with ThreadPoolExecutor(max_workers=self.workers) as ex:
-            futs = {ex.submit(self._fetch_one, c, date): c for c in codes}
+            futs = {ex.submit(self._fetch_one, c, date, raise_errors=True): c for c in codes}
             for fu in as_completed(futs):
                 code = futs[fu]
                 try:
@@ -164,11 +183,12 @@ class IntradayFetcher:
                     if rec:
                         result[code] = rec
                 except Exception as e:
-                    print(f"[INTRADAY] {code} 异常: {e}")
+                    failed_codes.add(code)
+                    print(f"[INTRADAY] {code} 异常: {type(e).__name__}")
                     continue
 
         ok = len(result)
         total = len(codes)
         print(f"[INTRADAY] 拉取完成: {ok}/{total} 只成功"
               f"{'（当日实时）' if not date or date == '0' else f'（{date} 历史）'}")
-        return result
+        return IntradayBatchResult(result, frozenset(failed_codes))

@@ -12,6 +12,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from database import Database
+from intraday_fetcher import IntradayFetcher
 
 
 ENDPOINT = "/api/opening-strength/dashboard"
@@ -183,6 +184,17 @@ class OpeningStrengthApiTests(unittest.TestCase):
         self.freeze()
         with patch.object(self.fetcher, "fetch_batch", side_effect=RuntimeError(
                 "private-token=do-not-expose /private/local/provider.py")):
+            response = self.client.get(ENDPOINT, params={"trade_date": TRADE_DATE})
+        self.assert_error(response, 503, "QUOTE_PROVIDER_FAILED", True, "行情获取暂时失败，请稍后重试")
+        self.assertNotIn("private-token", response.text)
+        self.assertNotIn("/private/local", response.text)
+
+    def test_real_adapter_timeout_returns_safe_provider_failure(self):
+        self.freeze()
+        with patch.dict(os.environ, {"KLINE_API_BASE_URL": "https://quotes.invalid"}), \
+                patch("intraday_fetcher.TrendFetcher.fetch_trend", side_effect=TimeoutError(
+                    "private-token=fixture /private/local/provider.py")):
+            self.fetcher_constructor.return_value = IntradayFetcher(workers=1)
             response = self.client.get(ENDPOINT, params={"trade_date": TRADE_DATE})
         self.assert_error(response, 503, "QUOTE_PROVIDER_FAILED", True, "行情获取暂时失败，请稍后重试")
         self.assertNotIn("private-token", response.text)

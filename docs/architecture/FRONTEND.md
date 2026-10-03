@@ -70,7 +70,7 @@ nav_order: 3
 - `npm run dev` — 开发服务器（5173）
 - `npm run build` — `vue-tsc --noEmit && vite build`，产物输出到 `../static/`
 - `npm run type-check` — 仅类型检查
-- `npm test -- --run` — 单次运行 Vitest（`vitest.config.ts`、`src/test/setup.ts`）
+- `npm test -- --run` — 单次运行 Vitest（`vite.config.ts`、`src/test/setup.ts`）
 
 ---
 
@@ -79,8 +79,7 @@ nav_order: 3
 ```
 frontend/
 ├── package.json
-├── vite.config.ts          # 构建/代理/base 路径配置
-├── vitest.config.ts        # jsdom 测试、@ 别名与公共 setup
+├── vite.config.ts          # 构建/代理/base、jsdom 测试、@ 别名与公共 setup
 ├── tsconfig.json           # strict TS 配置，@/* → ./src/*
 ├── env.d.ts                # Vue SFC 类型声明
 ├── index.html              # Vite 入口 HTML

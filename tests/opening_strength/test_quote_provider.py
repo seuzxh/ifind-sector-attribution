@@ -1,10 +1,13 @@
+import os
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from opening_strength.quote_provider import OpeningDashboardError, OpeningQuoteProvider
+from intraday_fetcher import IntradayFetcher
+from opening_strength.quote_provider import OpeningDashboardError, OpeningQuoteProvider, _Flight
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -187,12 +190,89 @@ class QuoteProviderTests(unittest.TestCase):
             result.quotes[A] = result.quotes[A]
 
 
+class RealFetcherQuoteProviderTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict(os.environ, {"KLINE_API_BASE_URL": "https://quotes.invalid"})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.clock = Clock()
+        self.provider = OpeningQuoteProvider(
+            IntradayFetcher(workers=2), clock=self.clock, monotonic=self.clock.monotonic)
+
+    def test_all_upstream_timeouts_return_safe_provider_failure_and_can_retry(self):
+        with patch("intraday_fetcher.TrendFetcher.fetch_trend", side_effect=TimeoutError(
+                "private-token=fixture /private/provider")):
+            with self.assertRaises(OpeningDashboardError) as raised:
+                self.provider.load([A, B], "20261003")
+        self.assertEqual(raised.exception.code, "QUOTE_PROVIDER_FAILED")
+        self.assertTrue(raised.exception.retryable)
+        self.assertNotIn("private-token", str(raised.exception))
+        self.assertNotIn("/private/provider", raised.exception.message)
+        with patch("intraday_fetcher.TrendFetcher.fetch_trend",
+                   return_value=record(("09:30", 101))):
+            self.assertEqual(self.provider.load([A, B], "20261003").quotes[A].last_price, 101)
+
+    def test_successful_empty_or_premarket_only_fetch_is_data_unavailable(self):
+        for raw in (None, {}, {"pre_market": [], "trading": []}, record(),
+                    record(("09:25", 101))):
+            with self.subTest(raw=raw), patch("intraday_fetcher.TrendFetcher.fetch_trend",
+                                             return_value=raw):
+                with self.assertRaises(OpeningDashboardError) as raised:
+                    self.provider.load([A, B], "20261003")
+                self.assertEqual(raised.exception.code, "QUOTE_DATA_UNAVAILABLE")
+
+    def test_partial_failure_keeps_usable_quotes(self):
+        def fetch(code, date=None):
+            if code == "SZ000001":
+                raise TimeoutError("fixture timeout")
+            return record(("09:30", 101))
+
+        with patch("intraday_fetcher.TrendFetcher.fetch_trend", side_effect=fetch):
+            result = self.provider.load([A, B], "20261003")
+        self.assertEqual(set(result.quotes), {A})
+        self.assertEqual(result.quotes[A].last_price, 101)
+
+    def test_one_empty_success_and_one_failure_is_data_unavailable(self):
+        def fetch(code, date=None):
+            if code == "SZ000001":
+                raise TimeoutError("fixture timeout")
+            return {}
+
+        with patch("intraday_fetcher.TrendFetcher.fetch_trend", side_effect=fetch):
+            with self.assertRaises(OpeningDashboardError) as raised:
+                self.provider.load([A, B], "20261003")
+        self.assertEqual(raised.exception.code, "QUOTE_DATA_UNAVAILABLE")
+
+    def test_failed_refresh_returns_last_success_as_stale(self):
+        with patch("intraday_fetcher.TrendFetcher.fetch_trend",
+                   return_value=record(("09:30", 101))):
+            self.provider.load([A], "20261003")
+        self.clock.seconds = 15
+        with patch("intraday_fetcher.TrendFetcher.fetch_trend", side_effect=TimeoutError("fixture")):
+            result = self.provider.load([A], "20261003")
+        self.assertEqual(result.cache_status, "stale")
+        self.assertEqual(result.quotes[A].last_price, 101)
+
+
 class QuoteProviderConcurrencyTests(unittest.TestCase):
     def test_simultaneous_first_loads_share_one_fetch(self):
-        clock, start = Clock(), threading.Barrier(7)
-        entered, release = threading.Event(), threading.Event()
+        self._assert_waiter_result(failure=False)
+
+    def test_first_load_failure_reaches_waiter_and_next_request_can_retry(self):
+        self._assert_waiter_result(failure=True)
+
+    def _assert_waiter_result(self, *, failure):
+        clock = Clock()
+        entered, release, waiting = threading.Event(), threading.Event(), threading.Event()
         fetcher = Fetcher({A: record(("09:30", 101))})
+        if failure:
+            fetcher.error = TimeoutError("private-token=fixture /private/provider")
         original = fetcher.fetch_batch
+
+        class ObservedEvent(threading.Event):
+            def wait(self, timeout=None):
+                waiting.set()
+                return super().wait(timeout)
 
         def fetch(codes, date=None):
             entered.set()
@@ -203,20 +283,36 @@ class QuoteProviderConcurrencyTests(unittest.TestCase):
         fetcher.fetch_batch = fetch
         provider = OpeningQuoteProvider(fetcher, clock=clock, monotonic=clock.monotonic)
 
-        def load():
-            start.wait(timeout=3)
-            return provider.load([A], "20261003")
-
-        with ThreadPoolExecutor(max_workers=6) as executor:
-            pending = [executor.submit(load) for _ in range(6)]
-            start.wait(timeout=3)
+        # Observe the real flight's wait boundary, without changing production synchronization.
+        flight = _Flight(done=ObservedEvent())
+        with patch("opening_strength.quote_provider._Flight", return_value=flight), \
+                ThreadPoolExecutor(max_workers=2) as executor:
+            owner = executor.submit(provider.load, [A], "20261003")
             try:
                 self.assertTrue(entered.wait(3))
+                waiter = executor.submit(provider.load, [A], "20261003")
+                self.assertTrue(waiting.wait(3), "second caller never entered flight.done.wait()")
+                self.assertFalse(owner.done())
+                self.assertFalse(waiter.done())
             finally:
                 release.set()
-            results = [future.result(timeout=3) for future in pending]
+            if failure:
+                for future in (owner, waiter):
+                    with self.assertRaises(OpeningDashboardError) as raised:
+                        future.result(timeout=3)
+                    self.assertEqual(raised.exception.code, "QUOTE_PROVIDER_FAILED")
+                    self.assertTrue(raised.exception.retryable)
+                    self.assertNotIn("private-token", str(raised.exception))
+                    self.assertNotIn("/private/provider", raised.exception.message)
+            else:
+                results = [future.result(timeout=3) for future in (owner, waiter)]
+                self.assertEqual([result.quotes[A].last_price for result in results], [101, 101])
+                self.assertEqual([result.cache_status for result in results], ["fresh", "hit"])
         self.assertEqual(len(fetcher.calls), 1)
-        self.assertEqual([result.quotes[A].last_price for result in results], [101] * 6)
+        if failure:
+            fetcher.error = None
+            self.assertEqual(provider.load([A], "20261003").quotes[A].last_price, 101)
+            self.assertEqual(len(fetcher.calls), 2)
 
     def test_network_io_does_not_block_an_unrelated_cache_key(self):
         clock, entered, release = Clock(), threading.Event(), threading.Event()

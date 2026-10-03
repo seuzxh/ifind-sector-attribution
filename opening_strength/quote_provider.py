@@ -161,7 +161,16 @@ class OpeningQuoteProvider:
             if fetcher is None:
                 from intraday_fetcher import IntradayFetcher
                 fetcher = IntradayFetcher()
-            raw = fetcher.fetch_batch(list(codes), date=trade_date if historical else None)
+            date = trade_date if historical else None
+            fetch_with_status = getattr(fetcher, "fetch_batch_with_status", None)
+            if callable(fetch_with_status):
+                batch = fetch_with_status(list(codes), date=date)
+                if codes and batch.failed_codes.issuperset(codes):
+                    raise OpeningDashboardError(
+                        "QUOTE_PROVIDER_FAILED", "行情获取暂时失败，请稍后重试", True)
+                raw = batch.records
+            else:
+                raw = fetcher.fetch_batch(list(codes), date=date)
             series = _normalize(raw, codes)
             if not series.available_times:
                 raise OpeningDashboardError("QUOTE_DATA_UNAVAILABLE", "暂无可用的盘中行情", True)
